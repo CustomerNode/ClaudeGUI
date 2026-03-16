@@ -14,9 +14,13 @@ function getEffectiveTheme(pref) {
 }
 
 function applyTheme(pref) {
-  document.documentElement.setAttribute('data-theme', getEffectiveTheme(pref));
+  const effective = getEffectiveTheme(pref);
+  document.documentElement.setAttribute('data-theme', effective);
   document.getElementById('btn-theme').innerHTML = _themeSvg[pref];
   document.getElementById('btn-theme').title = pref.charAt(0).toUpperCase() + pref.slice(1) + ' theme';
+  // Swap logo for dark/light
+  const logo = document.querySelector('.app-logo');
+  if (logo) logo.src = effective === 'dark' ? '/static/images/logo-dark.png' : '/static/images/logo.png';
 }
 
 function cycleTheme() {
