@@ -307,6 +307,141 @@ async function addProjectCreate() {
   } catch(e) { showToast('Create failed', true); }
 }
 
+// --- Sidebar collapse ---
+function toggleSidebar() {
+  const sidebar = document.querySelector('.sidebar');
+  const expandBtn = document.getElementById('btn-sidebar-expand');
+  const collapsed = sidebar.classList.toggle('collapsed');
+  expandBtn.classList.toggle('visible', collapsed);
+  localStorage.setItem('sidebarCollapsed', collapsed ? '1' : '');
+}
+// Restore on load
+if (localStorage.getItem('sidebarCollapsed') === '1') {
+  document.querySelector('.sidebar').classList.add('collapsed');
+  document.getElementById('btn-sidebar-expand').classList.add('visible');
+}
+
+// --- View mode selector ---
+const _viewModes = {
+  workforce: {
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>',
+    label: 'Grid View',
+    title: 'Grid',
+    desc: 'Visual cards showing session status at a glance',
+  },
+  list: {
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>',
+    label: 'List View',
+    title: 'List',
+    desc: 'Compact table with name, date, and size columns',
+  },
+  workplace: {
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><circle cx="7" cy="10" r="1.5"/><circle cx="17" cy="10" r="1.5"/><path d="M10 10h4"/></svg>',
+    label: 'Workplace',
+    title: 'Workplace',
+    desc: 'Virtual office space for agent collaboration',
+    badge: 'Coming Soon',
+  },
+};
+
+async function openViewModeSelector() {
+  const overlay = document.getElementById('pm-overlay');
+  const current = viewMode;
+  let html = '<div class="pm-card pm-enter" style="width:380px;">'
+    + '<h2 class="pm-title">View Mode</h2>'
+    + '<div class="pm-body"><p>Choose how your sessions are displayed.</p></div>'
+    + '<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px;">';
+
+  for (const [key, m] of Object.entries(_viewModes)) {
+    const isActive = key === current;
+    const disabled = m.badge ? ' style="opacity:0.5;cursor:default;"' : '';
+    html += `<div class="add-mode-card${isActive ? ' active' : ''}" data-mode="${key}"${disabled}>
+      <div class="add-mode-icon">${m.icon}</div>
+      <div class="add-mode-info">
+        <div class="add-mode-title">${m.title}${m.badge ? ' <span style="font-size:9px;background:var(--accent);color:#fff;padding:2px 6px;border-radius:8px;font-weight:700;margin-left:6px;">' + m.badge + '</span>' : ''}</div>
+        <div class="add-mode-desc">${m.desc}</div>
+      </div>
+    </div>`;
+  }
+  html += '</div><div class="pm-actions"><button class="pm-btn pm-btn-secondary" id="pm-vm-close">Close</button></div></div>';
+  overlay.innerHTML = html;
+  overlay.classList.add('show');
+  requestAnimationFrame(() => overlay.querySelector('.pm-card').classList.remove('pm-enter'));
+
+  document.getElementById('pm-vm-close').onclick = () => _closePm();
+  overlay.onclick = e => { if (e.target === overlay) _closePm(); };
+
+  overlay.querySelectorAll('.add-mode-card').forEach(card => {
+    const mode = card.dataset.mode;
+    if (_viewModes[mode].badge) return; // disabled
+    card.onclick = () => {
+      _closePm();
+      setViewMode(mode);
+      _updateViewModeButton(mode);
+      showToast(_viewModes[mode].label);
+    };
+  });
+}
+
+function _updateViewModeButton(mode) {
+  const m = _viewModes[mode] || _viewModes.workforce;
+  const iconEl = document.getElementById('view-mode-icon');
+  const labelEl = document.getElementById('view-mode-label');
+  if (iconEl) iconEl.outerHTML = m.icon.replace('width="18"', 'width="14" id="view-mode-icon"').replace('height="18"', 'height="14"');
+  if (labelEl) labelEl.textContent = m.label;
+}
+
+// Hydrate view mode button on load
+_updateViewModeButton(viewMode);
+
+// --- Sort dropdown ---
+function toggleSortDropdown() {
+  document.getElementById('sidebar-sort-dropdown').classList.toggle('open');
+}
+
+function pickSort(mode) {
+  document.getElementById('sidebar-sort-dropdown').classList.remove('open');
+  const labels = {date: 'Recent', name: 'Name', size: 'Size', status: 'Status'};
+  document.getElementById('sidebar-sort-label').textContent = labels[mode] || mode;
+  // Mark active option
+  document.querySelectorAll('.sidebar-sort-opt').forEach(el => {
+    el.classList.toggle('active', el.dataset.sort === mode);
+  });
+  // Apply sort depending on view mode
+  if (viewMode === 'workforce') {
+    setWfSort(mode === 'date' ? 'recent' : mode);
+  } else {
+    if (mode === 'status') mode = 'date'; // list view doesn't have status sort
+    setSort(mode);
+  }
+  filterSessions();
+}
+
+// Close sort dropdown on outside click
+document.addEventListener('click', function(e) {
+  const wrap = document.querySelector('.sidebar-sort-wrap');
+  if (wrap && !wrap.contains(e.target)) {
+    document.getElementById('sidebar-sort-dropdown').classList.remove('open');
+  }
+});
+
+// --- New Agent ---
+async function addNewAgent() {
+  // Opens a new Claude Code session in a terminal
+  try {
+    const resp = await fetch('/api/new-session', { method: 'POST' });
+    const data = await resp.json();
+    if (data.ok) {
+      showToast('New session started');
+      await loadSessions();
+    } else {
+      showToast(data.error || 'Could not start session', true);
+    }
+  } catch(e) {
+    showToast('Could not start session', true);
+  }
+}
+
 // --- Skeleton & Sessions ---
 function showSkeletonLoader() {
   const el = document.getElementById('session-list');

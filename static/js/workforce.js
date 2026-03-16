@@ -14,19 +14,16 @@ function setViewMode(mode) {
   localStorage.setItem('viewMode', mode);
   const listEl = document.getElementById('session-list');
   const gridEl = document.getElementById('workforce-grid');
-  const sortBar = document.getElementById('wf-sort-bar');
   const btnList = document.getElementById('btn-view-list');
   const btnWf   = document.getElementById('btn-view-workforce');
   if (mode === 'workforce') {
     listEl.style.display = 'none';
     gridEl.classList.add('visible');
-    sortBar.style.display = 'flex';
     if (btnList) btnList.classList.remove('active');
     if (btnWf)   btnWf.classList.add('active');
   } else {
     listEl.style.display = '';
     gridEl.classList.remove('visible');
-    sortBar.style.display = 'none';
     if (btnList) btnList.classList.add('active');
     if (btnWf)   btnWf.classList.remove('active');
   }

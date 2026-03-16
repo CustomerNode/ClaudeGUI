@@ -1,5 +1,30 @@
 /* sessions.js — sorting, list rendering, tooltips, column resize, click handling */
 
+function _shortDate(dateStr) {
+  const d = new Date(dateStr);
+  if (isNaN(d)) return dateStr;
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diffDays = Math.round((today - target) / 86400000);
+
+  let h = d.getHours();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  const min = String(d.getMinutes()).padStart(2, '0');
+  const time = h + ':' + min + ' ' + ampm;
+
+  if (diffDays === 0) return time;
+  if (diffDays === 1) return 'Yesterday';
+
+  const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  if (diffDays >= 2 && diffDays <= 6) return dayNames[d.getDay()];
+
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  if (d.getFullYear() !== now.getFullYear()) return months[d.getMonth()] + ' ' + d.getDate() + " '" + String(d.getFullYear()).slice(-2);
+  return months[d.getMonth()] + ' ' + d.getDate();
+}
+
 function setSort(mode) {
   if (sortMode === mode) {
     sortAsc = !sortAsc;   // same column — toggle direction
@@ -62,7 +87,7 @@ function renderList(sessions) {
       <div class="session-col-name" onclick="handleNameClick('${s.id}')" style="cursor:text;" title="Click to rename">
         ${icon}${escHtml(s.display_title)}
       </div>
-      <div class="session-col-date" ${colClick}>${escHtml(s.last_activity)}</div>
+      <div class="session-col-date" ${colClick} title="${escHtml(s.last_activity)}">${escHtml(_shortDate(s.last_activity))}</div>
       <div class="session-col-size" ${colClick}>${escHtml(s.size)}</div>
     </div>`;
   }).join('');

@@ -46,8 +46,18 @@ async function selectSession(id) {
   setToolbarSession(id, titleText, !s.custom_title, s.custom_title || '');
 
   // Single click always shows static preview; double click / openInGUI starts live panel
+  // For very long sessions, show only the last 200 messages with a "Load more" button
+  const MAX_INITIAL = 200;
+  const msgs = s.messages || [];
+  const truncated = msgs.length > MAX_INITIAL;
+  const visibleMsgs = truncated ? msgs.slice(-MAX_INITIAL) : msgs;
+  let loadMoreHtml = '';
+  if (truncated) {
+    loadMoreHtml = '<div style="text-align:center;padding:12px;"><button class="btn" id="btn-load-all" onclick="loadAllMessages(\'' + id + '\')">'
+      + 'Load all ' + msgs.length + ' messages</button></div>';
+  }
   document.getElementById('main-body').innerHTML =
-    '<div class="conversation" id="convo">' + renderMessages(s.messages) + '</div>';
+    '<div class="conversation" id="convo">' + loadMoreHtml + renderMessages(visibleMsgs) + '</div>';
   setTimeout(() => {
     const convo = document.getElementById('convo');
     if (convo) convo.scrollTop = convo.scrollHeight;
@@ -123,6 +133,19 @@ function submitListInlineRename() {
 
 function cancelListInlineRename() {
   // Alias for compatibility — escape is handled in startListInlineRename
+}
+
+async function loadAllMessages(id) {
+  const btn = document.getElementById('btn-load-all');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Loading...'; }
+  const resp = await fetch('/api/session/' + id);
+  const s = await resp.json();
+  document.getElementById('main-body').innerHTML =
+    '<div class="conversation" id="convo">' + renderMessages(s.messages) + '</div>';
+  setTimeout(() => {
+    const convo = document.getElementById('convo');
+    if (convo) convo.scrollTop = convo.scrollHeight;
+  }, 50);
 }
 
 function renderMessages(messages) {

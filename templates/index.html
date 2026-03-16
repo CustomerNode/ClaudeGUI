@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Claude Code GUI</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect x='2' y='4' width='28' height='22' rx='4' stroke='%23999' stroke-width='2'/%3E%3Cpath d='M12 11L8 15.5L12 20' stroke='%237c7cff' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M20 11L24 15.5L20 20' stroke='%237c7cff' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='24' cy='26' r='5.5' fill='%237c7cff'/%3E%3Cpath d='M21.5 26.2L23 25C23.4 24.7 23.9 24.7 24.3 25L25 25.5C25.4 25.8 25.9 25.8 26.3 25.5' stroke='white' stroke-width='1.2' stroke-linecap='round'/%3E%3Cpath d='M21.8 27.5L23.2 26.8' stroke='white' stroke-width='0.8' stroke-linecap='round'/%3E%3Cpath d='M25.8 27L24.8 26.5' stroke='white' stroke-width='0.8' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="icon" href="/static/images/logo.png" type="image/png">
 <link rel="stylesheet" href="/static/style.css">
 <script>
 // Apply saved theme immediately to avoid flash
@@ -22,15 +22,7 @@
 
 <header>
   <div class="hdr-brand">
-    <svg class="app-logo" width="22" height="22" viewBox="0 0 32 32" fill="none">
-      <rect x="2" y="4" width="28" height="22" rx="4" stroke="currentColor" stroke-width="2"/>
-      <path d="M12 11L8 15.5L12 20" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M20 11L24 15.5L20 20" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-      <circle cx="24" cy="26" r="5.5" fill="var(--accent)"/>
-      <path d="M21.5 26.2L23 25C23.4 24.7 23.9 24.7 24.3 25L25 25.5C25.4 25.8 25.9 25.8 26.3 25.5" stroke="#fff" stroke-width="1.2" stroke-linecap="round"/>
-      <path d="M21.8 27.5L23.2 26.8" stroke="#fff" stroke-width="0.8" stroke-linecap="round"/>
-      <path d="M25.8 27L24.8 26.5" stroke="#fff" stroke-width="0.8" stroke-linecap="round"/>
-    </svg>
+    <img class="app-logo" src="/static/images/logo.png" alt="Claude Code GUI" width="28" height="22">
     <div>
       <h1>Claude Code GUI</h1>
       <a class="hdr-byline" href="https://customernode.com" target="_blank">by CustomerNode</a>
@@ -50,35 +42,53 @@
 </header>
 
 <div class="layout">
+  <!-- Expand button (visible when sidebar collapsed) -->
+  <button class="sidebar-expand-btn" id="btn-sidebar-expand" onclick="toggleSidebar()" title="Expand sidebar">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="13 17 18 12 13 7"/><line x1="6" y1="12" x2="18" y2="12"/></svg>
+  </button>
   <!-- Sidebar -->
   <div class="sidebar">
     <div class="sidebar-header">
+      <button class="sidebar-collapse-btn" id="btn-sidebar-toggle" onclick="toggleSidebar()" title="Collapse sidebar">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="11 17 6 12 11 7"/><line x1="18" y1="12" x2="6" y2="12"/></svg>
+      </button>
       <!-- Project selector -->
-      <button id="btn-project" onclick="openProjectOverlay()" title="Switch project">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      <button class="sidebar-action-btn" id="btn-project" onclick="openProjectOverlay()" title="Switch project">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         <span id="project-label">Select project</span>
       </button>
-      <!-- Session count -->
-      <span class="sidebar-meta" id="session-count"></span>
-      <!-- View toggle -->
+      <!-- Add Agent -->
+      <button class="sidebar-action-btn" id="btn-add-agent" onclick="addNewAgent()" title="Start a new Claude session">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <span>New Session</span>
+      </button>
+      <!-- View mode selector -->
+      <button id="btn-view-mode" class="sidebar-action-btn" onclick="openViewModeSelector()" title="Change view">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" id="view-mode-icon"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        <span id="view-mode-label">Grid View</span>
+      </button>
+      <!-- Search -->
+      <div class="sidebar-search">
+        <svg class="sidebar-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="search" placeholder="Search sessions&hellip;" oninput="filterSessions()">
+      </div>
+      <!-- Count + Sort row -->
       <div class="sidebar-row">
-        <div class="view-toggle">
-          <button class="view-toggle-btn active" id="btn-view-workforce" onclick="setViewMode('workforce')" title="Workforce view">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        <span class="sidebar-meta" id="session-count"></span>
+        <div class="sidebar-sort-wrap">
+          <button class="sidebar-sort-btn" id="sidebar-sort-btn" onclick="toggleSortDropdown()" title="Sort sessions">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M6 12h12"/><path d="M9 18h6"/></svg>
+            <span id="sidebar-sort-label">Recent</span>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
           </button>
-          <button class="view-toggle-btn" id="btn-view-list" onclick="setViewMode('list')" title="List view">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-          </button>
-        </div>
-        <!-- Sort (workforce) -->
-        <div class="wf-sort-bar" id="wf-sort-bar" style="display:none;">
-          <button class="wf-sort-btn active" id="wf-btn-status" onclick="setWfSort('status')">Status</button>
-          <button class="wf-sort-btn" id="wf-btn-recent" onclick="setWfSort('recent')">Recent</button>
-          <button class="wf-sort-btn" id="wf-btn-name" onclick="setWfSort('name')">Name</button>
+          <div class="sidebar-sort-dropdown" id="sidebar-sort-dropdown">
+            <button class="sidebar-sort-opt" data-sort="date" onclick="pickSort('date')">Recent</button>
+            <button class="sidebar-sort-opt" data-sort="name" onclick="pickSort('name')">Name</button>
+            <button class="sidebar-sort-opt" data-sort="size" onclick="pickSort('size')">Size</button>
+            <button class="sidebar-sort-opt" data-sort="status" onclick="pickSort('status')">Status</button>
+          </div>
         </div>
       </div>
-      <!-- Search -->
-      <input type="text" id="search" placeholder="Search sessions\u2026" oninput="filterSessions()">
     </div>
     <!-- Scrollable content -->
     <div class="session-list" id="session-list">
@@ -100,6 +110,7 @@
     })();
     </script>
     <div id="workforce-grid"></div>
+    <div class="sidebar-footer">&copy; 2026 CustomerNode LLC</div>
   </div>
 
   <!-- Resize handle -->
