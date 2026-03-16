@@ -1,5 +1,7 @@
 # ClaudeGUI
 
+A GUI for Claude Code, developed by CustomerNode LLC and independent contributors.
+
 A local web interface for managing Claude Code sessions.
 
 ## What it does
