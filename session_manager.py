@@ -2616,20 +2616,20 @@ async function pollGitStatus() {
     const res = await fetch('/api/git-status');
     const s = await res.json();
     _gitStatus = s;
-    const pushBadge = document.getElementById('git-badge-push');
-    const pullBadge = document.getElementById('git-badge-pull');
     const hasPush = s.ahead > 0 || s.uncommitted;
-    if (hasPush) {
-      pushBadge.textContent = '\u2191';
-      pushBadge.style.display = 'inline-block';
-    } else {
-      pushBadge.style.display = 'none';
-    }
+    const btnUpdate  = document.getElementById('btn-git-update');
+    const btnPublish = document.getElementById('btn-git-publish');
     if (s.behind > 0) {
-      pullBadge.textContent = '\u2193' + s.behind;
-      pullBadge.style.display = 'inline-block';
+      document.getElementById('git-badge-pull').textContent = '\u2193';
+      btnUpdate.style.display = 'inline-flex';
     } else {
-      pullBadge.style.display = 'none';
+      btnUpdate.style.display = 'none';
+    }
+    if (hasPush) {
+      document.getElementById('git-badge-push').textContent = '\u2191';
+      btnPublish.style.display = 'inline-flex';
+    } else {
+      btnPublish.style.display = 'none';
     }
   } catch(e) {}
 }
