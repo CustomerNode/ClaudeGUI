@@ -3143,7 +3143,13 @@ async function selectSession(id) {
   const titleText = s.custom_title || s.display_title;
   setToolbarSession(id, titleText, !s.custom_title, s.custom_title || '');
 
-  // Single click always shows static preview; double click / openInGUI starts live panel
+  // If session has a pending question, auto-open live panel so user can answer
+  if (waitingData[id]) {
+    await openInGUI(id);
+    return;
+  }
+
+  // Single click shows static preview; double click / openInGUI starts live panel
   document.getElementById('main-body').innerHTML =
     '<div class="conversation" id="convo">' + renderMessages(s.messages) + '</div>';
   setTimeout(() => {
