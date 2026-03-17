@@ -364,6 +364,14 @@ header h1 { font-size: 15px; font-weight: 600; color: var(--text-heading); margi
 .sidebar-action-btn:hover { background: var(--bg-hover); color: var(--accent); }
 .sidebar-action-btn svg { flex-shrink: 0; }
 
+.sidebar-search-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.sidebar-search-row .sidebar-search { flex: 1; }
+.sidebar-search-row .sidebar-sort-wrap { margin-right: -4px; }
+
 /* Search with inset icon */
 .sidebar-search {
   position: relative;
@@ -460,6 +468,7 @@ header h1 { font-size: 15px; font-weight: 600; color: var(--text-heading); margi
 }
 .sidebar-sort-opt:hover { background: var(--bg-hover); color: var(--text-heading); }
 .sidebar-sort-opt.active { color: var(--accent-text); font-weight: 600; }
+.sort-divider { height: 1px; background: var(--border-subtle); margin: 2px 8px; }
 
 /* ===== Session table ===== */
 .session-list {
@@ -476,7 +485,7 @@ header h1 { font-size: 15px; font-weight: 600; color: var(--text-heading); margi
 
 .col-header-row, .session-item {
   display: grid;
-  grid-template-columns: var(--col-name,1fr) var(--col-date,85px) var(--col-size,62px);
+  grid-template-columns: var(--col-name,1fr) var(--col-date,70px) var(--col-size,47px);
   align-items: center;
 }
 
@@ -517,9 +526,10 @@ header h1 { font-size: 15px; font-weight: 600; color: var(--text-heading); margi
   font-size: 12px;
 }
 .session-col-name { color: var(--text-secondary); }
+.state-icon { vertical-align: middle; margin-right: 4px; flex-shrink: 0; }
 .session-item.active .session-col-name { color: var(--text-heading); font-weight: 500; }
-.session-col-date { color: var(--text-secondary); text-align: right; padding-right: 20px !important; }
-.session-col-size { color: var(--text-faint); text-align: right; font-size: 10px; opacity: 0.5; }
+.session-col-date { color: var(--text-secondary); text-align: left; padding-right: 0 !important; }
+.session-col-size { color: var(--text-faint) !important; text-align: right !important; font-size: 9px !important; opacity: 0.5 !important; }
 .session-item.active .session-col-date,
 .session-item.active .session-col-size { color: var(--text-heading); }
 

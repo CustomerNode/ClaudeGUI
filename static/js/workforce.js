@@ -65,11 +65,16 @@ function renderWorkforce(sessions) {
     grid.innerHTML = '<div style="padding:20px;color:#444;font-size:12px;">No sessions found</div>';
     return;
   }
-  const statusEmoji = {question:'&#x1F64B;', working:'&#x26CF;&#xFE0F;', idle:'&#x1F4BB;', sleeping:'&#x1F634;'};
+  const statusSvg = {
+    question: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#ff9500" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="#ff9500"/></svg>',
+    working: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#7c7cff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 3.5L20.5 9.5"/><path d="M20.5 9.5L18 12L12 6L14.5 3.5"/><path d="M12 6L4 14L3 21L10 20L18 12"/><path d="M6.5 14.5L9.5 17.5"/></svg>',
+    idle: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#44aa66" stroke-width="1.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>',
+    sleeping: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="opacity:0.3"><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/></svg>',
+  };
   const statusLabel = {question:'Question', working:'Working', idle:'Idle', sleeping:'Sleeping'};
   grid.innerHTML = sessions.map(s => {
     const st = getSessionStatus(s.id);
-    const emoji = statusEmoji[st] || '&#x1F634;';
+    const emoji = statusSvg[st] || statusSvg.sleeping;
     const label = statusLabel[st] || 'Sleeping';
     const selClass = s.id === activeId ? ' wf-selected' : '';
     const name = escHtml((s.display_title||s.id).slice(0,22) + ((s.display_title||'').length>22?'\u2026':''));

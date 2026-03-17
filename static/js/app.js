@@ -399,19 +399,22 @@ function toggleSortDropdown() {
   document.getElementById('sidebar-sort-dropdown').classList.toggle('open');
 }
 
-function pickSort(mode) {
+function pickSort(mode, asc) {
   document.getElementById('sidebar-sort-dropdown').classList.remove('open');
-  const labels = {date: 'Recent', name: 'Name', size: 'Size', status: 'Status'};
-  document.getElementById('sidebar-sort-label').textContent = labels[mode] || mode;
-  // Mark active option
-  document.querySelectorAll('.sidebar-sort-opt').forEach(el => {
-    el.classList.toggle('active', el.dataset.sort === mode);
+  // Find the label from the clicked option
+  const opts = document.querySelectorAll('.sidebar-sort-opt');
+  let label = mode;
+  opts.forEach(el => {
+    const match = el.dataset.sort === mode && String(el.dataset.asc) === String(asc);
+    el.classList.toggle('active', match);
+    if (match) label = el.textContent;
   });
-  // Apply sort depending on view mode
+  document.getElementById('sidebar-sort-label').textContent = label;
+  // Apply sort
+  sortAsc = !!asc;
   if (viewMode === 'workforce') {
     setWfSort(mode === 'date' ? 'recent' : mode);
   } else {
-    if (mode === 'status') mode = 'date'; // list view doesn't have status sort
     setSort(mode);
   }
   filterSessions();
@@ -462,7 +465,7 @@ async function loadSessions() {
   showSkeletonLoader();
   const resp = await fetch('/api/sessions');
   allSessions = await resp.json();
-  document.getElementById('session-count').textContent = allSessions.length + ' sessions';
+  document.getElementById('search').placeholder = 'Search ' + allSessions.length + ' sessions\u2026';
   setViewMode(viewMode);
 }
 

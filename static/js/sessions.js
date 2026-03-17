@@ -78,9 +78,9 @@ function renderList(sessions) {
     const activeClass = s.id === activeId ? ' active' : '';
     const colClick = `onclick="singleOrDouble('${s.id}',event)" style="cursor:pointer;"`;
     const icon = isWaiting
-      ? '<span title="Waiting for input" style="color:#ff9500;margin-right:4px;">&#x23F3;</span>'
+      ? '<svg class="state-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ff9500" stroke-width="2" stroke-linecap="round" title="Waiting for input"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>'
       : isRunning
-      ? '<span title="Running" style="color:#44bb66;margin-right:5px;font-size:9px;">&#9679;</span>'
+      ? '<svg class="state-icon" width="10" height="10" viewBox="0 0 24 24" fill="#44bb66" stroke="none" title="Running"><circle cx="12" cy="12" r="6"/></svg>'
       : '';
     return `
     <div class="session-item${activeClass}${stateClass}" data-sid="${s.id}">

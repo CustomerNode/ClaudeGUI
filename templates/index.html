@@ -67,14 +67,12 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" id="view-mode-icon"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
         <span id="view-mode-label">Grid View</span>
       </button>
-      <!-- Search -->
-      <div class="sidebar-search">
-        <svg class="sidebar-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input type="text" id="search" placeholder="Search sessions&hellip;" oninput="filterSessions()">
-      </div>
-      <!-- Count + Sort row -->
-      <div class="sidebar-row">
-        <span class="sidebar-meta" id="session-count"></span>
+      <!-- Search + Sort -->
+      <div class="sidebar-search-row">
+        <div class="sidebar-search">
+          <svg class="sidebar-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="search" placeholder="Search sessions&hellip;" oninput="filterSessions()">
+        </div>
         <div class="sidebar-sort-wrap">
           <button class="sidebar-sort-btn" id="sidebar-sort-btn" onclick="toggleSortDropdown()" title="Sort sessions">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M6 12h12"/><path d="M9 18h6"/></svg>
@@ -82,10 +80,14 @@
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
           </button>
           <div class="sidebar-sort-dropdown" id="sidebar-sort-dropdown">
-            <button class="sidebar-sort-opt" data-sort="date" onclick="pickSort('date')">Recent</button>
-            <button class="sidebar-sort-opt" data-sort="name" onclick="pickSort('name')">Name</button>
-            <button class="sidebar-sort-opt" data-sort="size" onclick="pickSort('size')">Size</button>
-            <button class="sidebar-sort-opt" data-sort="status" onclick="pickSort('status')">Status</button>
+            <button class="sidebar-sort-opt" data-sort="date" data-asc="false" onclick="pickSort('date',false)">Newest first</button>
+            <button class="sidebar-sort-opt" data-sort="date" data-asc="true" onclick="pickSort('date',true)">Oldest first</button>
+            <div class="sort-divider"></div>
+            <button class="sidebar-sort-opt" data-sort="name" data-asc="true" onclick="pickSort('name',true)">Name A&ndash;Z</button>
+            <button class="sidebar-sort-opt" data-sort="name" data-asc="false" onclick="pickSort('name',false)">Name Z&ndash;A</button>
+            <div class="sort-divider"></div>
+            <button class="sidebar-sort-opt" data-sort="size" data-asc="false" onclick="pickSort('size',false)">Largest first</button>
+            <button class="sidebar-sort-opt" data-sort="size" data-asc="true" onclick="pickSort('size',true)">Smallest first</button>
           </div>
         </div>
       </div>

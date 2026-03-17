@@ -113,8 +113,8 @@ def _format_size(file_bytes: int) -> str:
     if file_bytes < 1024:
         return f"{file_bytes} B"
     elif file_bytes < 1024 * 1024:
-        return f"{file_bytes / 1024:.1f} KB"
-    return f"{file_bytes / (1024*1024):.1f} MB"
+        return f"{file_bytes / 1024:.0f} KB"
+    return f"{file_bytes / (1024*1024):.0f} MB"
 
 def load_session_summary(path: Path) -> dict:
     """Fast cached summary — seeks head + tail only, never reads entire file."""
@@ -338,9 +338,9 @@ def load_session(path: Path) -> dict:
     if file_bytes < 1024:
         size_str = f"{file_bytes} B"
     elif file_bytes < 1024 * 1024:
-        size_str = f"{file_bytes / 1024:.1f} KB"
+        size_str = f"{file_bytes / 1024:.0f} KB"
     else:
-        size_str = f"{file_bytes / (1024*1024):.1f} MB"
+        size_str = f"{file_bytes / (1024*1024):.0f} MB"
 
     # User-set names in _session_names.json always win over anything in the .jsonl
     user_set_name = _load_names().get(path.stem)
@@ -664,7 +664,7 @@ def smart_title(messages: list) -> str:
 
 @app.route("/")
 def index():
-    return HTML
+    return render_template("index.html")
 
 
 @app.route("/api/projects")
