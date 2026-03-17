@@ -407,7 +407,9 @@ while ($cur -gt 4) {{
         $cur = [int]$proc.ParentProcessId
     }} catch {{ break }}
 }}
-if (-not $consolePid) {{ $consolePid = {pid} }}
+if (-not $consolePid) {{
+    throw "Session was not launched from a GUI terminal (no cmd.exe parent found). Cannot inject input directly."
+}}
 
 [ConsoleIO]::SendString([uint32]$consolePid, $inputText)
 """

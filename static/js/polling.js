@@ -49,6 +49,16 @@ async function pollWaiting() {
     runningIds  = newRunning;
     sessionKinds = newKinds;
 
+    // Clean up guiOpenSessions: if a session the user previously opened in GUI
+    // is no longer reported as running by the server, stop treating it as idle.
+    // Exception: keep the live panel session — it may briefly drop out of the
+    // server scan while transitioning (e.g. process just starting up).
+    guiOpenSessions.forEach(id => {
+      if (!newRunning.has(id) && id !== liveSessionId) {
+        guiOpenDelete(id);
+      }
+    });
+
     // If currently showing a popup for a session that is no longer waiting, close it
     if (respondTarget && !waitingData[respondTarget]) closeRespond();
 
