@@ -33,6 +33,7 @@
     <button class="hdr-sys-btn" onclick="toggleHdrSys()">System &#9662;</button>
     <div class="hdr-sys-dropdown" id="hdr-sys-dropdown">
       <button onclick="deleteEmptySessions();closeHdrSys()">Delete Empty Sessions</button>
+      <button onclick="_showHelpModal();closeHdrSys()">Keyboard Shortcuts</button>
     </div>
   </div>
   <button id="btn-git-update" onclick="openGitUpdate()">Update App <span id="git-badge-pull"></span></button>
@@ -131,6 +132,8 @@
           <button class="btn" id="btn-open-gui" style="display:none"></button>
           <button class="btn" id="btn-open" disabled onclick="openInClaude(activeId)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg> Terminal</button>
           <button class="btn" id="btn-continue" disabled onclick="continueSession(activeId)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg> Continue</button>
+          <button class="btn" id="btn-clear" onclick="liveClearDisplay()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> Clear</button>
+          <button class="btn" id="btn-compact" onclick="liveCompact()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg> Compact</button>
           <button class="btn danger" id="btn-close" disabled onclick="closeSession(activeId)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg> Close</button>
         </div>
       </div>
@@ -274,11 +277,13 @@
 <div class="toast" id="toast"></div>
 
 <!-- JavaScript files — load order matters -->
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script src="/static/js/utils.js"></script>
 <script src="/static/js/markdown.js"></script>
 <script src="/static/js/chat-component.js"></script>
 <script src="/static/js/app.js"></script>
 <script src="/static/js/workforce.js"></script>
+<script src="/static/js/workspace.js"></script>
 <script src="/static/js/sessions.js"></script>
 <script src="/static/js/toolbar.js"></script>
 <script src="/static/js/modals.js"></script>
@@ -289,7 +294,7 @@
 <script src="/static/js/compare.js"></script>
 <script src="/static/js/voice.js"></script>
 <script src="/static/js/theme.js"></script>
-<script src="/static/js/polling.js"></script>
+<script src="/static/js/socket.js"></script>
 
 <div id="session-tooltip"></div>
 </body>

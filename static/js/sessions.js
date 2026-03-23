@@ -53,7 +53,7 @@ function sortedSessions(sessions) {
 function renderList(sessions) {
   const el = document.getElementById('session-list');
   if (!sessions.length) {
-    el.innerHTML = '<div style="padding:20px;color:#444;font-size:12px;">No sessions found</div>';
+    el.innerHTML = '<div style="padding:20px;color:var(--text-muted);font-size:12px;">No sessions found</div>';
     return;
   }
 
@@ -74,15 +74,19 @@ function renderList(sessions) {
     </div>`;
 
   const rows = sessions.map(s => {
-    const isWaiting = !!waitingData[s.id];
-    const isRunning = !isWaiting && runningIds.has(s.id);
-    const stateClass = isWaiting ? ' waiting' : (isRunning ? ' running' : '');
+    const status = getSessionStatus(s.id);
+    const isWaiting = status === 'question';
+    const isRunning = status === 'working';
+    const isIdle = status === 'idle';
+    const stateClass = isWaiting ? ' waiting' : (isRunning || isIdle ? ' running' : '');
     const activeClass = s.id === activeId ? ' active' : '';
     const colClick = `onclick="singleOrDouble('${s.id}',event)" style="cursor:pointer;"`;
     const icon = isWaiting
       ? '<svg class="state-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ff9500" stroke-width="2" stroke-linecap="round" title="Waiting for input"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>'
       : isRunning
       ? '<img class="state-icon" src="/static/svg/pickaxe.svg" width="12" height="12" style="filter:brightness(0) saturate(100%) invert(55%) sepia(78%) saturate(1000%) hue-rotate(215deg);" title="Working">'
+      : isIdle
+      ? '<svg class="state-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#44aa66" stroke-width="2" stroke-linecap="round" title="Idle"><polyline points="20 6 9 17 4 12"/></svg>'
       : '';
     return `
     <div class="session-item${activeClass}${stateClass}" data-sid="${s.id}">

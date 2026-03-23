@@ -15,12 +15,28 @@ function setToolbarSession(id, titleText, isUntitled, customTitle) {
   // btn-close enabled when session is running or open in GUI
   const btnClose = document.getElementById('btn-close');
   if (btnClose) btnClose.disabled = !id || (!runningIds.has(id) && !guiOpenSessions.has(id));
+  // Reset cost badge and status bar on session switch
+  const costEl = document.getElementById('session-cost');
+  if (costEl) costEl.textContent = '$0.00';
+  const sbCost = document.getElementById('sb-cost');
+  if (sbCost) sbCost.textContent = '$0.00';
+  const sbModel = document.getElementById('sb-model');
+  if (sbModel) sbModel.textContent = '\u2014';
 }
 
 function deselectSession() {
   activeId = null;
   localStorage.removeItem('activeSessionId');
   if (liveSessionId) stopLivePanel();
+  // In workspace mode, return to workspace canvas instead of dashboard
+  if (workspaceActive) {
+    _wsExpandedId = null;
+    const btn = document.getElementById('ws-back-btn');
+    if (btn) btn.remove();
+    document.getElementById('main-toolbar').style.display = 'none';
+    filterSessions();
+    return;
+  }
   filterSessions();
   setToolbarSession(null, 'No session selected', true, '');
   document.getElementById('main-body').innerHTML = _buildDashboard();
@@ -39,6 +55,12 @@ async function handleNameClick(id) {
 }
 
 async function selectSession(id) {
+  // In workspace mode, delegate to expandWorkspaceCard to prevent poll clobbering
+  if (workspaceActive && typeof expandWorkspaceCard === 'function') {
+    expandWorkspaceCard(id);
+    return;
+  }
+
   activeId = id;
   localStorage.setItem('activeSessionId', id || '');
   // Stop live panel for a different session
@@ -88,7 +110,7 @@ function startListInlineRename() {
 
   // Replace cell content with an input
   const input = document.createElement('input');
-  input.style.cssText = 'width:100%;background:#1a1a2e;border:1px solid #7c7cff;border-radius:4px;padding:2px 6px;color:#fff;font-size:12px;outline:none;';
+  input.style.cssText = 'width:100%;background:var(--bg-input);border:1px solid var(--border-focus);border-radius:4px;padding:2px 6px;color:var(--text-primary);font-size:12px;outline:none;';
   input.value = current;
   input.placeholder = 'Enter a name\u2026';
   nameCell.innerHTML = '';
@@ -148,10 +170,11 @@ function _buildDashboard() {
   const project = _allProjects.find(p => p.encoded === localStorage.getItem('activeProject'));
   const projectName = project ? _projectShortName(project) : 'No project';
   const total = allSessions.length;
-  const working = allSessions.filter(s => sessionKinds[s.id] === 'working').length;
-  const idle = allSessions.filter(s => sessionKinds[s.id] === 'idle').length;
-  const question = allSessions.filter(s => sessionKinds[s.id] === 'question').length;
-  const sleeping = total - working - idle - question;
+  const polled = _waitingPolledOnce || false;
+  const working = polled ? allSessions.filter(s => runningIds.has(s.id) && sessionKinds[s.id] === 'working').length : '-';
+  const idle = polled ? allSessions.filter(s => runningIds.has(s.id) && sessionKinds[s.id] === 'idle').length : '-';
+  const question = polled ? allSessions.filter(s => runningIds.has(s.id) && sessionKinds[s.id] === 'question').length : '-';
+  const sleeping = polled ? total - (typeof working === 'number' ? working + idle + question : 0) : '-';
 
   const stats = [
     {label: 'Working', count: working, color: 'var(--accent)', icon: '<img src="/static/svg/pickaxe.svg" width="16" height="16" style="filter:brightness(0) saturate(100%) invert(55%) sepia(78%) saturate(1000%) hue-rotate(215deg);">'},
@@ -190,7 +213,7 @@ function _buildDashboard() {
 
     <div class="dash-hint">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:0.3;flex-shrink:0;"><polyline points="15 18 9 12 15 6"/></svg>
-      <span>Select a session from the sidebar to view its conversation</span>
+      <span>${total > 0 ? 'Select a session from the sidebar to view its conversation' : 'Select a project to get started'}</span>
     </div>
   </div>`;
 }
@@ -206,8 +229,8 @@ function dashStartSession() {
 
 function _colorDiffLines(html) {
   return html.split('\n').map(line => {
-    if (/^\+[^+]/.test(line)) return '<span style="color:#4c4;opacity:0.8;">' + line + '</span>';
-    if (/^-[^-]/.test(line)) return '<span style="color:#c44;opacity:0.8;">' + line + '</span>';
+    if (/^\+[^+]/.test(line)) return '<span style="color:var(--idle-label);opacity:0.8;">' + line + '</span>';
+    if (/^-[^-]/.test(line)) return '<span style="color:var(--result-err);opacity:0.8;">' + line + '</span>';
     if (/^@@/.test(line)) return '<span style="color:var(--accent);opacity:0.6;">' + line + '</span>';
     return line;
   }).join('\n');
@@ -339,7 +362,7 @@ async function startToolbarRename() {
   if (newName === null) return;
   const resp = await fetch('/api/rename/' + activeId, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name: newName})
+    body: JSON.stringify({title: newName})
   });
   const data = await resp.json();
   if (data.ok) {
@@ -370,7 +393,9 @@ async function submitRename() {
   const title = document.getElementById('rename-input').value.trim();
   if (!title || !renameTarget) return;
 
-  const resp = await fetch('/api/rename/' + renameTarget, {
+  // Save renameTarget before closeRename() nulls it
+  const targetId = renameTarget;
+  const resp = await fetch('/api/rename/' + targetId, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({title})
@@ -380,7 +405,7 @@ async function submitRename() {
 
   if (data.ok) {
     // Update local list
-    const s = allSessions.find(x => x.id === renameTarget);
+    const s = allSessions.find(x => x.id === targetId);
     if (s) { s.custom_title = data.title; s.display_title = data.title; }
     filterSessions();
     // Update toolbar title
@@ -393,7 +418,8 @@ async function submitRename() {
 }
 
 async function autoName(id) {
-  const btn = document.getElementById('autoname-btn');
+  const btn = document.getElementById('btn-autoname');
+  const btnOrigHtml = btn ? btn.innerHTML : '';
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Naming\u2026'; }
 
   let data;
@@ -401,12 +427,12 @@ async function autoName(id) {
     const resp = await fetch('/api/autonname/' + id, { method: 'POST' });
     data = await resp.json();
   } catch(e) {
-    if (btn) { btn.disabled = false; btn.textContent = 'Auto-name'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = btnOrigHtml; }
     showToast('Auto-name failed: ' + e.message, true);
     return;
   }
 
-  if (btn) { btn.disabled = false; btn.textContent = 'Auto-name'; }
+  if (btn) { btn.disabled = false; btn.innerHTML = btnOrigHtml; }
 
   if (data.ok) {
     const s = allSessions.find(x => x.id === id);
@@ -426,6 +452,15 @@ async function deleteSession(id) {
   const confirmed = await showConfirm('Delete Session', '<p>Delete <strong>' + escHtml(name) + '</strong>?</p><p>This cannot be undone.</p>', { danger: true, confirmText: 'Delete', icon: '\uD83D\uDDD1\uFE0F' });
   if (!confirmed) return;
 
+  // Close the session if it's still running
+  if (runningIds.has(id)) {
+    showToast('Stopping session\u2026');
+    socket.emit('close_session', {session_id: id});
+    guiOpenDelete(id);
+    runningIds.delete(id);
+  }
+
+  showToast('Deleting session\u2026');
   const resp = await fetch('/api/delete/' + id, { method: 'DELETE' });
   const data = await resp.json();
 
@@ -452,13 +487,21 @@ async function deleteEmptySessions() {
   if (data.ok) {
     allSessions = allSessions.filter(s => s.message_count > 0);
     if (empty.find(s => s.id === activeId)) {
-      activeId = null;
-      setToolbarSession(null, 'No session selected', true, '');
-      document.getElementById('main-body').innerHTML =
-        '<div class="empty-state"><div class="icon">\uD83D\uDDD1</div><div>Sessions deleted</div></div>';
+      if (workspaceActive) {
+        _wsExpandedId = null;
+        if (liveSessionId) stopLivePanel();
+        activeId = null;
+        document.getElementById('main-toolbar').style.display = 'none';
+      } else {
+        activeId = null;
+        setToolbarSession(null, 'No session selected', true, '');
+        document.getElementById('main-body').innerHTML =
+          '<div class="empty-state"><div class="icon">\uD83D\uDDD1</div><div>Sessions deleted</div></div>';
+      }
     }
     filterSessions();
-    document.getElementById('session-count').textContent = allSessions.length + ' sessions';
+    const sessionCountEl = document.getElementById('session-count');
+    if (sessionCountEl) sessionCountEl.textContent = allSessions.length + ' sessions';
     showToast(`Deleted ${data.deleted} empty session${data.deleted !== 1 ? 's' : ''}`);
   } else {
     showToast('Delete failed', true);
@@ -478,12 +521,13 @@ async function duplicateSession(id) {
 
 async function continueSession(id) {
   const btn = document.getElementById('btn-continue');
-  btn.disabled = true; btn.textContent = 'Building\u2026';
+  const btnOrigHtml = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Building\u2026'; }
 
   const resp = await fetch('/api/continue/' + id, { method: 'POST' });
   const data = await resp.json();
 
-  btn.disabled = false; btn.textContent = 'Continue Session';
+  if (btn) { btn.disabled = false; btn.innerHTML = btnOrigHtml; }
 
   if (data.ok) {
     await loadSessions();

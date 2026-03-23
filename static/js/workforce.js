@@ -1,12 +1,14 @@
 /* workforce.js — workforce grid view mode */
 
 function getSessionStatus(id) {
-  if (!runningIds.has(id)) {
-    // Sessions opened in GUI panel are considered idle even if no OS process detected
-    if (guiOpenSessions.has(id)) return 'idle';
-    return 'sleeping';
-  }
-  return sessionKinds[id] || 'working';
+  const kind = sessionKinds[id];
+  if (kind === 'question') return 'question';
+  if (kind === 'working') return 'working';
+  if (kind === 'idle') return 'idle';
+  if (runningIds.has(id)) return 'working';
+  // Sessions opened in GUI panel are considered idle even if no OS process detected
+  if (guiOpenSessions.has(id)) return 'idle';
+  return 'sleeping';
 }
 
 function setViewMode(mode) {
@@ -16,11 +18,20 @@ function setViewMode(mode) {
   const gridEl = document.getElementById('workforce-grid');
   const btnList = document.getElementById('btn-view-list');
   const btnWf   = document.getElementById('btn-view-workforce');
+
+  // Handle workplace mode: activate workspace, hide list+grid
+  if (typeof workspaceActive !== 'undefined') workspaceActive = (mode === 'workplace');
+
   if (mode === 'workforce') {
     listEl.style.display = 'none';
     gridEl.classList.add('visible');
     if (btnList) btnList.classList.remove('active');
     if (btnWf)   btnWf.classList.add('active');
+  } else if (mode === 'workplace') {
+    listEl.style.display = 'none';
+    gridEl.classList.remove('visible');
+    if (btnList) btnList.classList.remove('active');
+    if (btnWf)   btnWf.classList.remove('active');
   } else {
     listEl.style.display = '';
     gridEl.classList.remove('visible');
@@ -62,7 +73,7 @@ function wfSortedSessions(sessions) {
 function renderWorkforce(sessions) {
   const grid = document.getElementById('workforce-grid');
   if (!sessions.length) {
-    grid.innerHTML = '<div style="padding:20px;color:#444;font-size:12px;">No sessions found</div>';
+    grid.innerHTML = '<div style="padding:20px;color:var(--text-muted);font-size:12px;">No sessions found</div>';
     return;
   }
   const statusSvg = {

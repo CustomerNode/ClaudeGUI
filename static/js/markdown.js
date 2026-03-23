@@ -1,14 +1,64 @@
 /* markdown.js — lightweight markdown renderer (no CDN dependency) */
 
+function _escapeHtmlForCode(str) {
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function highlightCode(code, lang) {
+    // Minimal syntax highlighting - keywords, strings, comments, numbers
+    if (!lang) {
+        // Auto-detect: look for common patterns
+        if (code.includes('def ') || code.includes('import ') || /^\s*class\s/.test(code)) lang = 'python';
+        else if (code.includes('function ') || code.includes('const ') || code.includes('=>')) lang = 'javascript';
+        else if (code.includes('func ') || code.includes('package ')) lang = 'go';
+        else if (code.includes('fn ') || code.includes('let mut')) lang = 'rust';
+        else if (code.includes('#include') || code.includes('int main')) lang = 'cpp';
+    }
+
+    // Apply highlighting via regex replacements
+    // Order matters: strings first, then comments, then keywords, then numbers
+    let html = _escapeHtmlForCode(code);
+
+    // Strings (double and single quoted) — but avoid breaking HTML entities
+    html = html.replace(/(["'])(?:(?!\1|\\).|\\.)*?\1/g, '<span class="hl-str">$&</span>');
+
+    // Single-line comments
+    html = html.replace(/(\/\/.*$|#(?!include).*$)/gm, '<span class="hl-cmt">$&</span>');
+
+    // Numbers (not inside already-highlighted spans)
+    html = html.replace(/\b(\d+\.?\d*)\b/g, '<span class="hl-num">$&</span>');
+
+    // Keywords (language-specific)
+    const kwMap = {
+        python: /\b(def|class|import|from|return|if|elif|else|for|while|try|except|finally|with|as|in|not|and|or|True|False|None|self|async|await|yield|raise|pass|break|continue|lambda|global|nonlocal)\b/g,
+        javascript: /\b(function|const|let|var|return|if|else|for|while|do|class|new|this|async|await|import|export|from|default|true|false|null|undefined|try|catch|throw|finally|typeof|instanceof|switch|case|break|continue|of|in)\b/g,
+        typescript: /\b(function|const|let|var|return|if|else|for|while|do|class|new|this|async|await|import|export|from|default|true|false|null|undefined|try|catch|throw|finally|typeof|instanceof|switch|case|break|continue|interface|type|enum|implements|extends|public|private|protected|readonly|of|in)\b/g,
+        go: /\b(func|package|import|return|if|else|for|range|struct|interface|type|var|const|map|chan|go|defer|select|case|switch|default|nil|true|false|err|make|append|len|cap)\b/g,
+        rust: /\b(fn|let|mut|pub|struct|enum|impl|trait|use|mod|return|if|else|for|while|loop|match|self|Self|true|false|None|Some|Ok|Err|async|await|move|unsafe|where|crate|super|dyn|ref|as|in|type)\b/g,
+        cpp: /\b(int|char|float|double|void|bool|long|short|unsigned|signed|const|static|struct|class|template|typename|namespace|using|return|if|else|for|while|do|switch|case|break|continue|new|delete|true|false|nullptr|include|define|auto|virtual|override|public|private|protected)\b/g,
+    };
+    // TypeScript uses same as javascript if not explicitly ts
+    if (lang === 'ts') lang = 'typescript';
+    if (lang === 'js') lang = 'javascript';
+    if (lang === 'py') lang = 'python';
+    if (lang === 'rs') lang = 'rust';
+    if (lang === 'c' || lang === 'cc' || lang === 'h') lang = 'cpp';
+    const kw = kwMap[lang];
+    if (kw) html = html.replace(kw, '<span class="hl-kw">$&</span>');
+
+    return html;
+}
+
 function mdParse(md) {
     if (!md) return '';
     let html = md;
     // Escape HTML in non-code regions (we'll handle code blocks first)
     const codeBlocks = [];
-    // Fenced code blocks
+    // Fenced code blocks — with syntax highlighting
     html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
       const idx = codeBlocks.length;
-      codeBlocks.push('<pre><code>' + code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</code></pre>');
+      const langClass = lang ? ' class="lang-' + _escapeHtmlForCode(lang) + '"' : '';
+      codeBlocks.push('<pre><code' + langClass + '>' + highlightCode(code, lang || '') + '</code></pre>');
       return '\x00CODE' + idx + '\x00';
     });
     // Inline code

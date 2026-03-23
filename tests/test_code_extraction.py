@@ -30,7 +30,7 @@ class TestExtractCodeBlocks:
         path = _make_session_with_code(tmp_path, [("python", "print('hello')")])
         blocks = _extract_code_blocks(path)
         assert len(blocks) >= 1
-        assert any("hello" in b.get("code", "") for b in blocks)
+        assert any("hello" in b.get("content", b.get("code", "")) for b in blocks)
 
     def test_extracts_multiple_languages(self, tmp_path):
         from app.code_extraction import _extract_code_blocks
@@ -39,7 +39,7 @@ class TestExtractCodeBlocks:
             ("javascript", "const x = 1"),
         ])
         blocks = _extract_code_blocks(path)
-        langs = {b.get("lang", "") for b in blocks}
+        langs = {b.get("language", b.get("lang", "")) for b in blocks}
         assert "python" in langs
         assert "javascript" in langs
 

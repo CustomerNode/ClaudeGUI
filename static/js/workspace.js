@@ -1,0 +1,447 @@
+/* workspace.js — Workplace view: draggable session cards + unified permission panel */
+/* State variables (workspaceActive, permissionQueue, etc.) are declared in app.js */
+
+let _wsDragId = null;
+
+function _fmtElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm ' + (s % 60) + 's';
+  const h = Math.floor(m / 60);
+  return h + 'h ' + (m % 60) + 'm';
+}
+
+// ---- Render workspace into #main-body ----
+function renderWorkspace(sessions) {
+  const mainBody = document.getElementById('main-body');
+  if (!mainBody) return;
+
+  // If a card is expanded (showing live panel), don't re-render workspace
+  if (_wsExpandedId) return;
+
+  const visible = sessions.filter(s => !workspaceHiddenSessions.has(s.id));
+
+  // Sort by saved position, then by status
+  const statusOrder = {question:0, working:1, idle:2, sleeping:3};
+  visible.sort((a, b) => {
+    const pa = workspaceCardPositions[a.id] ?? 9999;
+    const pb = workspaceCardPositions[b.id] ?? 9999;
+    if (pa !== pb) return pa - pb;
+    const sa = statusOrder[getSessionStatus(a.id)] ?? 3;
+    const sb = statusOrder[getSessionStatus(b.id)] ?? 3;
+    if (sa !== sb) return sa - sb;
+    return (b.last_activity_ts||b.sort_ts||0) - (a.last_activity_ts||a.sort_ts||0);
+  });
+
+  const statusSvg = {
+    question: '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#ff9500" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="#ff9500"/></svg>',
+    working: '<img src="/static/svg/pickaxe.svg" width="32" height="32" style="filter:brightness(0) saturate(100%) invert(55%) sepia(78%) saturate(1000%) hue-rotate(215deg);">',
+    idle: '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#44aa66" stroke-width="1.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>',
+    sleeping: '<img src="/static/svg/sleeping.svg" width="32" height="32" class="sleeping-icon">',
+  };
+  const statusLabel = {question:'Question', working:'Working', idle:'Idle', sleeping:'Sleeping'};
+
+  let cardsHtml = visible.map(s => {
+    const st = getSessionStatus(s.id);
+    const emoji = statusSvg[st] || statusSvg.sleeping;
+    const label = statusLabel[st] || 'Sleeping';
+    const name = escHtml((s.display_title||s.id).slice(0,28) + ((s.display_title||'').length>28?'\u2026':''));
+    const date = (s.last_activity||'').split('  ')[0] || '';
+    // Elapsed time for working sessions
+    let elapsed = '';
+    if (st === 'working') {
+      const sendTime = _lastSendTimePerSession && _lastSendTimePerSession[s.id];
+      if (sendTime) elapsed = _fmtElapsed(Date.now() - sendTime);
+      else elapsed = '';
+    }
+
+    return `<div class="ws-card ws-${st}" draggable="true" data-sid="${s.id}"
+                 ondragstart="wsDragStart(event,'${s.id}')"
+                 ondragover="wsDragOver(event)" ondrop="wsDrop(event,'${s.id}')"
+                 ondragend="wsDragEnd(event)"
+                 onclick="expandWorkspaceCard('${s.id}')"
+                 title="${escHtml(s.display_title||'')}">
+      <div class="ws-card-top">
+        <div class="ws-avatar">${emoji}</div>
+        <button class="ws-hide-btn" onclick="event.stopPropagation();wsHideSession('${s.id}')" title="Hide from workspace">&times;</button>
+      </div>
+      <div class="ws-status-label">${label}</div>
+      <div class="ws-name">${name}</div>
+      <div class="ws-meta">${escHtml(date)}${elapsed ? ' &middot; ' + elapsed : ''}</div>
+    </div>`;
+  }).join('');
+
+  if (!visible.length) {
+    cardsHtml = '<div style="padding:40px;color:var(--text-faint);font-size:13px;text-align:center;width:100%;">No sessions to display. Start a new session or unhide existing ones.</div>';
+  }
+
+  // Hidden sessions count
+  let hiddenHtml = '';
+  if (workspaceHiddenSessions.size > 0) {
+    hiddenHtml = `<div class="ws-hidden-bar">
+      <span>${workspaceHiddenSessions.size} hidden session${workspaceHiddenSessions.size > 1 ? 's' : ''}</span>
+      <button onclick="wsShowAll()">Show all</button>
+    </div>`;
+  }
+
+  // Permission panel
+  const permHtml = _buildPermissionPanel();
+
+  mainBody.innerHTML =
+    '<div class="ws-container">' +
+    '<div class="ws-canvas">' + cardsHtml + hiddenHtml + '</div>' +
+    permHtml +
+    '</div>';
+}
+
+// ---- Permission panel ----
+function _buildPermissionPanel() {
+  const policyIcons = {auto: '\u26A1', manual: '\u270B', custom: '\u2699'};
+  const policyLabels = {auto: 'Auto-Approve', manual: 'Manual', custom: 'Custom Rules'};
+
+  let headerHtml = `<div class="ws-perm-header">
+    <span class="ws-perm-title">Permission Requests</span>
+    <div class="ws-policy-wrap">
+      <span class="ws-policy-indicator ws-policy-${permissionPolicy}">${policyIcons[permissionPolicy] || ''} ${policyLabels[permissionPolicy] || 'Manual'}</span>
+      <select class="ws-policy-select" onchange="setPermissionPolicy(this.value)">
+        <option value="manual"${permissionPolicy==='manual'?' selected':''}>Manual</option>
+        <option value="auto"${permissionPolicy==='auto'?' selected':''}>Auto-Approve All</option>
+        <option value="custom"${permissionPolicy==='custom'?' selected':''}>Custom Rules</option>
+      </select>
+      ${permissionPolicy === 'custom' ? '<button class="ws-policy-edit-btn" onclick="openCustomPolicies()">Edit Rules</button>' : ''}
+    </div>
+  </div>`;
+
+  let rowsHtml = '';
+  if (permissionQueue.length === 0) {
+    rowsHtml = '<div class="ws-perm-empty">No pending permission requests</div>';
+  } else {
+    rowsHtml = permissionQueue.map(entry => {
+      const s = allSessions.find(x => x.id === entry.sessionId);
+      const name = s ? escHtml((s.display_title||'').slice(0,30)) : entry.sessionId.slice(0,8);
+      const toolDisplay = entry.toolName ? escHtml(entry.toolName) : 'unknown';
+      const cmdDisplay = entry.command ? escHtml(entry.command.slice(0,80)) : '';
+      return `<div class="ws-perm-row" data-sid="${entry.sessionId}">
+        <div class="ws-perm-session">${name}</div>
+        <div class="ws-perm-detail">
+          <span class="ws-perm-tool">${toolDisplay}</span>
+          ${cmdDisplay ? '<span class="ws-perm-cmd">' + cmdDisplay + '</span>' : ''}
+        </div>
+        <div class="ws-perm-actions">
+          <button class="ws-perm-btn ws-perm-allow" onclick="wsPermissionAnswer('${entry.sessionId}','y')" title="Allow">Allow</button>
+          <button class="ws-perm-btn ws-perm-deny" onclick="wsPermissionAnswer('${entry.sessionId}','n')" title="Deny">Deny</button>
+          <button class="ws-perm-btn ws-perm-always" onclick="wsPermissionAnswer('${entry.sessionId}','a')" title="Always Allow">Always</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  return `<div class="ws-perm-panel">
+    ${headerHtml}
+    <div class="ws-perm-body">${rowsHtml}</div>
+  </div>`;
+}
+
+// ---- Permission queue update (called from socket events) ----
+function _updatePermissionQueue(newWaiting) {
+  if (!workspaceActive) return;
+
+  const newQueue = [];
+  for (const [sid, data] of Object.entries(newWaiting)) {
+    if (!data) continue;
+
+    const parsed = _parsePermissionQuestion(data.question || '');
+    // Prefer direct tool data from socket events over regex-parsed text
+    const toolName = data.tool_name || parsed.toolName;
+    const command = (data.tool_input && (data.tool_input.command || data.tool_input.file_path || data.tool_input.path)) || parsed.command;
+    const entry = {
+      sessionId: sid,
+      question: data.question || '',
+      options: data.options || [],
+      kind: data.kind,
+      toolName: toolName,
+      command: command,
+    };
+
+    // Auto-approve check
+    if (_applyPolicies(entry)) {
+      wsPermissionAnswer(sid, 'y');
+      continue;
+    }
+    newQueue.push(entry);
+  }
+
+  permissionQueue = newQueue;
+
+  // DOM update is handled by filterSessions() -> renderWorkspace() which runs
+  // right after this. When a card is expanded, renderWorkspace() skips, so we
+  // do the incremental panel update only in that case.
+  if (!_wsExpandedId) return;
+  const panel = document.querySelector('.ws-perm-panel');
+  if (panel) {
+    const temp = document.createElement('div');
+    temp.innerHTML = _buildPermissionPanel();
+    const newPanel = temp.firstElementChild;
+    panel.replaceWith(newPanel);
+  }
+}
+
+// ---- Parse question text into tool name + command ----
+function _parsePermissionQuestion(text) {
+  // Common patterns from Claude Code permission prompts
+  let toolName = '';
+  let command = '';
+
+  // Pattern: "Tool: Read ..." or similar
+  const toolMatch = text.match(/(?:Tool|Action|Permission):\s*(\w+)/i);
+  if (toolMatch) toolName = toolMatch[1];
+
+  // Pattern: tool name appears as first word after common prefixes
+  if (!toolName) {
+    const nameMatch = text.match(/(?:Allow|Run|Execute|Use)\s+(\w+)/i);
+    if (nameMatch) toolName = nameMatch[1];
+  }
+
+  // Try to extract command/path from the question
+  const cmdMatch = text.match(/`([^`]+)`/);
+  if (cmdMatch) command = cmdMatch[1];
+
+  // Fallback: try to identify tool from common patterns
+  if (!toolName) {
+    if (/\bread\b/i.test(text)) toolName = 'Read';
+    else if (/\bwrite\b/i.test(text)) toolName = 'Write';
+    else if (/\bedit\b/i.test(text)) toolName = 'Edit';
+    else if (/\bbash\b/i.test(text)) toolName = 'Bash';
+    else if (/\bglob\b/i.test(text)) toolName = 'Glob';
+    else if (/\bgrep\b/i.test(text)) toolName = 'Grep';
+  }
+
+  return { toolName, command };
+}
+
+// ---- Policy matching ----
+function _applyPolicies(entry) {
+  if (permissionPolicy === 'manual') return false;
+  if (permissionPolicy === 'auto') return true;
+
+  // Custom policy
+  if (permissionPolicy === 'custom') {
+    const tool = (entry.toolName || '').toLowerCase();
+    if (customPolicies.approveAllReads && tool === 'read') return true;
+    if (customPolicies.approveProjectReads && tool === 'read') return true;
+    if (customPolicies.approveAllBash && tool === 'bash') return true;
+    if (customPolicies.approveProjectWrites && (tool === 'write' || tool === 'edit')) return true;
+    if (customPolicies.approveGlob && tool === 'glob') return true;
+    if (customPolicies.approveGrep && tool === 'grep') return true;
+    if (customPolicies.customPattern) {
+      try {
+        const re = new RegExp(customPolicies.customPattern, 'i');
+        if (re.test(entry.question)) return true;
+      } catch(e) {}
+    }
+  }
+  return false;
+}
+
+// ---- Send permission answer via WebSocket ----
+async function wsPermissionAnswer(sessionId, answer) {
+  // Optimistic UI
+  permissionQueue = permissionQueue.filter(e => e.sessionId !== sessionId);
+  delete waitingData[sessionId];
+  sessionKinds[sessionId] = 'working';
+  if (workspaceActive && !_wsExpandedId) {
+    const panel = document.querySelector('.ws-perm-panel');
+    if (panel) {
+      const temp = document.createElement('div');
+      temp.innerHTML = _buildPermissionPanel();
+      panel.replaceWith(temp.firstElementChild);
+    }
+    const card = document.querySelector('.ws-card[data-sid="' + sessionId + '"]');
+    if (card) card.className = 'ws-card ws-working';
+  }
+
+  // Send via WebSocket
+  socket.emit('permission_response', {session_id: sessionId, action: answer});
+}
+
+// ---- Policy controls ----
+function setPermissionPolicy(policy) {
+  permissionPolicy = policy;
+  localStorage.setItem('permPolicy', policy);
+
+  // If switching to auto, approve all current queue items
+  if (policy === 'auto') {
+    const pending = [...permissionQueue];
+    permissionQueue = [];
+    pending.forEach(entry => wsPermissionAnswer(entry.sessionId, 'y'));
+  }
+
+  // Re-render panel
+  if (workspaceActive && !_wsExpandedId) {
+    filterSessions();
+  }
+}
+
+function openCustomPolicies() {
+  const overlay = document.getElementById('pm-overlay');
+  const cp = customPolicies;
+  overlay.innerHTML = `
+    <div class="pm-card pm-enter" style="width:400px;">
+      <h2 class="pm-title">Custom Auto-Approve Rules</h2>
+      <div class="pm-body">
+        <p style="margin-bottom:12px;">Select which tool types to auto-approve:</p>
+        <label class="ws-policy-check"><input type="checkbox" id="cp-reads" ${cp.approveAllReads?'checked':''}> Approve all Read operations</label>
+        <label class="ws-policy-check"><input type="checkbox" id="cp-glob" ${cp.approveGlob?'checked':''}> Approve Glob (file search)</label>
+        <label class="ws-policy-check"><input type="checkbox" id="cp-grep" ${cp.approveGrep?'checked':''}> Approve Grep (content search)</label>
+        <label class="ws-policy-check"><input type="checkbox" id="cp-writes" ${cp.approveProjectWrites?'checked':''}> Approve Write/Edit operations</label>
+        <label class="ws-policy-check"><input type="checkbox" id="cp-bash" ${cp.approveAllBash?'checked':''}> Approve Bash commands</label>
+        <div style="margin-top:12px;">
+          <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px;">Custom regex pattern (matches question text):</label>
+          <input class="pm-input" id="cp-pattern" type="text" value="${escHtml(cp.customPattern||'')}" placeholder="e.g. safe_directory.*">
+        </div>
+      </div>
+      <div class="pm-actions">
+        <button class="pm-btn pm-btn-secondary" onclick="_closePm()">Cancel</button>
+        <button class="pm-btn pm-btn-primary" onclick="saveCustomPolicies()">Save</button>
+      </div>
+    </div>`;
+  overlay.classList.add('show');
+  requestAnimationFrame(() => overlay.querySelector('.pm-card').classList.remove('pm-enter'));
+  overlay.onclick = e => { if (e.target === overlay) _closePm(); };
+}
+
+function saveCustomPolicies() {
+  customPolicies = {
+    approveAllReads: document.getElementById('cp-reads').checked,
+    approveGlob: document.getElementById('cp-glob').checked,
+    approveGrep: document.getElementById('cp-grep').checked,
+    approveProjectWrites: document.getElementById('cp-writes').checked,
+    approveAllBash: document.getElementById('cp-bash').checked,
+    customPattern: document.getElementById('cp-pattern').value.trim(),
+  };
+  localStorage.setItem('customPolicies', JSON.stringify(customPolicies));
+  _closePm();
+  showToast('Custom policies saved');
+  if (workspaceActive) filterSessions();
+}
+
+// ---- Card expand/collapse ----
+function expandWorkspaceCard(id) {
+  _wsExpandedId = id;
+  activeId = id;
+  localStorage.setItem('activeSessionId', id);
+  if (runningIds.has(id)) guiOpenAdd(id);
+
+  const cached = allSessions.find(x => x.id === id);
+  const initTitle = cached ? cached.display_title : 'Loading\u2026';
+
+  // Show toolbar with a back button prepended
+  document.getElementById('main-toolbar').style.display = '';
+  setToolbarSession(id, initTitle, !(cached && cached.custom_title), (cached && cached.custom_title) || '');
+
+  // Add back button
+  _addWorkspaceBackBtn();
+
+  if (liveSessionId && liveSessionId !== id) stopLivePanel();
+  startLivePanel(id);
+  filterSessions(); // update sidebar selection
+}
+
+function _addWorkspaceBackBtn() {
+  const toolbar = document.getElementById('main-toolbar');
+  if (!toolbar) return;
+  // Remove existing back button if any
+  const existing = document.getElementById('ws-back-btn');
+  if (existing) existing.remove();
+
+  const btn = document.createElement('button');
+  btn.id = 'ws-back-btn';
+  btn.className = 'ws-back-btn';
+  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg> Workspace';
+  btn.onclick = backToWorkspace;
+  toolbar.insertBefore(btn, toolbar.firstChild);
+}
+
+function backToWorkspace() {
+  _wsExpandedId = null;
+  if (liveSessionId) stopLivePanel();
+  activeId = null;
+  localStorage.removeItem('activeSessionId');
+
+  // Remove back button
+  const btn = document.getElementById('ws-back-btn');
+  if (btn) btn.remove();
+
+  // Hide toolbar
+  document.getElementById('main-toolbar').style.display = 'none';
+
+  filterSessions();
+}
+
+// ---- Drag and drop ----
+function wsDragStart(e, id) {
+  _wsDragId = id;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', id);
+  // Add drag class after a tick so the card doesn't immediately style
+  setTimeout(() => {
+    const card = document.querySelector('.ws-card[data-sid="' + id + '"]');
+    if (card) card.classList.add('ws-dragging');
+  }, 0);
+}
+
+function wsDragEnd(e) {
+  _wsDragId = null;
+  document.querySelectorAll('.ws-card.ws-dragging').forEach(c => c.classList.remove('ws-dragging'));
+}
+
+function wsDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+}
+
+function wsDrop(e, targetId) {
+  e.preventDefault();
+  const sourceId = _wsDragId;
+  _wsDragId = null;
+
+  if (!sourceId || sourceId === targetId) return;
+
+  // Swap positions
+  const cards = document.querySelectorAll('.ws-card[data-sid]');
+  const ids = Array.from(cards).map(c => c.dataset.sid);
+  const srcIdx = ids.indexOf(sourceId);
+  const tgtIdx = ids.indexOf(targetId);
+  if (srcIdx === -1 || tgtIdx === -1) return;
+
+  // Move source to target position
+  ids.splice(srcIdx, 1);
+  ids.splice(tgtIdx, 0, sourceId);
+
+  // Save positions
+  ids.forEach((id, i) => workspaceCardPositions[id] = i);
+  localStorage.setItem('wsCardPositions', JSON.stringify(workspaceCardPositions));
+
+  // Re-render
+  filterSessions();
+}
+
+// ---- Hide/Show sessions ----
+function wsHideSession(id) {
+  workspaceHiddenSessions.add(id);
+  localStorage.setItem('wsHiddenSessions', JSON.stringify([...workspaceHiddenSessions]));
+  filterSessions();
+}
+
+function wsShowSession(id) {
+  workspaceHiddenSessions.delete(id);
+  localStorage.setItem('wsHiddenSessions', JSON.stringify([...workspaceHiddenSessions]));
+  filterSessions();
+}
+
+function wsShowAll() {
+  workspaceHiddenSessions.clear();
+  localStorage.setItem('wsHiddenSessions', '[]');
+  filterSessions();
+}

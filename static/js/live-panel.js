@@ -1,7 +1,9 @@
 /* live-panel.js — live terminal panel, input bar state machine, GUI session management */
 
 function _formatMsgTime(tsStr) {
-  const d = new Date(tsStr);
+  // Backend sends Unix seconds (time.time()), JS Date expects milliseconds
+  const val = typeof tsStr === 'number' && tsStr < 1e12 ? tsStr * 1000 : tsStr;
+  const d = new Date(val);
   if (isNaN(d)) return '';
   let h = d.getHours();
   const ampm = h >= 12 ? 'PM' : 'AM';
@@ -11,12 +13,12 @@ function _formatMsgTime(tsStr) {
 
 let liveLineCount = 0;
 let _liveSending = false;  // blocks updateLiveInputBar while sending
-let livePollTimer = null;
 let liveAutoScroll = true;
 let liveQueuedText = '';
 let liveBarState = null;   // 'ended' | 'question:<questionText>' | 'idle' | 'working'
 let _guiFocusPending = false;
-let _optimisticIdleUntil = 0;  // timestamp: trust optimistic idle until this time
+let _liveWorkingStart = null;  // timestamp when working state began
+let _liveWorkingTimer = null;  // interval for elapsed time updates
 
 function guiOpenAdd(id) {
   guiOpenSessions.add(id);
@@ -71,74 +73,27 @@ function startLivePanel(id) {
   const btnClose = document.getElementById('btn-close');
   if (btnClose) btnClose.disabled = false;
 
-  fetchLiveLog();
+  // Request the log via WebSocket instead of polling
+  socket.emit('get_session_log', {session_id: id, since: 0});
+
+  // Render input bar immediately and schedule a re-render in case
+  // state events arrived before the DOM was ready
+  liveBarState = null;
+  updateLiveInputBar();
+  setTimeout(() => { liveBarState = null; updateLiveInputBar(); }, 500);
+  setTimeout(() => { liveBarState = null; updateLiveInputBar(); }, 2000);
 }
 
 function stopLivePanel() {
-  if (livePollTimer) { clearTimeout(livePollTimer); livePollTimer = null; }
   liveSessionId = null;
   liveBarState = null;
   const btnClose = document.getElementById('btn-close');
   if (btnClose) btnClose.disabled = true;
 }
 
-async function fetchLiveLog() {
-  if (!liveSessionId) return;
-  const id = liveSessionId;
-
-  // While sending, don't fetch — the optimistic bubble is already in the DOM
-  if (_liveSending) {
-    if (liveSessionId === id) livePollTimer = setTimeout(fetchLiveLog, 2000);
-    return;
-  }
-
-  try {
-    const r = await fetch('/api/session-log/' + id + '?since=' + liveLineCount);
-    if (!r.ok) throw new Error('bad response');
-    const d = await r.json();
-    if (liveSessionId !== id) return;  // switched away
-
-    const logEl = document.getElementById('live-log');
-    if (!logEl) return;
-
-    const hadNew = d.entries && d.entries.length;
-    if (hadNew) {
-      // Clear skeleton on first real data
-      if (liveLineCount === 0) logEl.innerHTML = '';
-      d.entries.forEach(e => logEl.appendChild(renderLiveEntry(e)));
-    } else if (liveLineCount === 0 && d.total_lines === 0) {
-      // No messages yet — just clear the skeleton quietly
-      logEl.innerHTML = '';
-    }
-    liveLineCount = d.total_lines || liveLineCount;
-
-    if (liveAutoScroll) logEl.scrollTop = logEl.scrollHeight;
-
-    // If new entries arrived, check if Claude just finished responding
-    if (hadNew) {
-      const last = d.entries[d.entries.length - 1];
-      if (last.kind === 'asst' && runningIds.has(id)) {
-        // Assistant text = Claude finished, optimistically go idle immediately
-        // Grace period prevents the next poll from reverting to 'working'
-        sessionKinds[id] = 'idle';
-        liveBarState = null;
-        _optimisticIdleUntil = Date.now() + 12000;
-      } else {
-        pokeWaiting();
-      }
-    }
-
-    updateLiveInputBar();
-  } catch(e) {}
-  finally {
-    if (liveSessionId === id) {
-      livePollTimer = setTimeout(fetchLiveLog, 2000);
-    }
-  }
-}
-
 function renderLiveEntry(e) {
   const div = document.createElement('div');
+  if (!e) return div;
 
   if (e.kind === 'user' || e.kind === 'asst') {
     const role = e.kind === 'user' ? 'user' : 'assistant';
@@ -148,7 +103,7 @@ function renderLiveEntry(e) {
     const displayText = text.length > LIMIT ? text.slice(0, LIMIT) : text;
 
     const roleLabel = e.kind === 'user' ? 'me' : 'claude';
-    const ts = e.ts ? _formatMsgTime(e.ts) : '';
+    const ts = e.timestamp ? _formatMsgTime(e.timestamp) : '';
     let body;
     if (e.kind === 'asst') {
       body = mdParse(displayText);
@@ -205,6 +160,29 @@ function renderLiveEntry(e) {
     line.onclick = () => detail.classList.toggle('open');
     div.appendChild(line);
     div.appendChild(detail);
+
+  } else if (e.kind === 'system') {
+    div.className = 'live-entry live-entry-result';
+    const text = e.text || e.message || '';
+    const line = document.createElement('div');
+    line.className = 'live-result-line live-result-err';
+    line.style.cursor = 'pointer';
+    line.textContent = '\u26A0 ' + text.slice(0, 120) + (text.length > 120 ? '\u2026' : '');
+
+    const detail = document.createElement('div');
+    detail.className = 'live-tool-detail';
+    detail.innerHTML = '<pre style="white-space:pre-wrap;margin:0;color:var(--result-err);">' + escHtml(text) + '</pre>';
+
+    line.onclick = () => detail.classList.toggle('open');
+    div.appendChild(line);
+    div.appendChild(detail);
+
+  } else if (e.kind === 'stream') {
+    // Streaming partial text — render as assistant fragment
+    div.className = 'msg assistant';
+    const text = e.text || '';
+    div.innerHTML = '<div class="msg-role">claude <span class="msg-time" style="color:var(--text-faint);font-size:10px;">streaming\u2026</span></div>' +
+      '<div class="msg-body msg-content">' + mdParse(text) + '</div>';
   }
 
   return div;
@@ -228,9 +206,14 @@ function updateLiveInputBar() {
   else if (kind === 'idle') stateKey = 'idle';
   else stateKey = 'working';
 
+  // Reset working timer when leaving working state
+  if (stateKey !== 'working') {
+    _liveWorkingStart = null;
+    if (_liveWorkingTimer) { clearInterval(_liveWorkingTimer); _liveWorkingTimer = null; }
+  }
+
   // Don't re-render if the bar is already showing this exact state.
-  // This is critical: prevents the 2s poll from wiping user's in-progress typed text.
-  // Exception: working state updates the timer tick via interval, not re-render.
+  // This is critical: prevents wiping user's in-progress typed text.
   if (stateKey === liveBarState) return;
   liveBarState = stateKey;
 
@@ -297,7 +280,7 @@ function updateLiveInputBar() {
       '<textarea id="live-input-ta" class="live-textarea waiting-focus" rows="2" placeholder="Type your response\u2026 (or click an option above)"' +
       ' onkeydown="if(event.key===\'Enter\'&&(event.ctrlKey||event.metaKey)){event.preventDefault();liveSubmitWaiting()}"></textarea>' +
       '<div class="live-bar-row">' +
-      '<span style="font-size:10px;color:#554400;">Ctrl+Enter to send</span>' +
+      '<span style="font-size:10px;color:var(--text-faint);">Ctrl+Enter to send</span>' +
       '<button class="live-send-btn waiting" onclick="liveSubmitWaiting()">Send \u21b5</button>' +
       '</div>';
     const ta = document.getElementById('live-input-ta');
@@ -319,7 +302,7 @@ function updateLiveInputBar() {
       '<textarea id="live-input-ta" class="live-textarea" rows="2" placeholder="Type your next command\u2026"' +
       ' onkeydown="if(event.key===\'Enter\'&&(event.ctrlKey||event.metaKey)){event.preventDefault();liveSubmitIdle()}"></textarea>' +
       '<div class="live-bar-row">' +
-      '<span style="font-size:10px;color:#444;">Ctrl+Enter to send</span>' +
+      '<span style="font-size:10px;color:var(--text-faint);">Ctrl+Enter to send</span>' +
       '<button class="live-send-btn" onclick="liveSubmitIdle()">Send \u21b5</button>' +
       '</div>';
     _guiFocusPending = false;
@@ -331,9 +314,14 @@ function updateLiveInputBar() {
     }, 50);
 
   } else {
+    // Start elapsed timer
+    if (!_liveWorkingStart) _liveWorkingStart = Date.now();
+    const _elapsed = Math.round((Date.now() - _liveWorkingStart) / 1000);
+    const _elapsedStr = _elapsed >= 60 ? Math.floor(_elapsed/60) + 'm ' + (_elapsed%60) + 's' : _elapsed + 's';
     bar.innerHTML =
       '<div class="live-working-status">' +
-      '<div class="live-working-indicator"><span class="spinner"></span> Working\u2026</div>' +
+      '<div class="live-working-indicator"><span class="spinner"></span> Working\u2026 <span id="live-elapsed" style="color:var(--text-faint);font-size:10px;margin-left:6px;">' + _elapsedStr + '</span></div>' +
+      '<button class="live-stop-btn" onclick="liveSubmitInterrupt()" title="Interrupt session">\u25A0 Stop</button>' +
       '</div>' +
       '<textarea id="live-queue-ta" class="live-textarea" rows="2" ' +
       'style="opacity:0.6;" placeholder="Type your next command \u2014 will send when Claude finishes\u2026"' +
@@ -341,11 +329,11 @@ function updateLiveInputBar() {
       (liveQueuedText ? escHtml(liveQueuedText) : '') +
       '</textarea>' +
       '<div class="live-bar-row">' +
-      '<span id="live-queue-hint" style="font-size:10px;color:#555;">' +
+      '<span id="live-queue-hint" style="font-size:10px;color:var(--text-faint);">' +
       (liveQueuedText ? '\u23f3 Command queued' : 'Will send automatically when done') +
       '</span>' +
-      '<button class="live-send-btn" style="background:#2a2a2a;color:#666;border-color:#333;" onclick="liveQueueSave()">Queue</button>' +
-      '<button class="live-send-btn" style="background:#1a0000;color:#664444;border-color:#330000;margin-left:2px;" onclick="liveClearQueue()" title="Cancel queued command">\u2715</button>' +
+      '<button class="live-send-btn" style="background:var(--bg-card);color:var(--text-muted);border-color:var(--border-subtle);" onclick="liveQueueSave()">Queue</button>' +
+      '<button class="live-send-btn danger" style="margin-left:2px;" onclick="liveClearQueue()" title="Cancel queued command">\u2715</button>' +
       '</div>';
     const qta = document.getElementById('live-queue-ta');
     if (qta) {
@@ -355,14 +343,27 @@ function updateLiveInputBar() {
         if (hint) hint.textContent = qta.value.trim() ? '\u23f3 Command queued' : 'Will send automatically when done';
       });
     }
+    // Start elapsed timer — update only the time span, NOT the whole bar
+    if (!_liveWorkingTimer) {
+      _liveWorkingTimer = setInterval(() => {
+        if (liveBarState !== 'working' || !_liveWorkingStart) return;
+        const el = document.getElementById('live-elapsed');
+        if (!el) return;
+        const s = Math.round((Date.now() - _liveWorkingStart) / 1000);
+        el.textContent = s >= 60 ? Math.floor(s/60) + 'm ' + (s%60) + 's' : s + 's';
+      }, 1000);
+    }
   }
 }
 
 function livePickOption(val) {
-  // Fill the textarea with the option value and submit
-  const ta = document.getElementById('live-input-ta');
-  if (ta) ta.value = val;
-  liveSubmitWaiting();
+  if (!liveSessionId) return;
+  socket.emit('permission_response', {session_id: liveSessionId, action: val});
+  // Optimistic: clear waiting state locally
+  delete waitingData[liveSessionId];
+  sessionKinds[liveSessionId] = 'working';
+  liveBarState = null;
+  updateLiveInputBar();
 }
 
 function liveQueueSave() {
@@ -382,141 +383,144 @@ function liveClearQueue() {
   showToast('Queue cleared');
 }
 
-async function liveSubmitIdle() {
+function liveSubmitIdle() {
   const ta = document.getElementById('live-input-ta');
   if (!ta || !liveSessionId) return;
   const text = ta.value.trim();
   if (!text) return;
-  // Reuse the same logic as continue
-  await liveSubmitContinue(liveSessionId);
+  _liveSubmitDirect(liveSessionId, text);
+  ta.value = '';
 }
 
-async function liveSubmitContinue(fromId) {
+function _liveSubmitDirect(sid, text, opts) {
+  if (!sid) return;
+  _liveSending = true;
+
+  // If it's a permission response (from waitingData), use permission_response event
+  const wasPermission = !!waitingData[sid];
+  if (wasPermission) {
+    const actionMap = {yes: 'y', no: 'n', always: 'a', allow: 'y', deny: 'n'};
+    const action = actionMap[text.toLowerCase()] || text;
+    socket.emit('permission_response', {session_id: sid, action: action});
+    // Optimistic clear
+    delete waitingData[sid];
+    sessionKinds[sid] = 'working';
+  } else if (runningIds.has(sid)) {
+    // Send message to running session
+    socket.emit('send_message', {session_id: sid, text: text});
+  }
+
+  // Add optimistic user bubble only for real messages (not permission answers)
+  if (!wasPermission && text.length > 1) {
+    _addOptimisticBubble(sid, text);
+  }
+
+  // Reset sending flag after brief delay (let WebSocket events flow)
+  setTimeout(() => {
+    _liveSending = false;
+    liveBarState = null;
+    updateLiveInputBar();
+    // Scroll to bottom after bar re-renders
+    const logEl = document.getElementById('live-log');
+    if (logEl && liveAutoScroll) logEl.scrollTop = logEl.scrollHeight;
+  }, 500);
+}
+
+function _addOptimisticBubble(sid, text) {
+  if (sid !== liveSessionId) return;
+  const logEl = document.getElementById('live-log');
+  if (!logEl) return;
+  const now = new Date();
+  const h = now.getHours() % 12 || 12;
+  const timestamp = h + ':' + String(now.getMinutes()).padStart(2, '0') + ' ' + (now.getHours() >= 12 ? 'PM' : 'AM');
+  const userMsg = document.createElement('div');
+  userMsg.className = 'msg user';
+  userMsg.innerHTML = '<div class="msg-role">me <span class="msg-time">' + timestamp + '</span></div><div class="msg-body msg-content">' + mdParse(text) + '</div>';
+  logEl.appendChild(userMsg);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function liveSubmitContinue(fromId) {
   const ta = document.getElementById('live-input-ta');
   const text = ta ? ta.value.trim() : '';
   if (!text) return;
-
-  // IMMEDIATE feedback — show user message in chat, replace input bar with sending indicator
-  const savedText = text;
   ta.value = '';
-  ta.disabled = true;
-  const now = new Date();
-  const timeStr = now.getHours() % 12 || 12;
-  const timestamp = timeStr + ':' + String(now.getMinutes()).padStart(2,'0') + ' ' + (now.getHours() >= 12 ? 'PM' : 'AM');
-  const logEl = document.getElementById('live-log');
-  if (logEl) {
-    const userMsg = document.createElement('div');
-    userMsg.className = 'msg user';
-    userMsg.innerHTML = '<div class="msg-role">me <span class="msg-time">' + timestamp + '</span></div><div class="msg-body msg-content">' + mdParse(savedText) + '</div>';
-    logEl.appendChild(userMsg);
-    logEl.scrollTop = logEl.scrollHeight;
-  }
-  // Replace entire input bar with sending status — block polls from overwriting
+
+  const sid = typeof fromId === 'string' ? fromId : liveSessionId;
+  if (!sid) return;
+
+  // Add optimistic user bubble
+  _addOptimisticBubble(sid, text);
+
+  // Show sending indicator
   _liveSending = true;
   const bar = document.getElementById('live-input-bar');
   if (bar) bar.innerHTML = '<div class="live-working-status"><div class="live-working-indicator"><span class="spinner"></span> Sending\u2026</div></div>';
 
-  // Try SendKeys
-  try {
-    const r = await fetch('/api/respond/' + fromId, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({text: savedText})
+  // If session is not running, resume it via WebSocket
+  if (!runningIds.has(sid)) {
+    socket.emit('start_session', {
+      session_id: sid,
+      prompt: text,
+      cwd: _currentProjectDir(),
+      resume: true,
     });
-    const d = await r.json();
-    if (d.ok === false) console.warn('respond failed:', d);
-    if (d.method === 'sent') {
-      // Success — sync line count so we don't duplicate the optimistic bubble
-      try {
-        const sync = await fetch('/api/session-log/' + fromId + '?since=' + liveLineCount);
-        const sd = await sync.json();
-        if (sd.total_lines) liveLineCount = sd.total_lines;
-      } catch(e) {}
-      _liveSending = false;
-      ta.disabled = false;
-      liveBarState = null;
-      pokeWaiting();
-      return;
-    }
-  } catch(e) {}
-
-  // SendKeys failed — resume the SAME session
-  if (bar) bar.innerHTML = '<div class="live-working-status"><div class="live-working-indicator"><span class="spinner"></span> Resuming session\u2026</div></div>';
-  try {
-    await fetch('/api/new-session', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({resume_id: fromId})
-    });
-  } catch(e) {}
-
-  // Wait for terminal to start, then retry SendKeys (3 attempts, 2s apart)
-  let sent = false;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    await new Promise(r => setTimeout(r, attempt === 0 ? 4000 : 2000));
-    try {
-      const r2 = await fetch('/api/respond/' + fromId, {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({text: savedText})
-      });
-      const d2 = await r2.json();
-      if (d2.method === 'sent') {
-            // Sync line count so poll doesn't duplicate the optimistic bubble
-            try {
-              const sync = await fetch('/api/session-log/' + fromId + '?since=' + liveLineCount);
-              const sd = await sync.json();
-              if (sd.total_lines) liveLineCount = sd.total_lines;
-            } catch(e) {}
-            sent = true; break;
-          }
-    } catch(e) {}
+    // Optimistic state
+    runningIds.add(sid);
+    guiOpenAdd(sid);
+    sessionKinds[sid] = 'working';
+  } else {
+    // Session is running — send message directly
+    socket.emit('send_message', {session_id: sid, text: text});
   }
 
-  if (!sent) {
-    // All retries failed — show persistent in-body error
-    if (bar) bar.innerHTML =
-      '<div style="padding:12px;background:var(--bg-card);border:1px solid #663333;border-radius:8px;margin-bottom:8px;">' +
-      '<div style="color:#cc6666;font-size:13px;margin-bottom:8px;">Could not deliver message. The session terminal may not have started.</div>' +
-      '<div style="color:var(--text-muted);font-size:12px;margin-bottom:8px;">Your message: <em>' + escHtml(savedText.slice(0, 200)) + '</em></div>' +
-      '<button class="live-send-btn" onclick="liveRetrySend(\'' + fromId.replace(/'/g,"\\'") + '\', ' + JSON.stringify(savedText) + ')">Retry Send</button>' +
-      '</div>';
-  }
-
-  _liveSending = false;
-  ta.disabled = false;
-  liveBarState = null;
-  pokeWaiting();
+  // Reset sending flag after brief delay
+  setTimeout(() => {
+    _liveSending = false;
+    liveBarState = null;
+    updateLiveInputBar();
+  }, 1000);
 }
 
-async function liveRetrySend(sessionId, text) {
-  const bar = document.getElementById('live-input-bar');
-  if (bar) bar.innerHTML = '<div class="live-working-status"><div class="live-working-indicator"><span class="spinner"></span> Retrying\u2026</div></div>';
-  _liveSending = true;
-  try {
-    const r = await fetch('/api/respond/' + sessionId, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({text: text})
-    });
-    const d = await r.json();
-    if (d.method === 'sent') {
-      showToast('Message sent');
-      _liveSending = false;
-      liveBarState = null;
-      pokeWaiting();
-      return;
-    }
-  } catch(e) {}
-  _liveSending = false;
-  liveBarState = null;
-  showToast('Still could not send. Check if the terminal is running.', true);
-  updateLiveInputBar();
-}
-
-async function liveSubmitWaiting() {
+function liveSubmitWaiting() {
   const ta = document.getElementById('live-input-ta');
   if (!ta || !liveSessionId) return;
   const text = ta.value.trim();
   if (!text) return;
-  // Reuse the same logic — try send, auto-resume if needed
-  await liveSubmitContinue(liveSessionId);
+  ta.value = '';
+
+  // Use permission_response if there's an active permission request
+  if (waitingData[liveSessionId]) {
+    // Map common textual responses to the accepted single-char actions
+    const actionMap = {yes: 'y', no: 'n', always: 'a', allow: 'y', deny: 'n'};
+    const action = actionMap[text.toLowerCase()] || text;
+    socket.emit('permission_response', {session_id: liveSessionId, action: action});
+    // Optimistic clear
+    delete waitingData[liveSessionId];
+    sessionKinds[liveSessionId] = 'working';
+    liveBarState = null;
+    updateLiveInputBar();
+  } else {
+    // Fallback to direct send
+    _liveSubmitDirect(liveSessionId, text);
+  }
+}
+
+function liveSubmitInterrupt() {
+  if (!liveSessionId) return;
+  socket.emit('interrupt_session', {session_id: liveSessionId});
+}
+
+function liveClearDisplay() {
+  const logEl = document.getElementById('live-log');
+  if (logEl) { logEl.innerHTML = ''; liveLineCount = 0; }
+  showToast('Display cleared');
+}
+
+function liveCompact() {
+  if (!liveSessionId) return;
+  socket.emit('send_message', {session_id: liveSessionId, text: '/compact'});
+  showToast('Sent /compact command');
 }
 
 async function closeSession(id) {
@@ -525,16 +529,16 @@ async function closeSession(id) {
   const name = (s && s.display_title) || id.slice(0, 8);
   const confirmed = await showConfirm('Close Session', '<p>Close <strong>' + escHtml(name) + '</strong>?</p><p>This will stop the running Claude process and close the terminal window.</p>', { danger: true, confirmText: 'Close', icon: '\u23F9\uFE0F' });
   if (!confirmed) return;
-  // Attempt to kill the process (may already be stopped — that's fine)
+  // Close via WebSocket
   if (runningIds.has(id)) {
-    const r = await fetch('/api/close/' + id, { method: 'POST' });
-    const d = await r.json();
-    if (!d.ok) showToast('Process stop: ' + (d.error || 'unknown'));
+    socket.emit('close_session', {session_id: id});
   }
   guiOpenDelete(id);
   runningIds.delete(id);
+  delete sessionKinds[id];
   showToast('Session closed');
   // Update the input bar to reflect stopped state — keep chat visible
+  liveBarState = null;
   updateLiveInputBar();
   filterSessions();
 }

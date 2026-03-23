@@ -3,8 +3,11 @@ ClaudeCodeGUI Flask application factory.
 """
 
 from flask import Flask
+from flask_socketio import SocketIO
 
 from .config import _CLAUDECODEGUI_DIR
+
+socketio = SocketIO()
 
 
 def create_app() -> Flask:
@@ -14,6 +17,18 @@ def create_app() -> Flask:
         template_folder=str(_CLAUDECODEGUI_DIR / "templates"),
         static_folder=str(_CLAUDECODEGUI_DIR / "static"),
     )
+
+    # Initialize SocketIO with threading mode (Flask's default)
+    socketio.init_app(app, async_mode='threading', cors_allowed_origins='*')
+
+    # Initialize the SDK session manager
+    from .session_manager import SessionManager
+    app.session_manager = SessionManager()
+    app.session_manager.start(socketio, app=app)
+
+    # Register WebSocket event handlers
+    from .routes.ws_events import register_ws_events
+    register_ws_events(socketio, app)
 
     # Register blueprints
     from .routes.main import bp as main_bp

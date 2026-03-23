@@ -1,0 +1,983 @@
+"""
+SessionManager -- manages Claude Code SDK sessions with a dedicated asyncio event loop.
+
+Runs in a daemon thread. Flask routes call in via run_coroutine_threadsafe().
+Permission callbacks use anyio.Event to wait (natively compatible with the
+SDK's anyio task groups) and are resolved from the Flask thread via
+loop.call_soon_threadsafe().
+"""
+
+import anyio
+import asyncio
+import logging
+import threading
+import time
+from enum import Enum
+from dataclasses import dataclass, field
+from typing import Optional
+
+from claude_code_sdk import ClaudeSDKClient, ClaudeCodeOptions
+from claude_code_sdk.types import (
+    AssistantMessage,
+    UserMessage,
+    ResultMessage,
+    StreamEvent,
+    TextBlock,
+    ThinkingBlock,
+    ToolUseBlock,
+    ToolResultBlock,
+    PermissionResultAllow,
+    PermissionResultDeny,
+    ContentBlock,
+)
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Monkey-patch: make the SDK tolerant of unknown message types.
+# The SDK raises MessageParseError for types like "rate_limit_event" which
+# kills the entire receive_messages() generator. Patch parse_message to
+# return None for unknown types so the generator survives.
+# ---------------------------------------------------------------------------
+try:
+    import claude_code_sdk.client as _sdk_client_mod
+    import claude_code_sdk._internal.message_parser as _sdk_parser_mod
+    import claude_code_sdk._internal.query as _sdk_query_mod
+
+    # Patch 1: Skip unknown message types (e.g. rate_limit_event)
+    _original_parse_message = _sdk_parser_mod.parse_message
+
+    def _safe_parse_message(data):
+        try:
+            return _original_parse_message(data)
+        except Exception as e:
+            if "Unknown message type" in str(e):
+                logger.debug("Skipping unknown SDK message type: %s", e)
+                return None
+            raise
+
+    _sdk_parser_mod.parse_message = _safe_parse_message
+    _sdk_client_mod.parse_message = _safe_parse_message
+
+    # Patch 2: Fix permission response format for CLI 2.x
+    # The SDK sends {"allow": true} but CLI 2.x expects
+    # {"behavior": "allow", "updatedInput": {}} (TypeScript PermissionResult)
+    _original_handle_control = _sdk_query_mod.Query._handle_control_request
+
+    async def _patched_handle_control(self, request):
+        """Intercept permission responses to use CLI 2.x format."""
+        request_data = request.get("request", {})
+        subtype = request_data.get("subtype")
+
+        await _original_handle_control(self, request)
+
+    _sdk_query_mod.Query._handle_control_request = _patched_handle_control
+
+    # Patch 2b: Fix permission response format in the original handler.
+    # The SDK sends {"allow": true} but CLI 2.x expects {"behavior": "allow", "updatedInput": {}}.
+    # Monkey-patch the PermissionResultAllow class to produce the right format
+    # when the original _handle_control_request converts it.
+    # We do this by patching the response_data construction inside the handler.
+    # Since we can't easily patch just that part, we patch the entire handler
+    # to fix the format but use the same flow.
+    _real_original_handle = _original_handle_control
+
+    async def _format_fixing_handle(self, request):
+        """Wrap the original handler to fix the permission response format."""
+        request_data = request.get("request", {})
+        subtype = request_data.get("subtype")
+
+        if subtype == "can_use_tool" and self.can_use_tool:
+            # request_id is on the OUTER object, not inside request_data
+            request_id = request.get("request_id")
+            import json as _json
+            try:
+                from claude_code_sdk.types import ToolPermissionContext as _TPC2
+                context = _TPC2(
+                    signal=None,
+                    suggestions=request_data.get("permission_suggestions", []) or [],
+                )
+                response = await self.can_use_tool(
+                    request_data["tool_name"],
+                    request_data["input"],
+                    context,
+                )
+                # Use CLI 2.x format
+                if isinstance(response, PermissionResultAllow):
+                    response_data = {
+                        "behavior": "allow",
+                        "updatedInput": response.updated_input if response.updated_input is not None else request_data.get("input", {}),
+                    }
+                elif isinstance(response, PermissionResultDeny):
+                    response_data = {
+                        "behavior": "deny",
+                        "message": response.message or "Denied",
+                    }
+                else:
+                    raise TypeError(f"Unexpected: {type(response)}")
+
+                success_response = {
+                    "type": "control_response",
+                    "response": {
+                        "subtype": "success",
+                        "request_id": request_id,
+                        "response": response_data,
+                    },
+                }
+                await self.transport.write(_json.dumps(success_response) + "\n")
+            except Exception as e:
+                logger.exception("Permission error: %s", e)
+                err = {
+                    "type": "control_response",
+                    "response": {"subtype": "error", "request_id": request_id, "error": str(e)},
+                }
+                await self.transport.write(_json.dumps(err) + "\n")
+        else:
+            await _real_original_handle(self, request)
+
+    _sdk_query_mod.Query._handle_control_request = _format_fixing_handle
+
+    # Patch 3: Don't close stdin after empty stream when can_use_tool is set.
+    # The SDK calls end_input() after iterating the prompt stream, which closes
+    # stdin and makes the CLI exit. We need stdin to stay open for the control
+    # protocol (permission prompts) and for query() to send follow-up messages.
+    _original_stream_input = _sdk_query_mod.Query.stream_input
+
+    async def _patched_stream_input(self, stream):
+        import json as _json2
+        try:
+            async for message in stream:
+                if self._closed:
+                    break
+                await self.transport.write(_json2.dumps(message) + "\n")
+            # DON'T call end_input() — keep stdin open for queries and control
+            # The original code does: await self.transport.end_input()
+            # We skip this so the CLI stays alive
+            logger.debug("stream_input: finished iterating, keeping stdin open")
+        except Exception as e:
+            logger.debug(f"Error streaming input: {e}")
+
+    _sdk_query_mod.Query.stream_input = _patched_stream_input
+
+except Exception as _patch_err:
+    logger.warning("Could not patch SDK: %s", _patch_err)
+
+
+class SessionState(str, Enum):
+    STARTING = "starting"
+    WORKING = "working"
+    WAITING = "waiting"
+    IDLE = "idle"
+    STOPPED = "stopped"
+
+
+@dataclass
+class LogEntry:
+    """A single log entry for the session timeline."""
+    kind: str          # 'user', 'asst', 'tool_use', 'tool_result', 'system', 'stream'
+    text: str = ""
+    name: str = ""     # tool name (for tool_use)
+    desc: str = ""     # tool description/summary (for tool_use)
+    id: str = ""       # tool_use id
+    tool_use_id: str = ""  # for tool_result, references the tool_use
+    is_error: bool = False
+    timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict:
+        d = {"kind": self.kind}
+        if self.text:
+            d["text"] = self.text
+        if self.name:
+            d["name"] = self.name
+        if self.desc:
+            d["desc"] = self.desc
+        if self.id:
+            d["id"] = self.id
+        if self.tool_use_id:
+            d["tool_use_id"] = self.tool_use_id
+        if self.is_error:
+            d["is_error"] = True
+        d["timestamp"] = self.timestamp
+        return d
+
+
+@dataclass
+class SessionInfo:
+    """Tracks the state and data of one SDK session."""
+    session_id: str
+    state: SessionState = SessionState.STARTING
+    name: str = ""
+    cwd: str = ""
+    model: str = ""
+    cost_usd: float = 0.0
+    error: Optional[str] = None
+    entries: list = field(default_factory=list)
+    client: Optional[ClaudeSDKClient] = None
+    task: Optional[asyncio.Task] = None
+    pending_permission: Optional[tuple] = None  # (anyio.Event, result_holder_list)
+    pending_tool_name: str = ""
+    pending_tool_input: dict = field(default_factory=dict)
+    always_allowed_tools: set = field(default_factory=set)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def to_state_dict(self) -> dict:
+        d = {
+            "session_id": self.session_id,
+            "state": self.state.value,
+            "cost_usd": self.cost_usd,
+            "error": self.error,
+            "name": self.name,
+            "cwd": self.cwd,
+            "model": self.model,
+        }
+        # Include permission details for WAITING sessions so reconnecting
+        # clients can display the permission prompt
+        if self.state == SessionState.WAITING and self.pending_tool_name:
+            d["permission"] = {
+                "tool_name": self.pending_tool_name,
+                "tool_input": self.pending_tool_input,
+            }
+        return d
+
+
+class SessionManager:
+    """Manages all Claude Code SDK sessions on a dedicated asyncio event loop."""
+
+    def __init__(self):
+        self._sessions: dict[str, SessionInfo] = {}
+        self._lock = threading.Lock()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._socketio = None
+        self._started = False
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def start(self, socketio, app=None) -> None:
+        """Start the background event loop thread. Called once at app startup."""
+        if self._started:
+            return
+        self._socketio = socketio
+        self._app = app
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self._run_loop, daemon=True, name="session-manager-loop"
+        )
+        self._thread.start()
+        self._started = True
+        logger.info("SessionManager started")
+
+    def _run_loop(self) -> None:
+        """Entry point for the background thread."""
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    def stop(self) -> None:
+        """Stop the event loop and all sessions. Called on shutdown."""
+        if not self._started:
+            return
+        # Close all sessions
+        with self._lock:
+            session_ids = list(self._sessions.keys())
+        for sid in session_ids:
+            try:
+                self._run_sync(self._close_session(sid))
+            except Exception:
+                pass
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._thread:
+            self._thread.join(timeout=5)
+        self._started = False
+
+    # ------------------------------------------------------------------
+    # Thread-safe bridge: Flask (sync) -> asyncio loop
+    # ------------------------------------------------------------------
+
+    def _run_sync(self, coro, timeout=30):
+        """Submit a coroutine to the event loop and wait for the result."""
+        if not self._loop or not self._loop.is_running():
+            raise RuntimeError("SessionManager event loop is not running")
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result(timeout=timeout)
+
+    # ------------------------------------------------------------------
+    # Public API (called from Flask routes / WS handlers)
+    # ------------------------------------------------------------------
+
+    def start_session(
+        self, session_id: str, prompt: str = "", cwd: str = "",
+        name: str = "", resume: bool = False,
+        model: Optional[str] = None, system_prompt: Optional[str] = None,
+        max_turns: Optional[int] = None, allowed_tools: Optional[list] = None,
+        permission_mode: Optional[str] = None,
+    ) -> dict:
+        """Start or resume an SDK session. Returns immediately."""
+        with self._lock:
+            if session_id in self._sessions:
+                existing = self._sessions[session_id]
+                if existing.state not in (SessionState.STOPPED,):
+                    return {"ok": False, "error": "Session already running"}
+                # Allow restart of a stopped session
+                del self._sessions[session_id]
+
+        info = SessionInfo(
+            session_id=session_id,
+            name=name,
+            cwd=cwd,
+            model=model or "",
+            state=SessionState.STARTING,
+        )
+        with self._lock:
+            self._sessions[session_id] = info
+
+        self._emit_state(info)
+
+        # Verify the event loop is alive before submitting
+        if not self._loop or not self._loop.is_running():
+            info.state = SessionState.STOPPED
+            info.error = "Session manager event loop is not running"
+            self._emit_state(info)
+            return {"ok": False, "error": "Session manager event loop is not running"}
+
+        # Launch the async session driver
+        asyncio.run_coroutine_threadsafe(
+            self._drive_session(
+                session_id, prompt, cwd, resume,
+                model=model, system_prompt=system_prompt,
+                max_turns=max_turns, allowed_tools=allowed_tools,
+                permission_mode=permission_mode,
+            ),
+            self._loop,
+        )
+        return {"ok": True}
+
+    def send_message(self, session_id: str, text: str) -> dict:
+        """Send a follow-up message to an idle session."""
+        with self._lock:
+            info = self._sessions.get(session_id)
+        if not info:
+            return {"ok": False, "error": "Session not found"}
+        if info.state != SessionState.IDLE:
+            return {"ok": False, "error": f"Session is {info.state.value}, not idle"}
+
+        # Add user entry
+        entry = LogEntry(kind="user", text=text)
+        with info._lock:
+            info.entries.append(entry)
+            entry_index = len(info.entries) - 1
+        self._emit_entry(session_id, entry, entry_index)
+
+        # Set state to WORKING before submitting query
+        info.state = SessionState.WORKING
+        self._emit_state(info)
+
+        asyncio.run_coroutine_threadsafe(
+            self._send_query(session_id, text), self._loop
+        )
+        return {"ok": True}
+
+    def resolve_permission(self, session_id: str, allow: bool, always: bool = False) -> dict:
+        """Resolve a pending permission request.
+
+        Called from a Flask-SocketIO handler thread. Uses
+        loop.call_soon_threadsafe to set the anyio.Event on the correct
+        event loop so the waiting callback resumes immediately.
+        """
+        with self._lock:
+            info = self._sessions.get(session_id)
+        if not info:
+            return {"ok": False, "error": "Session not found"}
+        if info.state != SessionState.WAITING:
+            return {"ok": False, "error": f"Session is {info.state.value}, not waiting"}
+        if not info.pending_permission:
+            return {"ok": False, "error": "No pending permission"}
+
+        if allow:
+            result = PermissionResultAllow(updated_input=None, updated_permissions=None)
+        else:
+            result = PermissionResultDeny(message="User denied permission", interrupt=False)
+
+        # Resolve the permission by setting the anyio Event.
+        perm_tuple = info.pending_permission  # (anyio.Event, result_holder)
+        info.pending_permission = None
+
+        if isinstance(perm_tuple, tuple) and len(perm_tuple) == 2:
+            perm_event, result_holder = perm_tuple
+            result_holder[0] = (result, always)
+            perm_event.set()  # threading.Event.set() is fully thread-safe
+
+        return {"ok": True}
+
+    def interrupt_session(self, session_id: str) -> dict:
+        """Interrupt a running session."""
+        with self._lock:
+            info = self._sessions.get(session_id)
+        if not info:
+            return {"ok": False, "error": "Session not found"}
+        if info.state == SessionState.STOPPED:
+            return {"ok": False, "error": "Session already stopped"}
+
+        asyncio.run_coroutine_threadsafe(
+            self._interrupt_session(session_id), self._loop
+        )
+        return {"ok": True}
+
+    def close_session(self, session_id: str) -> dict:
+        """Close and disconnect an SDK session."""
+        with self._lock:
+            info = self._sessions.get(session_id)
+        if not info:
+            return {"ok": False, "error": "Session not found"}
+
+        asyncio.run_coroutine_threadsafe(
+            self._close_session(session_id), self._loop
+        )
+        return {"ok": True}
+
+    def get_all_states(self) -> list:
+        """Return snapshot of all session states for initial WebSocket connect."""
+        with self._lock:
+            return [info.to_state_dict() for info in self._sessions.values()]
+
+    def get_entries(self, session_id: str, since: int = 0) -> list:
+        """Return log entries for a session, optionally from an index."""
+        with self._lock:
+            info = self._sessions.get(session_id)
+        if not info:
+            return []
+        with info._lock:
+            return [e.to_dict() for e in info.entries[since:]]
+
+    def has_session(self, session_id: str) -> bool:
+        """Check if a session is managed by the SDK."""
+        with self._lock:
+            return session_id in self._sessions
+
+    def get_session_state(self, session_id: str) -> Optional[str]:
+        """Return the state string for a session, or None if not managed."""
+        with self._lock:
+            info = self._sessions.get(session_id)
+        if info:
+            return info.state.value
+        return None
+
+    # ------------------------------------------------------------------
+    # Async internals (run on the event loop thread)
+    # ------------------------------------------------------------------
+
+    async def _drive_session(
+        self, session_id: str, prompt: str, cwd: str, resume: bool,
+        model: Optional[str] = None, system_prompt: Optional[str] = None,
+        max_turns: Optional[int] = None, allowed_tools: Optional[list] = None,
+        permission_mode: Optional[str] = None,
+    ) -> None:
+        """Main driver coroutine for one SDK session."""
+        with self._lock:
+            info = self._sessions.get(session_id)
+        if not info:
+            return
+
+        try:
+            options = ClaudeCodeOptions(
+                cwd=cwd or None,
+                resume=session_id if resume else None,
+                can_use_tool=self._make_permission_callback(session_id),
+                model=model or None,
+                system_prompt=system_prompt or None,
+                max_turns=max_turns or None,
+                allowed_tools=allowed_tools or [],
+                permission_mode=permission_mode or "default",
+                include_partial_messages=True,
+            )
+            client = ClaudeSDKClient(options=options)
+            info.client = client
+
+            # Connect with no prompt. The SDK auto-sets permission_prompt_tool_name="stdio"
+            # when can_use_tool is set. Prompt=None becomes _empty_stream() which is an
+            # AsyncIterator, so the streaming mode check passes.
+            await client.connect()
+
+            info.state = SessionState.WORKING
+            self._emit_state(info)
+
+            # Add user's message to the log and send
+            if prompt:
+                entry = LogEntry(kind="user", text=prompt[:2000])
+                with info._lock:
+                    info.entries.append(entry)
+                    entry_index = len(info.entries) - 1
+                self._emit_entry(session_id, entry, entry_index)
+                await client.query(prompt)
+
+            # Process messages (None = unknown types, skipped via monkey-patch)
+            async for message in client.receive_messages():
+                if message is not None:
+                    await self._process_message(session_id, message)
+
+            # If we exit the message loop normally, session is idle
+            if info.state != SessionState.STOPPED:
+                info.state = SessionState.IDLE
+                self._emit_state(info)
+
+        except asyncio.CancelledError:
+            logger.info("Session %s cancelled", session_id)
+            info.state = SessionState.STOPPED
+            self._emit_state(info)
+        except Exception as e:
+            logger.exception("Session %s error: %s", session_id, e)
+            info.error = str(e)
+            info.state = SessionState.STOPPED
+            entry = LogEntry(kind="system", text=f"Error: {e}", is_error=True)
+            with info._lock:
+                info.entries.append(entry)
+                entry_index = len(info.entries) - 1
+            self._emit_entry(session_id, entry, entry_index)
+            self._emit_state(info)
+
+    async def _send_query(self, session_id: str, text: str) -> None:
+        """Send a follow-up query to an already-connected session."""
+        with self._lock:
+            info = self._sessions.get(session_id)
+        if not info or not info.client:
+            return
+
+        try:
+            await info.client.query(text)
+
+            # Process response messages (None = unknown types, skipped)
+            async for message in info.client.receive_response():
+                if message is not None:
+                    await self._process_message(session_id, message)
+
+            # After response completes, go idle
+            if info.state != SessionState.STOPPED:
+                info.state = SessionState.IDLE
+                self._emit_state(info)
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.exception("Send query error for %s: %s", session_id, e)
+            info.error = str(e)
+            info.state = SessionState.STOPPED
+            entry = LogEntry(kind="system", text=f"Error: {e}", is_error=True)
+            with info._lock:
+                info.entries.append(entry)
+                entry_index = len(info.entries) - 1
+            self._emit_entry(session_id, entry, entry_index)
+            self._emit_state(info)
+
+    async def _interrupt_session(self, session_id: str) -> None:
+        """Interrupt a running session."""
+        with self._lock:
+            info = self._sessions.get(session_id)
+        if not info or not info.client:
+            return
+
+        try:
+            # If waiting for permission, resolve with deny
+            if info.pending_permission:
+                perm_tuple = info.pending_permission
+                info.pending_permission = None
+                if isinstance(perm_tuple, tuple) and len(perm_tuple) == 2:
+                    perm_event, result_holder = perm_tuple
+                    deny = PermissionResultDeny(message="Interrupted by user", interrupt=True)
+                    result_holder[0] = (deny, False)
+                    perm_event.set()
+
+            try:
+                await info.client.interrupt()
+            except Exception as int_err:
+                logger.warning("interrupt() failed for %s: %s, forcing disconnect", session_id, int_err)
+                try:
+                    await info.client.disconnect()
+                except Exception:
+                    pass
+
+            info.state = SessionState.IDLE
+            entry = LogEntry(kind="system", text="Session interrupted by user")
+            with info._lock:
+                info.entries.append(entry)
+                entry_index = len(info.entries) - 1
+            self._emit_entry(session_id, entry, entry_index)
+            self._emit_state(info)
+        except Exception as e:
+            logger.exception("Interrupt error for %s: %s", session_id, e)
+
+    async def _close_session(self, session_id: str) -> None:
+        """Disconnect and clean up a session."""
+        with self._lock:
+            info = self._sessions.get(session_id)
+        if not info:
+            return
+
+        try:
+            # Cancel pending permission if any
+            if info.pending_permission:
+                perm_tuple = info.pending_permission
+                info.pending_permission = None
+                if isinstance(perm_tuple, tuple) and len(perm_tuple) == 2:
+                    perm_event, result_holder = perm_tuple
+                    deny = PermissionResultDeny(message="Session closed", interrupt=True)
+                    result_holder[0] = (deny, False)
+                    perm_event.set()
+
+            # Cancel the driving task if running
+            if info.task and not info.task.done():
+                info.task.cancel()
+
+            # Disconnect the client
+            if info.client:
+                try:
+                    await info.client.disconnect()
+                except Exception:
+                    pass
+
+            info.state = SessionState.STOPPED
+            info.client = None
+            self._emit_state(info)
+        except Exception as e:
+            logger.exception("Close error for %s: %s", session_id, e)
+            info.state = SessionState.STOPPED
+            self._emit_state(info)
+
+    # ------------------------------------------------------------------
+    # Permission callback
+    # ------------------------------------------------------------------
+
+    def _make_permission_callback(self, session_id: str):
+        """Create the can_use_tool callback for a specific session.
+
+        The callback runs inside an anyio task group (the SDK's control
+        handler). We use anyio.Event for waiting, which properly yields to
+        the anyio scheduler instead of blocking the thread.
+
+        resolve_permission() (called from a Flask thread) sets the event
+        via loop.call_soon_threadsafe() so the waiting coroutine wakes up
+        immediately.
+        """
+        manager = self
+
+        async def can_use_tool(tool_name, tool_input, context):
+            with manager._lock:
+                info = manager._sessions.get(session_id)
+            if not info:
+                return PermissionResultDeny(message="Session not found", interrupt=True)
+
+            # Auto-approve if user previously clicked "Always" for this tool
+            if tool_name in info.always_allowed_tools:
+                return PermissionResultAllow()
+
+            # Use threading.Event (fully thread-safe) with anyio.sleep polling.
+            # anyio.Event + call_soon_threadsafe doesn't reliably wake the waiter.
+            perm_event = threading.Event()
+            perm_result_holder = [None]  # [0] = (PermissionResult, always)
+            info.pending_permission = (perm_event, perm_result_holder)
+            info.pending_tool_name = tool_name
+            info.pending_tool_input = tool_input if isinstance(tool_input, dict) else {}
+
+            # Set state to WAITING
+            prev_state = info.state
+            info.state = SessionState.WAITING
+
+            # Emit permission from a thread with Flask app context.
+            # socketio.emit doesn't work from anyio task group context.
+            perm_data = {
+                'session_id': session_id,
+                'tool_name': tool_name,
+                'tool_input': info.pending_tool_input,
+            }
+            state_data = info.to_state_dict()
+            _sio = manager._socketio
+            _app = manager._app  # Flask app reference
+
+            def _bg_emit():
+                try:
+                    with _app.app_context():
+                        _sio.emit('session_state', state_data)
+                        _sio.emit('session_permission', perm_data)
+                except Exception as e:
+                    logger.error("Permission emit error: %s", e)
+
+            t = threading.Thread(target=_bg_emit, daemon=True)
+            t.start()
+            t.join(timeout=5)  # Wait for emit to complete
+
+            try:
+                # Poll threading.Event. Use anyio.sleep to yield to scheduler.
+                # If that doesn't work, fall back to asyncio.sleep.
+                for _poll_i in range(36000):  # 1 hour max
+                    if perm_event.is_set():
+                        break
+                    try:
+                        await anyio.sleep(0.1)
+                    except Exception:
+                        await asyncio.sleep(0.1)
+
+                result_tuple = perm_result_holder[0]
+                if result_tuple is None:
+                    result_tuple = (PermissionResultDeny(message="No result"), False)
+                permission_result, always = result_tuple
+
+                # Remember "Always Allow" for this tool for the rest of the session
+                if always and isinstance(permission_result, PermissionResultAllow):
+                    info.always_allowed_tools.add(tool_name)
+
+                # Clean up permission state
+                info.pending_permission = None
+                info.pending_tool_name = ""
+                info.pending_tool_input = {}
+
+                # Back to working
+                info.state = SessionState.WORKING
+                manager._emit_state(info)
+
+                return permission_result
+
+            except BaseException:
+                # Handles cancellation (anyio uses BaseException subclasses)
+                info.pending_permission = None
+                info.pending_tool_name = ""
+                info.pending_tool_input = {}
+                info.state = prev_state
+                manager._emit_state(info)
+                return PermissionResultDeny(
+                    message="Permission request cancelled", interrupt=True
+                )
+
+        return can_use_tool
+
+    # ------------------------------------------------------------------
+    # Message processing
+    # ------------------------------------------------------------------
+
+    async def _process_message(self, session_id: str, message) -> None:
+        """Convert an SDK Message into log entries and emit them."""
+        with self._lock:
+            info = self._sessions.get(session_id)
+        if not info:
+            return
+
+        if isinstance(message, AssistantMessage):
+            for block in (message.content if hasattr(message, 'content') else []):
+                if isinstance(block, TextBlock):
+                    entry = LogEntry(kind="asst", text=(block.text or "")[:3000])
+                    with info._lock:
+                        info.entries.append(entry)
+                    self._emit_entry(session_id, entry, len(info.entries) - 1)
+
+                elif isinstance(block, ToolUseBlock):
+                    inp = block.input if hasattr(block, 'input') and isinstance(block.input, dict) else {}
+                    desc = self._extract_tool_desc(inp)
+                    entry = LogEntry(
+                        kind="tool_use",
+                        name=getattr(block, 'name', '') or '',
+                        desc=desc,
+                        id=getattr(block, 'id', '') or '',
+                    )
+                    with info._lock:
+                        info.entries.append(entry)
+                    self._emit_entry(session_id, entry, len(info.entries) - 1)
+
+                elif isinstance(block, ThinkingBlock):
+                    # Skip thinking blocks -- they're internal reasoning
+                    pass
+
+        elif isinstance(message, UserMessage):
+            for block in (message.content if hasattr(message, 'content') else []):
+                if isinstance(block, ToolResultBlock):
+                    # Extract text content from tool result
+                    rc = getattr(block, 'content', '') or ''
+                    if isinstance(rc, list):
+                        text_parts = []
+                        for b in rc:
+                            if isinstance(b, dict) and b.get("type") == "text":
+                                text_parts.append(b.get("text", ""))
+                            elif hasattr(b, 'text'):
+                                text_parts.append(b.text or "")
+                        rt = " ".join(text_parts)
+                    elif isinstance(rc, str):
+                        rt = rc
+                    else:
+                        rt = str(rc)
+
+                    entry = LogEntry(
+                        kind="tool_result",
+                        text=rt[:600],
+                        tool_use_id=getattr(block, 'tool_use_id', '') or '',
+                        is_error=bool(getattr(block, 'is_error', False)),
+                    )
+                    with info._lock:
+                        info.entries.append(entry)
+                    self._emit_entry(session_id, entry, len(info.entries) - 1)
+
+                elif isinstance(block, TextBlock):
+                    user_text = (block.text or "")[:2000]
+                    # Dedup: skip if this matches the last user entry (SDK echo)
+                    with info._lock:
+                        last_user = None
+                        for e in reversed(info.entries):
+                            if e.kind == "user":
+                                last_user = e
+                                break
+                        if last_user and last_user.text.strip() == user_text.strip():
+                            continue  # skip duplicate
+                    entry = LogEntry(kind="user", text=user_text)
+                    with info._lock:
+                        info.entries.append(entry)
+                    self._emit_entry(session_id, entry, len(info.entries) - 1)
+
+        elif isinstance(message, ResultMessage):
+            info.cost_usd = getattr(message, 'total_cost_usd', 0.0) or 0.0
+            is_error = getattr(message, 'is_error', False)
+            if is_error:
+                info.error = "Session ended with error"
+                entry = LogEntry(kind="system", text="Session ended with error", is_error=True)
+                with info._lock:
+                    info.entries.append(entry)
+                self._emit_entry(session_id, entry, len(info.entries) - 1)
+
+            # Store the session_id from the result for future resume
+            result_session_id = getattr(message, 'session_id', None)
+            if result_session_id and result_session_id != session_id:
+                logger.info(
+                    "SDK assigned session_id %s (we used %s)",
+                    result_session_id, session_id
+                )
+
+            info.state = SessionState.IDLE
+            self._emit_state(info)
+
+        elif isinstance(message, StreamEvent):
+            # Forward raw streaming events for partial message display
+            event_data = {}
+            if hasattr(message, 'event'):
+                event_data['event'] = message.event
+            if hasattr(message, 'data'):
+                event_data['data'] = message.data
+            if self._socketio:
+                self._socketio.emit('stream_event', {
+                    'session_id': session_id,
+                    'event': event_data,
+                })
+
+    @staticmethod
+    def _extract_tool_desc(inp: dict) -> str:
+        """Extract a human-readable description from tool input."""
+        if "command" in inp:
+            return str(inp["command"])[:300]
+        elif "path" in inp:
+            desc = str(inp["path"])
+            if "content" in inp:
+                desc += f" (write {len(str(inp.get('content', '')))} chars)"
+            return desc
+        elif "pattern" in inp:
+            return str(inp["pattern"])[:200]
+        elif inp:
+            first_key = next(iter(inp))
+            return f"{first_key}: {str(inp[first_key])[:200]}"
+        return ""
+
+    # ------------------------------------------------------------------
+    # WebSocket emission helpers
+    # ------------------------------------------------------------------
+
+    def _emit_state(self, info: SessionInfo) -> None:
+        """Push session state change to all connected WebSocket clients.
+
+        Uses a background thread to ensure cross-context compatibility
+        (works from both the main asyncio loop and anyio task groups).
+        """
+        if self._socketio:
+            data = info.to_state_dict()
+            import threading
+            threading.Thread(
+                target=lambda: self._socketio.emit('session_state', data),
+                daemon=True
+            ).start()
+
+    def _emit_entry(self, session_id: str, entry: LogEntry, index: int) -> None:
+        """Push a new log entry to all connected WebSocket clients."""
+        if self._socketio:
+            data = {
+                'session_id': session_id,
+                'entry': entry.to_dict(),
+                'index': index,
+            }
+            import threading
+            threading.Thread(
+                target=lambda: self._socketio.emit('session_entry', data),
+                daemon=True
+            ).start()
+
+    def _emit_permission(self, session_id: str, tool_name: str, tool_input: dict) -> None:
+        """Push a permission request to all connected WebSocket clients.
+
+        This is called from inside an anyio task group (the SDK's control
+        handler), so we schedule the emit on a background thread to ensure
+        it reaches the SocketIO clients.
+        """
+        if self._socketio:
+            import threading
+            data = {
+                'session_id': session_id,
+                'tool_name': tool_name,
+                'tool_input': tool_input,
+            }
+            def _do_emit():
+                self._socketio.emit('session_permission', data)
+            threading.Thread(target=_do_emit, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Hook-based permission helpers (for CLI 2.x which doesn't support
+    # the SDK's can_use_tool callback)
+    # ------------------------------------------------------------------
+
+    def _hook_permission_start(self, session_id: str, req_id: str,
+                                tool_name: str, tool_input: dict) -> None:
+        """Called when a PreToolUse hook fires. Sets state to WAITING and
+        pushes the permission prompt to the frontend."""
+        with self._lock:
+            info = self._sessions.get(session_id)
+        if not info:
+            # Session might not be tracked (hook fires for any Claude session)
+            # Try to find by matching — for now, use the most recent WORKING session
+            with self._lock:
+                for sid, si in self._sessions.items():
+                    if si.state == SessionState.WORKING:
+                        info = si
+                        session_id = sid
+                        break
+        if not info:
+            return
+
+        info.pending_tool_name = tool_name
+        info.pending_tool_input = tool_input if isinstance(tool_input, dict) else {}
+        info.state = SessionState.WAITING
+        # Store the hook request ID so the WebSocket handler can resolve it
+        info._hook_req_id = req_id
+        self._emit_state(info)
+        self._emit_permission(session_id, tool_name, info.pending_tool_input)
+
+    def _hook_permission_end(self, session_id: str) -> None:
+        """Called when a hook permission is resolved. Restores WORKING state."""
+        with self._lock:
+            info = self._sessions.get(session_id)
+        if not info:
+            with self._lock:
+                for sid, si in self._sessions.items():
+                    if si.state == SessionState.WAITING:
+                        info = si
+                        session_id = sid
+                        break
+        if not info:
+            return
+
+        info.pending_tool_name = ""
+        info.pending_tool_input = {}
+        info._hook_req_id = None
+        info.state = SessionState.WORKING
+        self._emit_state(info)

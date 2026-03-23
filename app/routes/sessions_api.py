@@ -4,16 +4,16 @@ Session CRUD routes -- list, view, rename, auto-name, delete, duplicate, continu
 
 import json
 import shutil
-import subprocess
 from datetime import datetime, timezone as tz
 from pathlib import Path
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
 from ..config import (
     _sessions_dir,
     _load_names,
     _save_name,
+    _delete_name,
     _decode_project,
     get_active_project,
 )
@@ -42,7 +42,7 @@ def api_rename(session_id):
     if not path.exists():
         return jsonify({"error": "Not found"}), 404
 
-    data = request.json
+    data = request.get_json(silent=True) or {}
     new_title = data.get("title", "").strip()
     if not new_title:
         return jsonify({"error": "Title cannot be empty"}), 400
@@ -107,9 +107,17 @@ def api_delete(session_id):
     if not path.exists():
         return jsonify({"error": "Not found"}), 404
 
+    # Close the SDK session if it's running
+    sm = current_app.session_manager
+    if sm.has_session(session_id):
+        sm.close_session(session_id)
+
     path.unlink()
     if folder.exists() and folder.is_dir():
         shutil.rmtree(folder)
+
+    # Clean up user-set name from persistent store
+    _delete_name(session_id)
 
     return jsonify({"ok": True})
 
@@ -124,6 +132,7 @@ def api_delete_empty():
             f.unlink()
             if folder.exists() and folder.is_dir():
                 shutil.rmtree(folder)
+            _delete_name(f.stem)
             deleted.append(f.stem)
     return jsonify({"ok": True, "deleted": len(deleted)})
 
@@ -220,21 +229,34 @@ def api_continue(session_id):
 
 @bp.route("/api/open/<session_id>", methods=["POST"])
 def api_open(session_id):
+    """Open/resume a session via the SDK SessionManager."""
     path = _sessions_dir() / f"{session_id}.jsonl"
     if not path.exists():
         return jsonify({"error": "Not found"}), 404
+
     try:
         active_project = get_active_project()
         proj_dir = _decode_project(active_project) if active_project else str(Path.home())
-        proj_dir = proj_dir.replace("/", "\\")
-        si = subprocess.STARTUPINFO()
-        si.dwFlags = subprocess.STARTF_USESHOWWINDOW
-        si.wShowWindow = 7  # SW_SHOWMINNOACTIVE
-        subprocess.Popen(
-            f'cmd /k cd /d "{proj_dir}" && claude --resume {session_id}',
-            startupinfo=si,
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
+
+        sm = current_app.session_manager
+
+        # If already managed and running, just return ok
+        if sm.has_session(session_id):
+            state = sm.get_session_state(session_id)
+            if state and state != "stopped":
+                return jsonify({"ok": True, "already_running": True})
+
+        result = sm.start_session(
+            session_id=session_id,
+            prompt="",
+            cwd=proj_dir,
+            name="",
+            resume=True,
         )
-        return jsonify({"ok": True})
+
+        if result.get("ok"):
+            return jsonify({"ok": True})
+        return jsonify({"error": result.get("error", "Failed to open session")}), 500
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500

@@ -1,1 +1,3 @@
 flask
+flask-socketio
+claude-code-sdk>=0.0.25

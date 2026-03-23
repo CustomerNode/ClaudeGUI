@@ -6,6 +6,8 @@ let renameTarget = null;
 let sortMode = localStorage.getItem('sortMode') || 'date';
 let sortAsc  = localStorage.getItem('sortAsc') === 'true';
 let viewMode = localStorage.getItem('viewMode') || 'workforce';
+// Guard against invalid view modes persisted in localStorage
+if (!['workforce', 'list', 'workplace'].includes(viewMode)) viewMode = 'workforce';
 let wfSort = localStorage.getItem('wfSort') || 'status';
 let runningIds = new Set();
 let waitingData = {};   // { session_id: {question, options, kind} }
@@ -15,6 +17,20 @@ let guiOpenSessions = new Set(JSON.parse(localStorage.getItem('guiOpenSessions')
 let _activeGrpPopup = null;
 let respondTarget = null;
 let _allProjects = [];  // cached project list for overlay
+
+// Workspace / Workplace state (used by workspace.js)
+let workspaceActive = false;
+let _wsExpandedId = null;
+let permissionQueue = [];
+let permissionPolicy = localStorage.getItem('permPolicy') || 'manual';
+let customPolicies = JSON.parse(localStorage.getItem('customPolicies') || '{}');
+let workspaceHiddenSessions = new Set(JSON.parse(localStorage.getItem('wsHiddenSessions') || '[]'));
+let workspaceCardPositions = JSON.parse(localStorage.getItem('wsCardPositions') || '{}');
+let _answerPending = {};
+let _lastAnswer = {};
+let _resendCount = {};
+let _lastSendTimePerSession = {};
+let _waitingPolledOnce = true;  // WebSocket push means we always have state
 
 async function loadProjects() {
   const res = await fetch('/api/projects');
@@ -29,7 +45,14 @@ async function loadProjects() {
   const target = (savedMatch && savedMatch.session_count > 0)
     ? saved
     : (_allProjects.slice().sort((a,b) => b.session_count - a.session_count)[0] || {}).encoded;
-  if (target) await setProject(target, true);
+  if (target) {
+    await setProject(target, true);
+  } else {
+    // No project available — clear skeleton and show prompt
+    const listEl = document.getElementById('session-list');
+    if (listEl) listEl.innerHTML = '<div class="empty-state" style="padding:24px;text-align:center;color:var(--text-muted);font-size:13px;">No projects found.<br>Click the project selector above to get started.</div>';
+    document.getElementById('main-body').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:14px;flex-direction:column;gap:8px;"><span style="font-size:24px;">\uD83D\uDCC1</span><span>Select a project to begin</span></div>';
+  }
 }
 
 function _projectShortName(project) {
@@ -344,7 +367,7 @@ const _viewModes = {
     label: 'Workplace',
     title: 'Workplace',
     desc: 'Virtual office space for agent collaboration',
-    badge: 'Coming Soon',
+    // badge: 'Coming Soon',  -- workplace is now live
   },
 };
 
@@ -404,7 +427,8 @@ _updateViewModeButton(viewMode);
   opts.forEach(el => {
     if (el.dataset.sort === sortMode && String(el.dataset.asc) === String(sortAsc)) {
       el.classList.add('active');
-      document.getElementById('sidebar-sort-label').textContent = el.textContent;
+      const sortLabel = document.getElementById('sidebar-sort-label');
+      if (sortLabel) sortLabel.textContent = el.textContent;
     }
   });
 })();
@@ -427,7 +451,8 @@ function pickSort(mode, asc) {
     el.classList.toggle('active', match);
     if (match) label = el.textContent;
   });
-  document.getElementById('sidebar-sort-label').textContent = label;
+  const sortLabel = document.getElementById('sidebar-sort-label');
+  if (sortLabel) sortLabel.textContent = label;
   // Apply sort
   sortAsc = !!asc;
   if (viewMode === 'workforce') {
@@ -452,17 +477,19 @@ async function sleepAllSessions() {
   if (!ok) return;
   let closed = 0;
   for (const s of running) {
-    try {
-      const r = await fetch('/api/close/' + s.id, { method: 'POST' });
-      const d = await r.json();
-      if (d.ok) closed++;
-    } catch(e) {}
+    socket.emit('close_session', {session_id: s.id});
+    runningIds.delete(s.id);
+    delete sessionKinds[s.id];
+    closed++;
   }
   showToast(closed + ' session' + (closed !== 1 ? 's' : '') + ' closed');
   guiOpenSessions.clear();
   localStorage.setItem('guiOpenSessions', '[]');
-  if (liveSessionId) updateLiveInputBar();
-  pollWaiting();
+  if (liveSessionId) {
+    liveBarState = null;
+    updateLiveInputBar();
+  }
+  filterSessions();
 }
 
 // --- Delete All ---
@@ -490,17 +517,15 @@ async function deleteAllSessions() {
 
 // --- New Agent ---
 async function addNewAgent() {
-  const name = await showPrompt('New Session', '<p>Give this session a name (optional).</p>', {
-    placeholder: 'e.g. Fix login bug',
-    confirmText: 'Start',
-    icon: '\u2795',
-  });
-  if (name === null) return;
+  const result = await _showNewSessionDialog();
+  if (!result) return;
+  const { name, message } = result;
+
+  const newId = crypto.randomUUID();
 
   // Optimistic UI: add placeholder to sidebar + show spinner in main body
-  const tempId = '_pending_' + Date.now();
   const optimistic = {
-    id: tempId,
+    id: newId,
     display_title: name || 'New Session',
     custom_title: name || '',
     last_activity: 'Starting\u2026',
@@ -510,8 +535,16 @@ async function addNewAgent() {
   };
   allSessions.unshift(optimistic);
   filterSessions();
-  // Highlight the optimistic entry
-  activeId = tempId;
+
+  // Pre-seed as running+idle so the input bar doesn't flash "not running"
+  guiOpenAdd(newId);
+  runningIds.add(newId);
+  sessionKinds[newId] = 'idle';
+
+  activeId = newId;
+  localStorage.setItem('activeSessionId', newId);
+  setToolbarSession(newId, name || 'New Session', !name, name || '');
+
   document.getElementById('main-body').innerHTML =
     '<div class="live-panel" id="live-panel">' +
     '<div class="conversation live-log" id="live-log">' +
@@ -521,48 +554,216 @@ async function addNewAgent() {
     '</div></div>' +
     '<div class="live-input-bar" id="live-input-bar"></div></div>';
 
-  try {
-    const resp = await fetch('/api/new-session', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({name: name || ''})
-    });
-    const data = await resp.json();
-    // Remove optimistic entry
-    allSessions = allSessions.filter(s => s.id !== tempId);
-    if (data.ok && data.new_id) {
-      guiOpenAdd(data.new_id);
-      // Pre-seed as running+idle so the input bar doesn't flash "not running"
-      runningIds.add(data.new_id);
-      sessionKinds[data.new_id] = 'idle';
-      // Quietly refresh sidebar (no skeleton flash)
-      const sr = await fetch('/api/sessions');
-      allSessions = await sr.json();
-      document.getElementById('search').placeholder = 'Search ' + allSessions.length + ' sessions\u2026';
-      filterSessions();
-      // Open live panel directly (skip chat skeleton since we already show spinner)
-      activeId = data.new_id;
-      localStorage.setItem('activeSessionId', data.new_id);
-      const cached = allSessions.find(x => x.id === data.new_id);
-      setToolbarSession(data.new_id, (cached && cached.custom_title) || name || 'New Session', !cached, name || '');
-      startLivePanel(data.new_id);
-      showToast('Session started');
-    } else if (data.ok) {
-      const sr = await fetch('/api/sessions');
-      allSessions = await sr.json();
-      filterSessions();
-      showToast('Session launched \u2014 check sidebar for new entry');
-    } else {
-      filterSessions();
-      showToast(data.error || 'Could not start session', true);
-      document.getElementById('main-body').innerHTML = _buildDashboard();
+  // Build start payload
+  const startPayload = {
+    session_id: newId,
+    prompt: message || '',
+    cwd: _currentProjectDir(),
+    name: name || '',
+  };
+
+  // Start via WebSocket
+  socket.emit('start_session', startPayload);
+
+  // Start live panel
+  startLivePanel(newId);
+  showToast('Session started');
+}
+
+function _showNewSessionDialog() {
+  return new Promise(resolve => {
+    const overlay = document.getElementById('pm-overlay');
+    overlay.innerHTML = `
+      <div class="pm-card pm-enter" style="width:420px;">
+        <h2 class="pm-title">New Session</h2>
+        <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:20px;">
+          <div>
+            <label class="ns-label" for="ns-name">Name <span style="color:var(--text-faint);font-weight:400;">(optional)</span></label>
+            <input class="pm-input" id="ns-name" type="text" placeholder="e.g. Fix login bug" autocomplete="off" spellcheck="false" style="margin-bottom:0;">
+          </div>
+          <div>
+            <label class="ns-label" for="ns-message">Message <span style="color:var(--text-faint);font-weight:400;">(optional)</span></label>
+            <textarea class="ns-textarea" id="ns-message" rows="3" placeholder="What should Claude work on?"></textarea>
+          </div>
+        </div>
+        <div class="pm-actions">
+          <button class="pm-btn pm-btn-secondary" id="ns-cancel">Cancel</button>
+          <button class="pm-btn pm-btn-primary" id="ns-start">Start Session</button>
+        </div>
+      </div>`;
+    overlay.classList.add('show');
+    requestAnimationFrame(() => overlay.querySelector('.pm-card').classList.remove('pm-enter'));
+
+    const close = (val) => { _closePm(); resolve(val); };
+    const submit = () => {
+      close({
+        name: document.getElementById('ns-name').value.trim(),
+        message: (document.getElementById('ns-message').value || '').trim(),
+      });
+    };
+
+    document.getElementById('ns-start').onclick = submit;
+    document.getElementById('ns-cancel').onclick = () => close(null);
+    overlay.onclick = e => { if (e.target === overlay) close(null); };
+    const nameInput = document.getElementById('ns-name');
+    nameInput.onkeydown = e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') close(null); };
+    nameInput.focus();
+  });
+}
+
+// --- Keyboard Navigation ---
+document.addEventListener('keydown', (e) => {
+  // Don't intercept when typing in inputs
+  if (e.target.matches('input, textarea, select, [contenteditable]')) return;
+  // Don't intercept if a modal is open
+  if (document.getElementById('pm-overlay').classList.contains('show')) return;
+
+  if (e.key === 'n' && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    addNewAgent();
+  } else if (e.key === 'ArrowDown' || e.key === 'j') {
+    e.preventDefault();
+    _selectAdjacentSession(1);
+  } else if (e.key === 'ArrowUp' || e.key === 'k') {
+    e.preventDefault();
+    _selectAdjacentSession(-1);
+  } else if (e.key === 'Enter') {
+    if (activeId && !liveSessionId) {
+      e.preventDefault();
+      startLivePanel(activeId);
     }
-  } catch(e) {
-    allSessions = allSessions.filter(s => s.id !== tempId);
-    filterSessions();
-    showToast('Could not start session', true);
-    document.getElementById('main-body').innerHTML = _buildDashboard();
+  } else if (e.key === 'Escape') {
+    if (liveSessionId) {
+      e.preventDefault();
+      stopLivePanel();
+    }
+  } else if (e.key === '?' && e.shiftKey) {
+    e.preventDefault();
+    _showHelpModal();
   }
+});
+
+function _selectAdjacentSession(direction) {
+  // Try list view items first, then workforce cards
+  let items = Array.from(document.querySelectorAll('.session-item[data-sid]'));
+  if (!items.length) {
+    // Workforce grid: cards have onclick with session IDs but no data-sid;
+    // use the sidebar session list if available, otherwise bail
+    return;
+  }
+  const idx = items.findIndex(el => el.dataset.sid === activeId);
+  const next = items[Math.max(0, Math.min(items.length - 1, idx + direction))];
+  if (next) selectSession(next.dataset.sid);
+}
+
+// --- Help Modal ---
+function _showHelpModal() {
+  const overlay = document.getElementById('pm-overlay');
+  overlay.innerHTML = `
+    <div class="pm-card pm-enter" style="width:460px;">
+      <h2 class="pm-title">Keyboard Shortcuts</h2>
+      <div class="pm-body" style="margin-bottom:0;">
+        <table class="help-table">
+          <tr><td><kbd>N</kbd></td><td>New session</td></tr>
+          <tr><td><kbd>\u2191</kbd> / <kbd>K</kbd></td><td>Previous session</td></tr>
+          <tr><td><kbd>\u2193</kbd> / <kbd>J</kbd></td><td>Next session</td></tr>
+          <tr><td><kbd>Enter</kbd></td><td>Open live panel</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>Close panel / Interrupt</td></tr>
+          <tr><td><kbd>Ctrl+F</kbd></td><td>Find in session</td></tr>
+          <tr><td><kbd>Ctrl+Enter</kbd></td><td>Send message</td></tr>
+          <tr><td><kbd>?</kbd></td><td>This help</td></tr>
+        </table>
+      </div>
+      <div class="pm-actions" style="margin-top:16px;">
+        <button class="pm-btn pm-btn-primary" id="pm-ok">Close</button>
+      </div>
+    </div>`;
+  overlay.classList.add('show');
+  requestAnimationFrame(() => overlay.querySelector('.pm-card').classList.remove('pm-enter'));
+  const close = () => { _closePm(); };
+  document.getElementById('pm-ok').onclick = close;
+  overlay.onclick = e => { if (e.target === overlay) close(); };
+  document.getElementById('pm-ok').focus();
+}
+
+// --- CLAUDE.md Memory Editor ---
+async function _showMemoryEditor() {
+  const overlay = document.getElementById('pm-overlay');
+  overlay.innerHTML = `
+    <div class="pm-card pm-enter" style="width:580px;max-height:85vh;display:flex;flex-direction:column;">
+      <h2 class="pm-title">CLAUDE.md Editor</h2>
+      <div style="display:flex;flex-direction:column;flex:1;min-height:0;gap:12px;">
+        <div class="memory-tabs">
+          <button class="mem-tab active" id="mem-tab-project">Project</button>
+          <button class="mem-tab" id="mem-tab-global">Global</button>
+        </div>
+        <div id="mem-project" style="display:flex;flex-direction:column;flex:1;min-height:0;">
+          <p class="mem-path" id="mem-project-path" style="font-size:10px;color:var(--text-faint);margin-bottom:6px;">Loading...</p>
+          <textarea class="ns-textarea" id="mem-project-content" rows="16" placeholder="Project CLAUDE.md content..." style="flex:1;min-height:200px;"></textarea>
+        </div>
+        <div id="mem-global" style="display:none;flex-direction:column;flex:1;min-height:0;">
+          <p class="mem-path" id="mem-global-path" style="font-size:10px;color:var(--text-faint);margin-bottom:6px;">~/.claude/CLAUDE.md</p>
+          <textarea class="ns-textarea" id="mem-global-content" rows="16" placeholder="Global CLAUDE.md content..." style="flex:1;min-height:200px;"></textarea>
+        </div>
+      </div>
+      <div class="pm-actions" style="margin-top:14px;">
+        <button class="pm-btn pm-btn-secondary" id="mem-cancel">Cancel</button>
+        <button class="pm-btn pm-btn-primary" id="mem-save">Save</button>
+      </div>
+    </div>`;
+  overlay.classList.add('show');
+  requestAnimationFrame(() => overlay.querySelector('.pm-card').classList.remove('pm-enter'));
+
+  // Tab switching
+  const tabProject = document.getElementById('mem-tab-project');
+  const tabGlobal = document.getElementById('mem-tab-global');
+  const panelProject = document.getElementById('mem-project');
+  const panelGlobal = document.getElementById('mem-global');
+  tabProject.onclick = () => {
+    tabProject.classList.add('active'); tabGlobal.classList.remove('active');
+    panelProject.style.display = 'flex'; panelGlobal.style.display = 'none';
+  };
+  tabGlobal.onclick = () => {
+    tabGlobal.classList.add('active'); tabProject.classList.remove('active');
+    panelGlobal.style.display = 'flex'; panelProject.style.display = 'none';
+  };
+
+  // Load content
+  try {
+    const [projRes, globalRes] = await Promise.all([
+      fetch('/api/claude-md').then(r => r.json()).catch(() => ({content:'', path:'Not found'})),
+      fetch('/api/claude-md-global').then(r => r.json()).catch(() => ({content:'', path:'~/.claude/CLAUDE.md'})),
+    ]);
+    document.getElementById('mem-project-path').textContent = projRes.path || 'Not found';
+    document.getElementById('mem-project-content').value = projRes.content || '';
+    document.getElementById('mem-global-path').textContent = globalRes.path || '~/.claude/CLAUDE.md';
+    document.getElementById('mem-global-content').value = globalRes.content || '';
+  } catch(e) {
+    showToast('Failed to load CLAUDE.md files', true);
+  }
+
+  const close = () => { _closePm(); };
+  document.getElementById('mem-cancel').onclick = close;
+  overlay.onclick = e => { if (e.target === overlay) close(); };
+
+  document.getElementById('mem-save').onclick = async () => {
+    try {
+      const results = await Promise.all([
+        fetch('/api/claude-md', {
+          method: 'PUT', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({content: document.getElementById('mem-project-content').value})
+        }).then(r => r.json()).catch(() => ({ok:false})),
+        fetch('/api/claude-md-global', {
+          method: 'PUT', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({content: document.getElementById('mem-global-content').value})
+        }).then(r => r.json()).catch(() => ({ok:false})),
+      ]);
+      close();
+      showToast('CLAUDE.md files saved');
+    } catch(e) {
+      showToast('Failed to save', true);
+    }
+  };
 }
 
 // --- Skeleton & Sessions ---
@@ -604,7 +805,9 @@ function filterSessions() {
         (s.preview||'').toLowerCase().includes(q)
       )
     : allSessions;
-  if (viewMode === 'workforce') {
+  if (viewMode === 'workplace') {
+    renderWorkspace(wfSortedSessions(filtered));
+  } else if (viewMode === 'workforce') {
     renderWorkforce(wfSortedSessions(filtered));
   } else {
     renderList(sortedSessions(filtered));

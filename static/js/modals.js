@@ -13,12 +13,12 @@ document.addEventListener('click', function(e) {
 
 // --- Summary modal ---
 async function showSummary(id) {
-  document.getElementById('summary-body').innerHTML = '<div style="color:#555;font-size:13px;"><span class="spinner"></span> Building summary\u2026</div>';
+  document.getElementById('summary-body').innerHTML = '<div style="color:var(--text-faint);font-size:13px;"><span class="spinner"></span> Building summary\u2026</div>';
   document.getElementById('summary-overlay').classList.add('show');
 
   const resp = await fetch('/api/summary/' + id);
   const data = await resp.json();
-  document.getElementById('summary-body').innerHTML = data.html || ('<p style="color:#888">' + (data.error||'No summary available') + '</p>');
+  document.getElementById('summary-body').innerHTML = data.html || ('<p style="color:var(--text-muted)">' + (data.error||'No summary available') + '</p>');
 }
 
 function closeSummary() {
@@ -138,33 +138,22 @@ function closeRespond() {
   respondTarget = null;
 }
 
-async function sendRespond(text) {
+function sendRespond(text) {
   if (!text || !respondTarget) return;
-  const sendBtn = document.getElementById('respond-send');
-  sendBtn.disabled = true; sendBtn.textContent = 'Sending\u2026';
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8000);
-    const r = await fetch('/api/respond/' + respondTarget, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({text}), signal: ctrl.signal
-    });
-    clearTimeout(timer);
-    const d = await r.json();
-    if (d.method === 'sent') {
-      closeRespond();
-      setTimeout(pollWaiting, 1000);
-    } else if (d.method === 'clipboard') {
-      closeRespond();
-      showAlert('Copied to Clipboard', '<p>' + escHtml(d.message) + '</p>', { icon: '\uD83D\uDCCB' });
-    } else {
-      showAlert('Send Failed', '<p>' + escHtml(d.err || d.method) + '</p>', { icon: '\u26A0\uFE0F' });
-    }
-  } catch(e) {
-    if (e.name === 'AbortError') showAlert('Timed Out', '<p>Response copied to clipboard. Switch to your terminal and paste.</p>', { icon: '\u23F1\uFE0F' });
-    else showAlert('Error', '<p>' + escHtml(e.message) + '</p>', { icon: '\u26A0\uFE0F' });
+  const sid = respondTarget;
+
+  // If it's a permission response (from waitingData), use permission_response event
+  if (waitingData[sid]) {
+    socket.emit('permission_response', {session_id: sid, action: text});
+  } else {
+    socket.emit('send_message', {session_id: sid, text: text});
   }
-  finally { sendBtn.disabled = false; sendBtn.textContent = 'Send \u21b5'; }
+
+  // Optimistic UI update
+  delete waitingData[sid];
+  sessionKinds[sid] = 'working';
+  closeRespond();
+  showToast('Response sent');
 }
 
 async function submitRespond() {

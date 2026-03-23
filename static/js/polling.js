@@ -2,34 +2,38 @@
 
 async function pollWaiting() {
   try {
-    const resp = await fetch('/api/waiting');
+    const _inclParam = liveSessionId ? '?include=' + encodeURIComponent(liveSessionId) : '';
+    const resp = await fetch('/api/waiting' + _inclParam);
     const list = await resp.json();
     if (!Array.isArray(list)) throw new Error('bad response');
     const newWaiting = {};
     const newRunning = new Set();
     const newKinds = {};
     list.forEach(w => {
-      // Only show idle sessions if the user explicitly opened them in GUI
-      if (w.kind === 'idle' && !guiOpenSessions.has(w.id) && w.id !== liveSessionId) return;
-      newRunning.add(w.id);
+      // Only treat sessions with an actual running process (pid > 0) as running.
+      // Sessions with pid=0 (dead, included via ?include= or mtime-only) must NOT
+      // be in runningIds — otherwise the UI shows idle/working/question states for
+      // sessions that aren't actually running, and permission answers silently fail.
+      if (w.pid > 0) newRunning.add(w.id);
       newKinds[w.id] = w.kind;   // 'question' | 'working' | 'idle'
       if (w.kind === 'question') newWaiting[w.id] = w;
     });
 
     // Auto-send queued input when Claude transitions from working -> idle
-    if (liveSessionId && liveQueuedText) {
-      const wasWorking = (sessionKinds[liveSessionId] === 'working');
-      const nowIdle    = (newKinds[liveSessionId] === 'idle');
-      if (wasWorking && nowIdle) {
-        const textToSend = liveQueuedText;
-        liveQueuedText = '';
+    // Snapshot the session ID to prevent race conditions if user switches sessions
+    const _qSid = liveSessionId;
+    const _qText = _qSid ? _ps(_qSid).queuedText : '';
+    if (_qSid && _qText && !_liveSending) {
+      const wasWorking = (sessionKinds[_qSid] === 'working');
+      const nowIdle    = (newKinds[_qSid] === 'idle');
+      if (wasWorking && nowIdle && liveSessionId === _qSid) {
+        _ps(_qSid).queuedText = '';
+        // Force UI refresh to clear the queue banner and textarea
+        liveBarState = null;
         showToast('Sending queued command\u2026');
-        fetch('/api/respond/' + liveSessionId, {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({text: textToSend})
-        }).then(r => r.json()).then(d => {
-          if (d.method !== 'sent') showToast('Queue send failed', true);
-        });
+        // Use _liveSubmitDirect so the queued message gets an optimistic
+        // bubble in the chat, working-state UI, and proper retry logic.
+        _liveSubmitDirect(_qSid, _qText, {});
       }
     }
 
@@ -40,14 +44,21 @@ async function pollWaiting() {
       if (newRunning.has(id)) row.classList.add('si-' + (newKinds[id] || 'working'));
     });
 
-    // Respect optimistic idle grace period — don't let server 'working' overwrite it
-    if (liveSessionId && _optimisticIdleUntil > Date.now() && newKinds[liveSessionId] === 'working') {
-      newKinds[liveSessionId] = 'idle';
+    // Clear _answerPending when the server reports a non-question state,
+    // meaning the answered question has resolved and the server's tracking
+    // has already taken over suppression.
+    for (const sid in _answerPending) {
+      if (newKinds[sid] && newKinds[sid] !== 'question') {
+        delete _answerPending[sid];
+        delete _lastAnswer[sid];
+        delete _resendCount[sid];
+      }
     }
 
     waitingData = newWaiting;
     runningIds  = newRunning;
     sessionKinds = newKinds;
+    _waitingPolledOnce = true;
 
     // Clean up guiOpenSessions: if a session the user previously opened in GUI
     // is no longer reported as running by the server, stop treating it as idle.
@@ -62,14 +73,19 @@ async function pollWaiting() {
     // If currently showing a popup for a session that is no longer waiting, close it
     if (respondTarget && !waitingData[respondTarget]) closeRespond();
 
-    // Re-render workforce view if visible (to update status indicators)
-    if (viewMode === 'workforce') filterSessions();
+    // Update workspace permission queue if active
+    if (workspaceActive && typeof _updatePermissionQueue === 'function') {
+      _updatePermissionQueue(newWaiting);
+    }
+
+    // Re-render workforce/workspace view if visible (to update status indicators)
+    if (viewMode === 'workforce' || viewMode === 'workplace') filterSessions();
 
     // Update live panel input bar state
     if (liveSessionId) updateLiveInputBar();
 
-    // Refresh dashboard if no session selected
-    if (!activeId) {
+    // Refresh dashboard if no session selected (skip in workspace mode)
+    if (!activeId && !workspaceActive) {
       const dash = document.querySelector('.dashboard');
       if (dash) document.getElementById('main-body').innerHTML = _buildDashboard();
     }
@@ -78,7 +94,7 @@ async function pollWaiting() {
     const btnClose = document.getElementById('btn-close');
     if (btnClose && activeId) btnClose.disabled = !newRunning.has(activeId) && !guiOpenSessions.has(activeId);
 
-  } catch(e) {}
+  } catch(e) { console.error('[pollWaiting] error:', e); }
   finally {
     // Schedule next poll only after this one finishes — avoids overlap if WMI is slow
     _waitingPollTimer = setTimeout(pollWaiting, 2000);
@@ -86,6 +102,7 @@ async function pollWaiting() {
 }
 
 let _waitingPollTimer = null;
+let _waitingPolledOnce = false;
 
 /** Poke the poll loop to run sooner (without creating duplicate chains). */
 function pokeWaiting() {

@@ -5,10 +5,10 @@ Project picker routes -- list, switch, rename, delete, add, find, chat, new-sess
 import re
 import shutil
 import subprocess
-import threading
+import uuid as uuid_mod
 from pathlib import Path
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
 from ..config import (
     _CLAUDE_PROJECTS,
@@ -30,6 +30,8 @@ def api_projects():
     active_project = get_active_project()
     project_names = _load_project_names()
     results = []
+    if not _CLAUDE_PROJECTS.is_dir():
+        return jsonify(results)
     for d in sorted(_CLAUDE_PROJECTS.iterdir()):
         if not d.is_dir() or d.name.startswith("subagents"):
             continue
@@ -150,7 +152,7 @@ if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
 @bp.route("/api/find-projects")
 def api_find_projects():
     """Scan common directories for code projects not yet registered."""
-    existing = {d.name for d in _CLAUDE_PROJECTS.iterdir() if d.is_dir()}
+    existing = {d.name for d in _CLAUDE_PROJECTS.iterdir() if d.is_dir()} if _CLAUDE_PROJECTS.is_dir() else set()
     indicators = [".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml",
                   "requirements.txt", "pom.xml", "build.gradle", "Makefile",
                   ".sln", ".csproj", "CMakeLists.txt", "Gemfile", "composer.json"]
@@ -225,7 +227,7 @@ def api_project_chat():
     # Keywords to match against directory names
     keywords = [w for w in re.split(r'\W+', user_msg) if len(w) > 2]
 
-    existing = {d.name for d in _CLAUDE_PROJECTS.iterdir() if d.is_dir()}
+    existing = {d.name for d in _CLAUDE_PROJECTS.iterdir() if d.is_dir()} if _CLAUDE_PROJECTS.is_dir() else set()
     matches = []
     max_depth = 2
 
@@ -280,13 +282,14 @@ def api_project_chat():
 
 @bp.route("/api/new-session", methods=["POST"])
 def api_new_session():
-    """Launch a claude session. If resume_id is provided, resume that session."""
-    import time as _time
+    """Launch a Claude SDK session. If resume_id is provided, resume that session."""
     try:
         data = request.get_json() or {}
         name = (data.get("name") or "").strip()
         resume_id = (data.get("resume_id") or "").strip()
+        prompt = (data.get("prompt") or "").strip()
         active_project = get_active_project()
+
         # Find the actual project directory
         proj_dir = str(Path.home())
         if active_project:
@@ -315,57 +318,45 @@ def api_new_session():
         if not Path(proj_dir_win).is_dir():
             return jsonify({"error": f"Project directory not found: {proj_dir_win}"}), 400
 
-        si = subprocess.STARTUPINFO()
-        si.dwFlags = subprocess.STARTF_USESHOWWINDOW
-        si.wShowWindow = 7  # SW_SHOWMINNOACTIVE
+        sm = current_app.session_manager
 
         if resume_id:
-            # Resume existing session
-            subprocess.Popen(
-                f'cmd /k cd /d "{proj_dir_win}" && claude --resume {resume_id}',
-                startupinfo=si,
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
+            # Resume existing session via SDK
+            result = sm.start_session(
+                session_id=resume_id,
+                prompt=prompt,
+                cwd=proj_dir,
+                name=name,
+                resume=True,
             )
-            return jsonify({"ok": True, "new_id": resume_id})
+            if result.get("ok"):
+                return jsonify({"ok": True, "new_id": resume_id})
+            return jsonify({"error": result.get("error", "Failed to resume")}), 500
 
-        # New session: snapshot PIDs, launch claude, find new PID's session ID
-        import json as _json
-        sessions_reg = Path.home() / ".claude" / "sessions"
-        before_pids = {f.stem for f in sessions_reg.glob("*.json")} if sessions_reg.is_dir() else set()
+        # New session: generate a new UUID
+        new_id = str(uuid_mod.uuid4())
 
-        subprocess.Popen(
-            f'cmd /k cd /d "{proj_dir_win}" && claude',
-            startupinfo=si,
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
+        # Create the .jsonl so it shows in our session list
+        jsonl_path = _sessions_dir() / f"{new_id}.jsonl"
+        if not jsonl_path.exists():
+            jsonl_path.write_text("", encoding="utf-8")
+
+        # Write the user-provided name if given
+        if name:
+            _save_name(new_id, name)
+
+        # Start SDK session
+        result = sm.start_session(
+            session_id=new_id,
+            prompt=prompt,
+            cwd=proj_dir,
+            name=name,
+            resume=False,
         )
 
-        # Poll Claude's session registry for the new process (up to 10s)
-        new_id = None
-        for _ in range(20):
-            _time.sleep(0.5)
-            if not sessions_reg.is_dir():
-                continue
-            after_pids = {f.stem for f in sessions_reg.glob("*.json")}
-            new_pids = after_pids - before_pids
-            for pid_name in new_pids:
-                try:
-                    reg = _json.loads((sessions_reg / f"{pid_name}.json").read_text())
-                    if reg.get("sessionId"):
-                        new_id = reg["sessionId"]
-                        # Create the .jsonl so it shows in our session list
-                        jsonl_path = _sessions_dir() / f"{new_id}.jsonl"
-                        if not jsonl_path.exists():
-                            jsonl_path.write_text("", encoding="utf-8")
-                        # Write the user-provided name if given
-                        if name:
-                            from ..config import _save_name
-                            _save_name(new_id, name)
-                        break
-                except Exception:
-                    continue
-            if new_id:
-                break
+        if result.get("ok"):
+            return jsonify({"ok": True, "new_id": new_id})
+        return jsonify({"error": result.get("error", "Failed to start session")}), 500
 
-        return jsonify({"ok": True, "new_id": new_id})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

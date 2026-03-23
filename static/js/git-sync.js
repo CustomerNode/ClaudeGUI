@@ -40,14 +40,14 @@ function openGitPublish() {
   const s = _gitStatus;
   const hasPush = s.ahead > 0 || s.uncommitted;
   if (!hasPush) {
-    showGitSyncModal('Publish App Update', '<p style="color:#aaa">Nothing to publish \u2014 your app is already up to date on remote.</p>',
+    showGitSyncModal('Publish App Update', '<p style="color:var(--text-muted)">Nothing to publish \u2014 your app is already up to date on remote.</p>',
       [{label:'OK', onclick: closeGitSyncModal}]);
     return;
   }
   let body = '<p>Your local changes are ready to publish.</p>'
-    + '<p style="color:#888;font-size:12px">They will be saved and uploaded to remote automatically.</p>';
+    + '<p style="color:var(--text-muted);font-size:12px">They will be saved and uploaded to remote automatically.</p>';
   if (s.behind > 0) {
-    body += '<p style="color:#aaa;font-size:12px;margin-top:8px">'
+    body += '<p style="color:var(--text-muted);font-size:12px;margin-top:8px">'
       + s.behind + ' remote update(s) will be pulled in first, then your changes pushed.</p>';
   }
   showGitSyncModal('Publish App Update', body, [
@@ -58,9 +58,9 @@ function openGitPublish() {
 
 function openGitSyncBoth() {
   const s = _gitStatus;
-  let body = '<p><b style="color:#fff">' + s.behind + ' update(s)</b> to pull and '
-    + '<b style="color:#fff">' + (s.ahead + (s.uncommitted ? 1 : 0)) + ' change(s)</b> to push.</p>'
-    + '<p style="color:#888;font-size:12px">Remote updates will be pulled first, merge conflicts resolved automatically, then your changes pushed.</p>';
+  let body = '<p><b style="color:var(--text-heading)">' + s.behind + ' update(s)</b> to pull and '
+    + '<b style="color:var(--text-heading)">' + (s.ahead + (s.uncommitted ? 1 : 0)) + ' change(s)</b> to push.</p>'
+    + '<p style="color:var(--text-muted);font-size:12px">Remote updates will be pulled first, merge conflicts resolved automatically, then your changes pushed.</p>';
   showGitSyncModal('Sync App', body, [
     {label: 'Sync Now', primary: true, onclick: () => executeGitAction('both', 'btn-git-sync', 'Sync App')},
     {label: 'Cancel', onclick: closeGitSyncModal}
@@ -70,12 +70,12 @@ function openGitSyncBoth() {
 function openGitUpdate() {
   const s = _gitStatus;
   if (s.behind === 0) {
-    showGitSyncModal('Update App', '<p style="color:#aaa">Your app is already up to date.</p>',
+    showGitSyncModal('Update App', '<p style="color:var(--text-muted)">Your app is already up to date.</p>',
       [{label:'OK', onclick: closeGitSyncModal}]);
     return;
   }
-  showGitSyncModal('Update App', '<p><b style="color:#fff">' + s.behind + ' update(s)</b> are available from remote.</p>'
-    + '<p style="color:#888;font-size:12px">Your app will be updated to the latest version. Your local changes are safe.</p>', [
+  showGitSyncModal('Update App', '<p><b style="color:var(--text-heading)">' + s.behind + ' update(s)</b> are available from remote.</p>'
+    + '<p style="color:var(--text-muted);font-size:12px">Your app will be updated to the latest version. Your local changes are safe.</p>', [
     {label: 'Update Now', primary: true, onclick: () => executeGitAction('pull', 'btn-git-update', 'Update App')},
     {label: 'Cancel', onclick: closeGitSyncModal}
   ]);
@@ -110,13 +110,13 @@ async function executeGitAction(action, btnId, btnLabel) {
       body: JSON.stringify({action})
     });
     const r = await res.json();
-    const body = '<ul style="margin:10px 0 0 16px;color:#bbb;">'
+    const body = '<ul style="margin:10px 0 0 16px;color:var(--text-secondary);">'
       + r.messages.map(m => '<li>' + escHtml(m) + '</li>').join('') + '</ul>';
     showGitSyncModal(r.ok ? btnLabel + ' \u2713' : 'Problem', body,
       [{label:'OK', primary:true, onclick: closeGitSyncModal}]);
     await pollGitStatus();
   } catch(e) {
-    showGitSyncModal('Error', '<p style="color:#f88">Could not complete. Try again.</p>',
+    showGitSyncModal('Error', '<p style="color:var(--result-err)">Could not complete. Try again.</p>',
       [{label:'OK', onclick: closeGitSyncModal}]);
   } finally {
     btn.disabled = false;

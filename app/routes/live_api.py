@@ -1,34 +1,129 @@
 """
-Live session routes -- log streaming, waiting detection, respond, close.
+Live session routes -- log streaming for the live terminal panel.
+
+The old polling-based endpoints (/api/waiting, /api/respond, /api/close,
+/api/interrupt) have been removed. Those operations now go through WebSocket
+events handled in ws_events.py via the SessionManager.
+
+The PreToolUse hook endpoint (/api/hook/pre-tool) handles permission requests
+from the Claude CLI hook system, since the SDK's can_use_tool callback doesn't
+work with CLI 2.x.
 """
 
 import json
-import subprocess
+import threading
+import time
+from pathlib import Path
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
-from ..config import _sessions_dir
-from ..process_detection import (
-    _get_running_session_ids,
-    _parse_waiting_state,
-    _parse_session_kind,
-    send_to_session,
-)
+# Debug endpoint to test permission emit
+from .. import socketio as _app_socketio
+
+from ..config import _sessions_dir, get_active_project, _decode_project, _CLAUDE_PROJECTS
 
 bp = Blueprint('live_api', __name__)
 
 
+@bp.route("/api/_emit-permission", methods=["POST"])
+def internal_emit_permission():
+    """Internal endpoint: emit session_permission via SocketIO.
+
+    Called by the SessionManager's permission callback because socketio.emit
+    doesn't work from inside anyio task group context.
+    """
+    data = request.get_json(silent=True) or {}
+    _app_socketio.emit('session_state', {
+        'session_id': data.get('session_id', ''),
+        'state': 'waiting',
+        'cost_usd': 0,
+        'error': None,
+        'name': '',
+    })
+    _app_socketio.emit('session_permission', data)
+    return jsonify({"ok": True})
+
+# Pending hook permissions: {request_id: {"event": threading.Event, "result": str}}
+_hook_pending = {}
+_hook_lock = threading.Lock()
+
+
+@bp.route("/api/hook/pre-tool", methods=["POST"])
+def hook_pre_tool():
+    """Handle PreToolUse hook callback from Claude CLI.
+
+    The hook script POSTs tool info here and blocks until the user responds
+    via the WebSocket permission_response event. Returns allow/deny.
+    """
+    data = request.get_json(silent=True) or {}
+    tool_name = data.get("tool_name", "unknown")
+    tool_input = data.get("tool_input", {})
+    session_id = data.get("session_id", "")
+
+    # Create a blocking event for this request
+    import uuid
+    req_id = str(uuid.uuid4())[:8]
+    event = threading.Event()
+    with _hook_lock:
+        _hook_pending[req_id] = {"event": event, "result": "allow"}
+
+    # Find the session in SessionManager and set it to WAITING
+    sm = current_app.session_manager
+    sm._hook_permission_start(session_id, req_id, tool_name, tool_input)
+
+    # Block until user responds (up to 1 hour)
+    event.wait(timeout=3600)
+
+    with _hook_lock:
+        entry = _hook_pending.pop(req_id, {})
+    result = entry.get("result", "allow")
+
+    # Tell SessionManager the permission was resolved
+    sm._hook_permission_end(session_id)
+
+    return jsonify({"action": result})
+
+
+def resolve_hook_permission(req_id: str, action: str):
+    """Called from WebSocket handler to resolve a pending hook permission."""
+    with _hook_lock:
+        entry = _hook_pending.get(req_id)
+    if not entry:
+        return False
+    entry["result"] = action
+    entry["event"].set()
+    return True
+
+
 @bp.route("/api/session-log/<session_id>")
 def api_session_log(session_id):
-    """Return structured log entries for the live terminal panel."""
+    """Return structured log entries for the live terminal panel.
+
+    If the session is managed by the SDK SessionManager, return entries
+    from memory. Otherwise, fall back to reading the .jsonl file on disk
+    (for historical sessions).
+    """
+    try:
+        since = int(request.args.get("since", 0))
+    except (ValueError, TypeError):
+        since = 0
+
+    # Check if this session is managed by the SDK
+    sm = current_app.session_manager
+    if sm.has_session(session_id):
+        entries = sm.get_entries(session_id, since=since)
+        return jsonify({"entries": entries, "total_lines": since + len(entries)})
+
+    # Fall back to .jsonl file parsing for historical sessions
     path = _sessions_dir() / f"{session_id}.jsonl"
     if not path.exists():
         return jsonify({"error": "Not found"}), 404
-    since = int(request.args.get("since", 0))
+
     try:
         raw_lines = [l for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
     except Exception:
         return jsonify({"entries": [], "total_lines": 0})
+
     total = len(raw_lines)
     entries = []
     for raw in raw_lines[since:]:
@@ -95,85 +190,136 @@ def api_session_log(session_id):
     return jsonify({"entries": entries, "total_lines": total})
 
 
-@bp.route("/api/waiting")
-def api_waiting():
-    """Return all running sessions with kind: 'question' | 'working' | 'idle'."""
-    running = _get_running_session_ids()
-    current_dir = _sessions_dir()
-    result = []
-    for sid, raw_pid in running.items():
-        path = current_dir / f"{sid}.jsonl"
-        if not path.exists():
-            continue  # session belongs to a different project
-        apid = abs(raw_pid)
-        safe = raw_pid > 0  # positive = UUID confirmed, safe to kill
-        state = _parse_waiting_state(path)
-        if state is not None:
-            result.append({"id": sid, "pid": apid, "safe": safe,
-                           "question": state["question"],
-                           "options":  state["options"],
-                           "kind":     "question"})
-        else:
-            kind = _parse_session_kind(path)
-            result.append({"id": sid, "pid": apid, "safe": safe,
-                           "question": None, "options": None, "kind": kind})
-    return jsonify(result)
+# ---------------------------------------------------------------------------
+# CLAUDE.md editor API
+# ---------------------------------------------------------------------------
+
+def _get_project_path() -> Path:
+    """Resolve the active project's filesystem path."""
+    proj = get_active_project()
+    if proj:
+        decoded = _decode_project(proj)
+        p = Path(decoded)
+        if p.is_dir():
+            return p
+    # Fall back: use sessions dir parent heuristic
+    sd = _sessions_dir()
+    if sd != _CLAUDE_PROJECTS:
+        decoded = _decode_project(sd.name)
+        p = Path(decoded)
+        if p.is_dir():
+            return p
+    return Path.cwd()
 
 
-@bp.route("/api/respond/<session_id>", methods=["POST"])
-def api_respond(session_id):
-    """Send text to a waiting Claude session."""
-    data = request.get_json() or {}
-    text = (data.get("text") or "").strip()
-    if not text:
-        return jsonify({"error": "No text provided"}), 400
-
-    running = _get_running_session_ids()
-    raw_pid = running.get(session_id)
-    pid = abs(raw_pid) if raw_pid else None
-
-    if pid:
-        result = send_to_session(pid, text)
-        return jsonify(result)
-
-    # Session not running — tell the client so it can resume
-    return jsonify({"ok": False, "method": "not_running"})
-
-
-@bp.route("/api/close/<session_id>", methods=["POST"])
-def api_close_session(session_id):
-    """Terminate the running Claude process and its parent cmd window."""
-    # SAFETY: Only close sessions where we can verify the UUID in the command line
-    # AND the session belongs to the current project.
-    current_dir = _sessions_dir()
-    if not (current_dir / f"{session_id}.jsonl").exists():
-        return jsonify({"ok": False, "error": "Session not in current project"})
-    running = _get_running_session_ids()
-    pid = running.get(session_id)
-    if not pid:
-        return jsonify({"ok": False, "error": "Session not running"})
-    if pid < 0:
-        return jsonify({"ok": False, "error": "Cannot close \u2014 session was not launched from GUI. Close it from its terminal instead."})
+@bp.route('/api/claude-md', methods=['GET'])
+def get_claude_md():
+    """Read CLAUDE.md from active project directory."""
     try:
-        # Get parent PID before killing (wmic query while process still exists)
-        parent_pid = None
-        try:
-            r = subprocess.run(
-                ["wmic", "process", "where", f"ProcessId={pid}", "get", "ParentProcessId"],
-                capture_output=True, text=True, timeout=5)
-            lines = [l.strip() for l in r.stdout.strip().splitlines() if l.strip() and not l.strip().startswith("Parent")]
-            if lines:
-                parent_pid = int(lines[0])
-        except Exception:
-            pass
-        # Kill the Claude process
-        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=5)
-        # Kill the parent cmd window if it exists
-        if parent_pid:
-            try:
-                subprocess.run(["taskkill", "/F", "/PID", str(parent_pid)], capture_output=True, timeout=5)
-            except Exception:
-                pass
+        proj_path = _get_project_path()
+        md_path = proj_path / "CLAUDE.md"
+        if md_path.is_file():
+            content = md_path.read_text(encoding="utf-8")
+            return jsonify({"content": content, "path": str(md_path), "exists": True})
+        return jsonify({"content": "", "path": str(md_path), "exists": False})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route('/api/claude-md', methods=['PUT'])
+def put_claude_md():
+    """Write CLAUDE.md to active project directory."""
+    try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or "content" not in data:
+            return jsonify({"error": "Request body must contain 'content'"}), 400
+
+        proj_path = _get_project_path()
+        md_path = proj_path / "CLAUDE.md"
+        md_path.write_text(data["content"], encoding="utf-8")
+        return jsonify({"ok": True, "path": str(md_path)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route('/api/claude-md-global', methods=['GET'])
+def get_claude_md_global():
+    """Read ~/.claude/CLAUDE.md"""
+    try:
+        md_path = Path.home() / ".claude" / "CLAUDE.md"
+        if md_path.is_file():
+            content = md_path.read_text(encoding="utf-8")
+            return jsonify({"content": content, "path": str(md_path), "exists": True})
+        return jsonify({"content": "", "path": str(md_path), "exists": False})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route('/api/claude-md-global', methods=['PUT'])
+def put_claude_md_global():
+    """Write ~/.claude/CLAUDE.md"""
+    try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or "content" not in data:
+            return jsonify({"error": "Request body must contain 'content'"}), 400
+
+        md_path = Path.home() / ".claude" / "CLAUDE.md"
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text(data["content"], encoding="utf-8")
+        return jsonify({"ok": True, "path": str(md_path)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Settings/config API
+# ---------------------------------------------------------------------------
+
+@bp.route('/api/config', methods=['GET'])
+def get_config():
+    """Read ~/.claude/settings.json"""
+    try:
+        settings_path = Path.home() / ".claude" / "settings.json"
+        if settings_path.is_file():
+            content = json.loads(settings_path.read_text(encoding="utf-8"))
+            return jsonify(content)
+        return jsonify({})
+    except json.JSONDecodeError:
+        return jsonify({"error": "settings.json contains invalid JSON"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route('/api/config', methods=['PUT'])
+def put_config():
+    """Write ~/.claude/settings.json"""
+    try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"error": "Request body must be a JSON object"}), 400
+
+        settings_path = Path.home() / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write atomically via temp file
+        tmp_path = settings_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(settings_path)
+
         return jsonify({"ok": True})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Available models API
+# ---------------------------------------------------------------------------
+
+@bp.route('/api/models')
+def get_models():
+    """Return list of available Claude models."""
+    return jsonify([
+        {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4", "default": True},
+        {"id": "claude-opus-4-20250514", "name": "Claude Opus 4"},
+        {"id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5"},
+    ])

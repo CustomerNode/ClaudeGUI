@@ -35,11 +35,17 @@ def _sessions_dir() -> Path:
     """Return the active project's session directory, auto-detecting if needed."""
     global _active_project
     if _active_project:
-        p = _CLAUDE_PROJECTS / _active_project
-        if p.is_dir():
-            return p
+        # Reject subagent directories — they contain internal Claude state
+        if not _active_project.startswith("subagents"):
+            p = _CLAUDE_PROJECTS / _active_project
+            if p.is_dir():
+                return p
+        # Active project is invalid or a subagent dir — fall through to auto-detect
+        _active_project = ""
     # Auto-detect: pick the project with the most recent .jsonl file
     best, best_ts = None, 0.0
+    if not _CLAUDE_PROJECTS.is_dir():
+        return _CLAUDE_PROJECTS
     for d in _CLAUDE_PROJECTS.iterdir():
         if not d.is_dir() or d.name.startswith("subagents"):
             continue
@@ -92,18 +98,24 @@ def _decode_project(encoded: str) -> str:
     if not Path(result).is_dir():
         docs = Path.home() / "Documents"
         if docs.is_dir():
-            for child in docs.iterdir():
-                if not child.is_dir():
-                    continue
-                enc = str(child).replace("\\", "/").replace(":", "-").replace("/", "-")
-                if enc == encoded:
-                    return str(child)
-                for sub in child.iterdir():
-                    if not sub.is_dir():
+            try:
+                for child in docs.iterdir():
+                    if not child.is_dir():
                         continue
-                    enc2 = str(sub).replace("\\", "/").replace(":", "-").replace("/", "-")
-                    if enc2 == encoded:
-                        return str(sub)
+                    enc = str(child).replace("\\", "/").replace(":", "-").replace("/", "-")
+                    if enc == encoded:
+                        return str(child)
+                    try:
+                        for sub in child.iterdir():
+                            if not sub.is_dir():
+                                continue
+                            enc2 = str(sub).replace("\\", "/").replace(":", "-").replace("/", "-")
+                            if enc2 == encoded:
+                                return str(sub)
+                    except (PermissionError, OSError):
+                        continue
+            except (PermissionError, OSError):
+                pass
     return result
 
 
@@ -120,10 +132,18 @@ def _load_names() -> dict:
 
 
 def _save_name(session_id: str, name: str) -> None:
-    """Persist a user-set name. Creates or updates _session_names.json."""
-    names = _load_names()
+    """Persist a user-set name. Creates or updates _session_names.json.
+
+    Snapshots the names file path ONCE to avoid writing to a different
+    project's file if _active_project changes between load and save.
+    """
+    nf = _names_file()  # snapshot path
+    try:
+        names = json.loads(nf.read_text(encoding="utf-8"))
+    except Exception:
+        names = {}
     names[session_id] = name
-    _names_file().write_text(json.dumps(names, indent=2, ensure_ascii=False), encoding="utf-8")
+    nf.write_text(json.dumps(names, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _delete_name(session_id: str) -> None:

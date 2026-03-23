@@ -5,7 +5,7 @@ let extractBlocks = [];
 async function openExtract() {
   if (!activeId) return;
   const body = document.getElementById('extract-body');
-  body.innerHTML = '<p style="padding:20px;color:#555;font-size:12px;">Loading\u2026</p>';
+  body.innerHTML = '<p style="padding:20px;color:var(--text-faint);font-size:12px;">Loading\u2026</p>';
   document.getElementById('extract-drawer').classList.add('open');
   try {
     const r = await fetch('/api/extract-code/' + activeId);
@@ -13,7 +13,7 @@ async function openExtract() {
     extractBlocks = d.blocks || [];
     renderExtractBlocks(extractBlocks);
   } catch(e) {
-    body.innerHTML = '<p style="padding:20px;color:#cc4444;font-size:12px;">Error loading code blocks.</p>';
+    body.innerHTML = '<p style="padding:20px;color:var(--result-err);font-size:12px;">Error loading code blocks.</p>';
   }
 }
 
@@ -25,7 +25,7 @@ function renderExtractBlocks(blocks) {
   const body = document.getElementById('extract-body');
   const copyAll = document.getElementById('extract-copy-all');
   if (!blocks.length) {
-    body.innerHTML = '<p style="padding:20px;color:#555;font-size:13px;text-align:center;">No code blocks found in this session.</p>';
+    body.innerHTML = '<p style="padding:20px;color:var(--text-faint);font-size:13px;text-align:center;">No code blocks found in this session.</p>';
     copyAll.style.display = 'none';
     return;
   }
