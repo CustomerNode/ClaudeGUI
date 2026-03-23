@@ -227,8 +227,9 @@ function updateLiveInputBar() {
   else if (kind === 'idle') stateKey = 'idle';
   else stateKey = 'working';
 
-  // Reset working timer when leaving working state
-  if (stateKey !== 'working') {
+  // Reset working timer when leaving working state — but only if we
+  // have a definitive non-working state (not just 'ended' from missing data)
+  if (stateKey !== 'working' && kind) {
     _liveWorkingStart = null;
     if (_liveWorkingTimer) { clearInterval(_liveWorkingTimer); _liveWorkingTimer = null; }
   }
