@@ -33,6 +33,7 @@
     <button class="hdr-sys-btn" onclick="toggleHdrSys()">System &#9662;</button>
     <div class="hdr-sys-dropdown" id="hdr-sys-dropdown">
       <button onclick="openPermissionPolicySelector();closeHdrSys()">Permission Policy</button>
+      <button onclick="wsShowAll();closeHdrSys();showToast('All sessions unhidden')">Unhide All Sessions</button>
       <button onclick="deleteEmptySessions();closeHdrSys()">Delete Empty Sessions</button>
       <button onclick="_showHelpModal();closeHdrSys()">Keyboard Shortcuts</button>
     </div>
