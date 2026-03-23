@@ -73,8 +73,8 @@ function setViewMode(mode) {
     // Hide search and sort — workplace has its own layout
     if (searchRow) searchRow.style.display = 'none';
     if (menuWrap) menuWrap.style.display = 'none';
-    // Show permission panel in sidebar
-    if (sidebarPermPanel) sidebarPermPanel.style.display = '';
+    // Show permission panel in sidebar (content rendered by filterSessions->renderWorkspace)
+    if (sidebarPermPanel) { sidebarPermPanel.style.display = ''; sidebarPermPanel.innerHTML = ''; }
   } else {
     listEl.style.display = '';
     gridEl.classList.remove('visible');

@@ -807,7 +807,11 @@ function showSkeletonLoader() {
 
 async function loadSessions() {
   showSkeletonLoader();
-  const resp = await fetch('/api/sessions');
+  // Load sessions and folder tree in parallel
+  const [resp] = await Promise.all([
+    fetch('/api/sessions'),
+    (typeof initFolderTree === 'function') ? initFolderTree().catch(function(){}) : Promise.resolve(),
+  ]);
   allSessions = await resp.json();
   document.getElementById('search').placeholder = 'Search ' + allSessions.length + ' sessions\u2026';
   setViewMode(viewMode);
