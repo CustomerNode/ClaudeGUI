@@ -721,6 +721,39 @@ async function addNewAgent() {
   }
 }
 
+// Build a compact agent catalog from FOLDER_SUPERSET for injection into the
+// system prompt.  This lets Claude spawn any workforce role as a subprocess
+// regardless of what project directory the session is running in.
+function _buildAgentDefinitions() {
+  if (typeof FOLDER_SUPERSET !== 'object' || !FOLDER_SUPERSET) return '';
+
+  // Count agents that have skills
+  const agents = Object.entries(FOLDER_SUPERSET).filter(([, def]) => def.skill && def.skill.systemPrompt);
+  if (!agents.length) return '';
+
+  const lines = [
+    '# AVAILABLE AGENTS',
+    '',
+    'You have ' + agents.length + ' specialist agents available in your workforce. ' +
+    'These agents are defined HERE in this system prompt — do NOT look for them on disk ' +
+    'or in .claude/agents/. This is the authoritative and complete list.',
+    '',
+    'When a task would benefit from a specialist, use the Agent tool to spawn one. ' +
+    'Copy that agent\'s FULL system prompt (provided below) into the Agent tool\'s ' +
+    '"prompt" parameter so the subprocess adopts that role.',
+    '',
+    'When a user asks what agents are available, list them from this section. ' +
+    'Do not search the filesystem for agent definitions.',
+    '',
+  ];
+  for (const [id, def] of agents) {
+    lines.push(`### ${def.skill.label || def.name} (${id})`);
+    lines.push(def.skill.systemPrompt);
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
 function _newSessionSubmit(sessionId) {
   const ta = document.getElementById('live-input-ta');
   if (!ta) return;
@@ -736,6 +769,16 @@ function _newSessionSubmit(sessionId) {
   if (workspaceActive && typeof _currentFolderId !== 'undefined' && _currentFolderId) {
     const skill = (typeof getFolderSkill === 'function') ? getFolderSkill(_currentFolderId) : null;
     if (skill && skill.systemPrompt) systemPrompt = skill.systemPrompt;
+  }
+
+  // Inject available agent definitions so Claude can spawn them as subprocesses
+  if (typeof FOLDER_SUPERSET === 'object' && FOLDER_SUPERSET) {
+    const agentBlock = _buildAgentDefinitions();
+    if (agentBlock) {
+      systemPrompt = systemPrompt
+        ? systemPrompt + '\n\n' + agentBlock
+        : agentBlock;
+    }
   }
 
   const startOpts = {
