@@ -279,6 +279,85 @@ socket.on('session_started', (data) => {
     }
 });
 
+// Session ID remapped — SDK assigned a different ID than the one we generated
+socket.on('session_id_remapped', (data) => {
+    const oldId = data.old_id;
+    const newId = data.new_id;
+    if (!oldId || !newId) return;
+    console.log('[WS] Session ID remapped:', oldId, '->', newId);
+
+    // Update allSessions array
+    const s = allSessions.find(x => x.id === oldId);
+    if (s) s.id = newId;
+
+    // Update activeId and URL
+    if (activeId === oldId) {
+        activeId = newId;
+        localStorage.setItem('activeSessionId', newId);
+        _pushChatUrl(newId);
+    }
+
+    // Update liveSessionId
+    if (liveSessionId === oldId) liveSessionId = newId;
+
+    // Update runningIds
+    if (runningIds.has(oldId)) {
+        runningIds.delete(oldId);
+        runningIds.add(newId);
+    }
+
+    // Update sessionKinds
+    if (sessionKinds[oldId] !== undefined) {
+        sessionKinds[newId] = sessionKinds[oldId];
+        delete sessionKinds[oldId];
+    }
+
+    // Update waitingData
+    if (waitingData[oldId]) {
+        waitingData[newId] = waitingData[oldId];
+        delete waitingData[oldId];
+    }
+
+    // Update guiOpenSessions
+    if (guiOpenSessions.has(oldId)) {
+        guiOpenDelete(oldId);
+        guiOpenAdd(newId);
+    }
+
+    // Update _userNamedSessions (remap user-set name protection to new ID)
+    if (typeof _userNamedSessions !== 'undefined' && _userNamedSessions.has(oldId)) {
+        _userNamedSessions.delete(oldId);
+        _userNamedSessions.add(newId);
+    }
+
+    // Update working since map
+    if (window._workingSinceMap && window._workingSinceMap[oldId]) {
+        window._workingSinceMap[newId] = window._workingSinceMap[oldId];
+        delete window._workingSinceMap[oldId];
+    }
+
+    // Update folder tree mapping (workplace mode)
+    if (typeof _remapSessionInFolders === 'function') {
+        _remapSessionInFolders(oldId, newId);
+    }
+
+    // Update toolbar data attribute
+    setToolbarSession(newId,
+        s ? (s.custom_title || s.display_title) : 'New Session',
+        s ? !s.custom_title : true,
+        s ? (s.custom_title || '') : '');
+
+    // Re-render sidebar
+    filterSessions();
+
+    // Re-schedule auto-naming with the new ID (the old setTimeout closures
+    // captured the old ID, which won't match any .jsonl file on disk).
+    // Skip if the user has manually named this session.
+    if (typeof autoName === 'function' && !(typeof _userNamedSessions !== 'undefined' && _userNamedSessions.has(newId))) {
+        setTimeout(() => autoName(newId, true), 3000);
+    }
+});
+
 // Session log response (for panel open)
 socket.on('session_log', (data) => {
     if (data.session_id !== liveSessionId) return;

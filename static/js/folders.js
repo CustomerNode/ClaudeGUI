@@ -367,6 +367,19 @@ function assignSessionToFolder(sessionId, folderId) {
   return true;
 }
 
+function _remapSessionInFolders(oldId, newId) {
+  var tree = _loadFolderTree();
+  if (!tree) return;
+  // Replace in rootSessions
+  tree.rootSessions = tree.rootSessions.map(function(id) { return id === oldId ? newId : id; });
+  // Replace in each folder's sessions
+  var folders = Object.values(tree.folders);
+  for (var i = 0; i < folders.length; i++) {
+    folders[i].sessions = folders[i].sessions.map(function(id) { return id === oldId ? newId : id; });
+  }
+  _saveFolderTree(tree);
+}
+
 function removeSessionFromFolder(sessionId) {
   return unassignSession(sessionId);
 }

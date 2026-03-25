@@ -72,7 +72,7 @@ async function pollWaiting() {
     for (const id in sessionKinds) {
       if (sessionKinds[id] === 'working' && newKinds[id] !== 'working') {
         const s = allSessions.find(x => x.id === id);
-        if (s && !s.custom_title && !_autoNamePending.has(id)) {
+        if (s && !s.custom_title && !_autoNamePending.has(id) && !_userNamedSessions.has(id)) {
           _autoNamePending.add(id);
           // Small delay lets the .jsonl flush to disk before we read it
           setTimeout(() => autoName(id, true), 1500);
@@ -82,7 +82,7 @@ async function pollWaiting() {
 
     // 2. Sweep for untitled sessions.  Runs every poll cycle when unnamed
     //    sessions exist, otherwise backs off to every ~30 s as a background check.
-    const _untitled = allSessions.filter(s => !s.custom_title && !_autoNamePending.has(s.id));
+    const _untitled = allSessions.filter(s => !s.custom_title && !_autoNamePending.has(s.id) && !_userNamedSessions.has(s.id));
     if (_untitled.length > 0 || _autoNamePollCount % 15 === 0) {
       for (const s of _untitled) {
         _autoNamePending.add(s.id);

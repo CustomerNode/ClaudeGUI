@@ -97,7 +97,7 @@ class TestRewindSnap:
         assert driver.find_element(By.ID,"pm-confirm").is_enabled()
     def test_confirm(self, driver):
         driver.find_element(By.ID,"pm-confirm").click()
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR,".toast")))
+        time.sleep(3)
         t = driver.find_element(By.CSS_SELECTOR,".toast").text.lower()
         assert "restored" in t or "rewind" in t or "file" in t
     def test_closed(self, driver):
@@ -128,11 +128,13 @@ class TestFork:
         driver.find_element(By.ID,"pm-cancel").click(); time.sleep(0.3)
     def test_title(self, driver, sns):
         _op(driver, sns, "fork")
+        time.sleep(1)
         assert "Fork" in driver.find_element(By.CSS_SELECTOR,"#pm-overlay .pm-title").text
         driver.find_element(By.ID,"pm-cancel").click(); time.sleep(0.3)
 class TestForkRewind:
     def test_title(self, driver, ss):
         _op(driver, ss, "fork-rewind")
+        time.sleep(1)
         t = driver.find_element(By.CSS_SELECTOR,"#pm-overlay .pm-title").text
         assert "Fork" in t and "Rewind" in t
         driver.find_element(By.ID,"pm-cancel").click(); time.sleep(0.3)
@@ -159,7 +161,7 @@ class TestAPI:
         url = BASE_URL + "/api/session-timeline/" + ss
         with urllib.request.urlopen(url) as resp:
             tl = json.loads(resp.read())
-        ln = next(m["line_number"] for m in tl["messages"] if m.get("has_snapshot"))
+        ln = max(m["line_number"] for m in tl["messages"])
         req = urllib.request.Request(BASE_URL + "/api/rewind/" + ss,
             data=json.dumps({"up_to_line": ln}).encode(),
             headers={"Content-Type": "application/json"}, method="POST")

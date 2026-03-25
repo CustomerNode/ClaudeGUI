@@ -269,6 +269,7 @@ class SessionManager:
 
     def __init__(self):
         self._sessions: dict[str, SessionInfo] = {}
+        self._id_aliases: dict[str, str] = {}  # old_id -> new_id for SDK remaps
         self._lock = threading.Lock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
@@ -350,6 +351,10 @@ class SessionManager:
     # Public API (called from Flask routes / WS handlers)
     # ------------------------------------------------------------------
 
+    def _resolve_id(self, session_id: str) -> str:
+        """Resolve a session ID through aliases (old_id -> new_id)."""
+        return self._id_aliases.get(session_id, session_id)
+
     def start_session(
         self, session_id: str, prompt: str = "", cwd: str = "",
         name: str = "", resume: bool = False,
@@ -400,6 +405,7 @@ class SessionManager:
 
     def send_message(self, session_id: str, text: str) -> dict:
         """Send a follow-up message to an idle session."""
+        session_id = self._resolve_id(session_id)
         with self._lock:
             info = self._sessions.get(session_id)
         if not info:
@@ -428,6 +434,7 @@ class SessionManager:
         loop.call_soon_threadsafe to set the anyio.Event on the correct
         event loop so the waiting callback resumes immediately.
         """
+        session_id = self._resolve_id(session_id)
         with self._lock:
             info = self._sessions.get(session_id)
         if not info:
@@ -505,6 +512,7 @@ class SessionManager:
 
     def interrupt_session(self, session_id: str) -> dict:
         """Interrupt a running session."""
+        session_id = self._resolve_id(session_id)
         with self._lock:
             info = self._sessions.get(session_id)
         if not info:
@@ -519,6 +527,7 @@ class SessionManager:
 
     def close_session(self, session_id: str) -> dict:
         """Close and disconnect an SDK session."""
+        session_id = self._resolve_id(session_id)
         with self._lock:
             info = self._sessions.get(session_id)
         if not info:
@@ -531,6 +540,7 @@ class SessionManager:
 
     def close_session_sync(self, session_id: str, timeout: float = 5.0) -> dict:
         """Close an SDK session and block until the disconnect finishes."""
+        session_id = self._resolve_id(session_id)
         with self._lock:
             info = self._sessions.get(session_id)
         if not info:
@@ -557,6 +567,7 @@ class SessionManager:
 
     def get_entries(self, session_id: str, since: int = 0) -> list:
         """Return log entries for a session, optionally from an index."""
+        session_id = self._resolve_id(session_id)
         with self._lock:
             info = self._sessions.get(session_id)
         if not info:
@@ -566,11 +577,13 @@ class SessionManager:
 
     def has_session(self, session_id: str) -> bool:
         """Check if a session is managed by the SDK."""
+        session_id = self._resolve_id(session_id)
         with self._lock:
             return session_id in self._sessions
 
     def get_session_state(self, session_id: str) -> Optional[str]:
         """Return the state string for a session, or None if not managed."""
+        session_id = self._resolve_id(session_id)
         with self._lock:
             info = self._sessions.get(session_id)
         if info:
@@ -950,13 +963,27 @@ class SessionManager:
                     info.entries.append(entry)
                 self._emit_entry(session_id, entry, len(info.entries) - 1)
 
-            # Store the session_id from the result for future resume
+            # Remap session ID if the SDK assigned a different one
             result_session_id = getattr(message, 'session_id', None)
             if result_session_id and result_session_id != session_id:
                 logger.info(
-                    "SDK assigned session_id %s (we used %s)",
+                    "SDK assigned session_id %s (we used %s) — remapping",
                     result_session_id, session_id
                 )
+                # Update the session info and remap in _sessions dict
+                info.session_id = result_session_id
+                with self._lock:
+                    self._sessions[result_session_id] = info
+                    if session_id in self._sessions:
+                        del self._sessions[session_id]
+                    self._id_aliases[session_id] = result_session_id
+
+                # Notify frontend to update its references (URL, activeId, etc.)
+                if self._push_callback:
+                    self._push_callback(
+                        'session_id_remapped',
+                        {'old_id': session_id, 'new_id': result_session_id}
+                    )
 
             info.state = SessionState.IDLE
             self._emit_state(info)
@@ -1270,6 +1297,7 @@ class SessionManager:
 
     def resolve_permission_unified(self, session_id: str, allow: bool, always: bool = False) -> dict:
         """Resolve permission — auto-detects hook vs SDK callback."""
+        session_id = self._resolve_id(session_id)
         with self._lock:
             info = self._sessions.get(session_id)
         if not info:

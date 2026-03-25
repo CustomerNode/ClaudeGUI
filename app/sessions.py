@@ -13,6 +13,7 @@ from .config import (
     _load_names_cached,
     _format_size,
     _summary_cache,
+    _get_deleted_ids,
 )
 
 
@@ -144,6 +145,7 @@ def load_session_summary(path: Path) -> dict:
     result = {
         "id": path.stem,
         "custom_title": effective_title,
+        "user_named": bool(user_set_name),
         "display_title": effective_title if effective_title else (first_user_content[:60] + ("\u2026" if len(first_user_content) > 60 else "")) or path.stem,
         "date": date_str,
         "last_activity": last_activity_str,
@@ -464,7 +466,11 @@ def _is_system_content(text: str) -> bool:
 
 
 def all_sessions(summary_only: bool = False) -> list:
-    files = list(_sessions_dir().glob("*.jsonl"))
+    # Filter out tombstoned (recently deleted) sessions so zombie .jsonl files
+    # recreated by dying claude.exe processes never appear in the UI.
+    deleted_ids = _get_deleted_ids()
+    files = [f for f in _sessions_dir().glob("*.jsonl")
+             if f.stem not in deleted_ids]
     loader = load_session_summary if summary_only else load_session
     if summary_only and len(files) > 10:
         with ThreadPoolExecutor(max_workers=min(16, len(files))) as pool:

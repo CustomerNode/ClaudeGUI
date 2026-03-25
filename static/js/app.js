@@ -860,10 +860,11 @@ async function _newSessionSubmit(sessionId) {
   setTimeout(() => { _liveSending = false; }, 500);
 
   // Auto-name after a delay. Silent retry if .jsonl not ready yet.
+  // Skips if user has manually renamed (autoName checks _userNamedSessions).
   setTimeout(() => {
-    autoName(sessionId, true);
+    if (!_userNamedSessions.has(sessionId)) autoName(sessionId, true);
     // Retry at 20s in case the first attempt was too early
-    setTimeout(() => autoName(sessionId, true), 12000);
+    setTimeout(() => { if (!_userNamedSessions.has(sessionId)) autoName(sessionId, true); }, 12000);
   }, 8000);
 }
 
@@ -1048,6 +1049,12 @@ async function loadSessions() {
     (typeof initFolderTree === 'function') ? initFolderTree().catch(function(){}) : Promise.resolve(),
   ]);
   allSessions = await resp.json();
+  // Populate _userNamedSessions from server so manual names survive page refresh
+  if (typeof _userNamedSessions !== 'undefined') {
+    for (const s of allSessions) {
+      if (s.user_named) _userNamedSessions.add(s.id);
+    }
+  }
   document.getElementById('search').placeholder = 'Search ' + allSessions.length + ' sessions\u2026';
   setViewMode(viewMode);
   // Template selector is handled by initFolderTree() — no duplicate call here

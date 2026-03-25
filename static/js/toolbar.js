@@ -143,6 +143,7 @@ function startListInlineRename() {
     });
     const data = await resp.json();
     if (data.ok) {
+      _userNamedSessions.add(activeId);  // protect from auto-naming
       if (s) { s.custom_title = data.title; s.display_title = data.title; }
       setToolbarSession(activeId, data.title, false, data.title);
       nameCell.textContent = data.title;
@@ -368,6 +369,7 @@ async function startToolbarRename() {
   });
   const data = await resp.json();
   if (data.ok) {
+    _userNamedSessions.add(activeId);  // protect from auto-naming
     setToolbarSession(activeId, newName || activeId, !newName, newName);
     const s = allSessions.find(x => x.id === activeId);
     if (s) { s.custom_title = newName; s.display_title = newName || s.display_title; }
@@ -406,6 +408,7 @@ async function submitRename() {
   closeRename();
 
   if (data.ok) {
+    _userNamedSessions.add(targetId);  // protect from auto-naming
     // Update local list
     const s = allSessions.find(x => x.id === targetId);
     if (s) { s.custom_title = data.title; s.display_title = data.title; }
@@ -420,8 +423,12 @@ async function submitRename() {
 }
 
 const _autoNamingInFlight = new Set();
+// Sessions the user has manually renamed — auto-naming will never touch these.
+const _userNamedSessions = new Set();
 
 async function autoName(id, silent) {
+  // Never auto-name a session the user has explicitly renamed
+  if (_userNamedSessions.has(id)) return;
   const btn = silent ? null : document.getElementById('btn-autoname');
   const btnOrigHtml = btn ? btn.innerHTML : '';
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Naming\u2026'; }
@@ -444,6 +451,9 @@ async function autoName(id, silent) {
 
   _autoNamingInFlight.delete(id);
   if (btn) { btn.disabled = false; btn.innerHTML = btnOrigHtml; }
+
+  // If the user renamed this session while the request was in-flight, discard the auto-name result
+  if (_userNamedSessions.has(id)) return;
 
   if (data.ok) {
     const s = allSessions.find(x => x.id === id);

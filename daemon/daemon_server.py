@@ -49,9 +49,10 @@ class SessionDaemon:
 
         # Listen for Web UI connections
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # Do NOT use SO_REUSEADDR on Windows — it allows multiple processes to
-        # bind the same port, causing connections to be split between daemons.
-        if sys.platform != "win32":
+        if sys.platform == "win32":
+            # SO_EXCLUSIVEADDRUSE: hard guarantee no other process can bind this port
+            self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
             self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             self._server_socket.bind(("127.0.0.1", self.port))
@@ -241,6 +242,12 @@ def main():
         format="%(asctime)s [daemon] %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    # Singleton gate: only one daemon allowed system-wide
+    from singleton import acquire_daemon_singleton
+    if not acquire_daemon_singleton():
+        print("Session daemon already running (mutex held). Exiting.", flush=True)
+        sys.exit(0)
 
     daemon = SessionDaemon()
 

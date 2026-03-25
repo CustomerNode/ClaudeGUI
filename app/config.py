@@ -3,6 +3,7 @@ Configuration, path helpers, and session-name persistence.
 """
 
 import json
+import time
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,10 @@ def _sessions_dir() -> Path:
 
 def _names_file() -> Path:
     return _sessions_dir() / "_session_names.json"
+
+
+def _tombstone_file() -> Path:
+    return _sessions_dir() / "_deleted_sessions.json"
 
 
 def _decode_project(encoded: str) -> str:
@@ -152,6 +157,70 @@ def _delete_name(session_id: str) -> None:
     if session_id in names:
         names.pop(session_id)
         _names_file().write_text(json.dumps(names, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Deletion tombstones -- prevent zombie sessions from reappearing
+# ---------------------------------------------------------------------------
+# When a session is deleted, its ID is recorded here BEFORE the .jsonl file
+# is removed.  all_sessions() filters out any session whose ID appears in this
+# set, so even if a dying claude.exe recreates the file, it stays hidden.
+# Tombstones older than 2 hours are auto-pruned on every load.
+
+_TOMBSTONE_MAX_AGE = 7200  # seconds (2 hours)
+
+
+def _load_tombstones() -> dict:
+    """Return {session_id: unix_timestamp} of deleted sessions."""
+    tf = _tombstone_file()
+    try:
+        data = json.loads(tf.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except Exception:
+        return {}
+
+
+def _save_tombstones(tombstones: dict) -> None:
+    tf = _tombstone_file()
+    tf.write_text(json.dumps(tombstones, ensure_ascii=False), encoding="utf-8")
+
+
+def _prune_tombstones(tombstones: dict) -> dict:
+    """Remove entries older than _TOMBSTONE_MAX_AGE.  Returns pruned dict."""
+    now = time.time()
+    return {sid: ts for sid, ts in tombstones.items()
+            if now - ts < _TOMBSTONE_MAX_AGE}
+
+
+def _mark_deleted(session_id: str) -> None:
+    """Record a session as deleted (tombstone).  Must be called BEFORE
+    unlinking the .jsonl file so the tombstone is in place before any race."""
+    tombstones = _load_tombstones()
+    tombstones[session_id] = time.time()
+    tombstones = _prune_tombstones(tombstones)
+    _save_tombstones(tombstones)
+
+
+def _mark_deleted_bulk(session_ids: list) -> None:
+    """Record multiple sessions as deleted in a single write."""
+    tombstones = _load_tombstones()
+    now = time.time()
+    for sid in session_ids:
+        tombstones[sid] = now
+    tombstones = _prune_tombstones(tombstones)
+    _save_tombstones(tombstones)
+
+
+def _get_deleted_ids() -> set:
+    """Return the set of session IDs that are tombstoned (recently deleted).
+    Auto-prunes stale entries."""
+    tombstones = _load_tombstones()
+    pruned = _prune_tombstones(tombstones)
+    if len(pruned) != len(tombstones):
+        _save_tombstones(pruned)
+    return set(pruned.keys())
 
 
 # ---------------------------------------------------------------------------

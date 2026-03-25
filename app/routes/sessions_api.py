@@ -17,6 +17,8 @@ from ..config import (
     _decode_project,
     get_active_project,
     _summary_cache,
+    _mark_deleted,
+    _mark_deleted_bulk,
 )
 from ..sessions import load_session, load_session_timeline, all_sessions
 from ..titling import smart_title
@@ -121,32 +123,39 @@ def api_autoname(session_id):
 def api_delete(session_id):
     import os
     import signal
+    import time
 
     path = _sessions_dir() / f"{session_id}.jsonl"
     folder = _sessions_dir() / session_id
 
-    # Close the SDK session SYNCHRONOUSLY so the CLI subprocess is fully dead
-    # before we remove the file (prevents it from being recreated).
+    # Phase 1: Close the SDK session SYNCHRONOUSLY so the CLI subprocess is
+    # fully dead before we remove the file (prevents it from being recreated).
     sm = current_app.session_manager
     if sm.has_session(session_id):
         sm.close_session_sync(session_id)
         sm.remove_session(session_id)
-    else:
-        # Session not managed by SDK — might be an orphaned CLI process.
-        # Try to find and kill it so it doesn't re-create the file.
-        try:
-            from ..process_detection import _get_running_session_ids
-            running = _get_running_session_ids()
-            pid = running.get(session_id)
-            if pid and pid > 0:
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except (OSError, ProcessLookupError):
-                    pass
-                import time
-                time.sleep(0.3)
-        except Exception:
-            pass  # best-effort
+
+    # Phase 2: Kill any orphaned CLI process for this session.
+    # Always attempt this, even after SDK close, as a safety net -- the SDK
+    # close may time out or the process may have been spawned by an earlier
+    # server instance that we have no handle to.
+    try:
+        from ..process_detection import _get_running_session_ids
+        running = _get_running_session_ids()
+        pid = running.get(session_id)
+        if pid and pid > 0:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (OSError, ProcessLookupError):
+                pass
+            time.sleep(0.5)  # let process die
+    except Exception:
+        pass  # best-effort
+
+    # Phase 3: Tombstone + delete the file.
+    # Write the tombstone FIRST so all_sessions() hides this ID immediately,
+    # even if a dying process recreates the .jsonl after we unlink it.
+    _mark_deleted(session_id)
 
     if not path.exists():
         sm._save_registry_now()
@@ -155,6 +164,21 @@ def api_delete(session_id):
     path.unlink()
     if folder.exists() and folder.is_dir():
         shutil.rmtree(folder)
+
+    # Phase 4: Sweep for file re-created by a dying process.
+    # Without this, a subprocess that hasn't fully exited can write the
+    # .jsonl back to disk right after we unlink it.
+    time.sleep(0.3)
+    if path.exists():
+        try:
+            path.unlink()
+        except Exception:
+            pass
+    if folder.exists() and folder.is_dir():
+        try:
+            shutil.rmtree(folder)
+        except Exception:
+            pass
 
     # Evict from summary cache (all keys whose path matches)
     path_str = str(path)
@@ -206,7 +230,12 @@ def api_delete_all():
     except Exception:
         pass  # process detection failed -- continue with best-effort deletion
 
-    # Phase 3: delete all files
+    # Phase 3: tombstone ALL session IDs, then delete files.
+    # Tombstones go first so all_sessions() hides them immediately.
+    all_sids = [f.stem for f in sd.glob("*.jsonl")]
+    if all_sids:
+        _mark_deleted_bulk(all_sids)
+
     for f in list(sd.glob("*.jsonl")):
         sid = f.stem
         f.unlink()
@@ -236,24 +265,72 @@ def api_delete_all():
 
 @bp.route("/api/delete-empty", methods=["DELETE"])
 def api_delete_empty():
+    import os
+    import signal
+    import time
+
     sm = current_app.session_manager
     deleted = []
+    deleted_paths = []  # track for Phase 4 sweep
+
+    # First pass: identify empty sessions and tombstone them immediately
+    empty_files = []
     for f in _sessions_dir().glob("*.jsonl"):
         s = load_session(f)
         if s.get("message_count", 0) == 0:
-            sid = f.stem
-            if sm.has_session(sid):
-                sm.close_session_sync(sid)
-                sm.remove_session(sid)
-            folder = _sessions_dir() / sid
-            path_str = str(f)
+            empty_files.append(f)
+
+    # Tombstone all empty session IDs BEFORE deleting anything
+    if empty_files:
+        _mark_deleted_bulk([f.stem for f in empty_files])
+
+    # Second pass: close, kill, and delete
+    for f in empty_files:
+        sid = f.stem
+        if sm.has_session(sid):
+            sm.close_session_sync(sid)
+            sm.remove_session(sid)
+
+        # Kill any orphaned CLI process for this session
+        try:
+            from ..process_detection import _get_running_session_ids
+            running = _get_running_session_ids()
+            pid = running.get(sid)
+            if pid and pid > 0:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except (OSError, ProcessLookupError):
+                    pass
+        except Exception:
+            pass
+
+        folder = _sessions_dir() / sid
+        path_str = str(f)
+        if f.exists():
             f.unlink()
-            if folder.exists() and folder.is_dir():
-                shutil.rmtree(folder)
-            for key in [k for k in _summary_cache if k[0] == path_str]:
-                del _summary_cache[key]
-            _delete_name(sid)
-            deleted.append(sid)
+        if folder.exists() and folder.is_dir():
+            shutil.rmtree(folder)
+        for key in [k for k in _summary_cache if k[0] == path_str]:
+            del _summary_cache[key]
+        _delete_name(sid)
+        deleted.append(sid)
+        deleted_paths.append((f, folder))
+
+    # Sweep for files re-created by dying processes
+    if deleted_paths:
+        time.sleep(0.3)
+        for f, folder in deleted_paths:
+            try:
+                if f.exists():
+                    f.unlink()
+            except Exception:
+                pass
+            try:
+                if folder.exists() and folder.is_dir():
+                    shutil.rmtree(folder)
+            except Exception:
+                pass
+
     if deleted:
         sm._save_registry_now()
     return jsonify({"ok": True, "deleted": len(deleted)})

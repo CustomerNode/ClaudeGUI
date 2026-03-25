@@ -18,32 +18,14 @@ import time
 import webbrowser
 from pathlib import Path
 
-DAEMON_PORT = 5051  # TODO: remove this test comment for rewind
+DAEMON_PORT = 5051
 
-
-def _kill_stale_daemon():
-    """Kill any stale daemon process using the PID file."""
-    import os
-    pid_file = Path.home() / ".claude" / "gui_daemon.pid"
-    if not pid_file.exists():
-        return
-    try:
-        pid = int(pid_file.read_text().strip())
-        os.kill(pid, 0)  # Check if alive
-        os.kill(pid, 9)  # Kill it
-        print("  Killed stale daemon (PID %d)" % pid, flush=True)
-        time.sleep(0.5)
-    except (ValueError, OSError):
-        pass  # PID invalid or process already dead
-    try:
-        pid_file.unlink(missing_ok=True)
-    except Exception:
-        pass
+from singleton import acquire_web_singleton
 
 
 def ensure_daemon():
     """Make sure the session daemon is running. Start it if not."""
-    # Try to connect
+    # Try to connect to an existing daemon
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(1)
@@ -54,10 +36,7 @@ def ensure_daemon():
     except (ConnectionRefusedError, OSError):
         pass
 
-    # Kill any stale daemon that might still hold the port
-    _kill_stale_daemon()
-
-    # Start daemon as a detached subprocess
+    # Start daemon as a detached subprocess (daemon enforces its own singleton)
     daemon_script = Path(__file__).parent / "daemon" / "daemon_server.py"
     if not daemon_script.exists():
         print("  WARNING: daemon_server.py not found at %s" % daemon_script, flush=True)
@@ -98,6 +77,11 @@ def ensure_daemon():
 
     print("  WARNING: Daemon started but not responding on port %d" % DAEMON_PORT, flush=True)
 
+
+# ---- Singleton gate: only one web server allowed ----
+if not acquire_web_singleton():
+    print("  VibeNode is already running. Open http://localhost:5050", flush=True)
+    sys.exit(0)
 
 # Ensure daemon is running before creating the Flask app
 ensure_daemon()
