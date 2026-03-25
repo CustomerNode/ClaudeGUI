@@ -1160,6 +1160,13 @@ class SessionManager:
                         self._queues[result_session_id] = self._queues.pop(session_id)
                 self._save_queues()
 
+                # Remap user-set name to the new ID (server-side, no race)
+                try:
+                    from app.config import _remap_name
+                    _remap_name(session_id, result_session_id)
+                except Exception:
+                    pass
+
                 # Notify frontend to update its references (URL, activeId, etc.)
                 if self._push_callback:
                     self._push_callback(
