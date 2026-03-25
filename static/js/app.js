@@ -153,6 +153,8 @@ async function selectProjectFromOverlay(encoded) {
 }
 
 async function renameProjectOverlay(encoded, currentName) {
+  // Close the project overlay first so the prompt dialog has a clean backdrop
+  closeProjectOverlay();
   const newName = await showPrompt('Rename Project', '<p>Enter a display name for this project. The directory stays the same.</p>', {
     placeholder: 'Project name',
     value: currentName,
@@ -167,9 +169,12 @@ async function renameProjectOverlay(encoded, currentName) {
     });
     const data = await resp.json();
     if (data.ok) {
-      showToast('Project renamed');
-      await loadProjects();
-      openProjectOverlay();
+      showToast('Renamed to "' + newName + '"');
+      // Refresh project list and update the label without a full reload
+      const res = await fetch('/api/projects');
+      _allProjects = await res.json();
+      const p = _allProjects.find(x => x.encoded === encoded);
+      if (p) _updateProjectLabel(p);
     } else {
       showToast(data.error || 'Rename failed', true);
     }
