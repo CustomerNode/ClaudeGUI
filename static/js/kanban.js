@@ -62,7 +62,14 @@ const KANBAN_STATUS_LABELS = {
  * Uses allSessions (the same source as list/grid/workforce views)
  * so naming is consistent across the entire app.
  */
+function _resolveSessionId(id) {
+  // Resolve through remap aliases — the SDK may have assigned a new ID
+  if (window._idRemaps && window._idRemaps[id]) return window._idRemaps[id];
+  return id;
+}
+
 function _resolveSessionName(id) {
+  id = _resolveSessionId(id);
   if (typeof allSessions !== 'undefined') {
     const s = allSessions.find(x => x.id === id);
     if (s) return s.display_title || id;
@@ -1406,6 +1413,8 @@ async function changeTaskStatus(taskId, newStatus) {
           badge.style.background = cc + '26';
           badge.style.color = cc;
           badge.textContent = label;
+          // Update the onclick so the menu shows the correct checkmark next time
+          badge.setAttribute('onclick', "event.stopPropagation();showStatusMenu('" + taskId + "', '" + newStatus + "', event)");
         }
       }
       _updateSubtaskCount();
@@ -1562,6 +1571,16 @@ async function renderTaskDetail(taskId) {
         html += `<div class="kanban-drill-subtask-status kanban-status-clickable" style="background:${cc}26;color:${cc};" onclick="event.stopPropagation();showStatusMenu('${child.id}', '${child.status}', event)" title="Click to change status">${escHtml(childStatusLabel)}</div>`;
         // Title — click to drill
         html += `<span class="kanban-drill-subtask-title" onclick="navigateToTask('${child.id}')">${escHtml(child.title)}</span>`;
+        // Meta: subtask + session counts
+        const childSubs = child.children_count || 0;
+        const childSess = child.session_count || 0;
+        if (childSubs > 0 || childSess > 0) {
+          html += '<span class="kanban-drill-subtask-meta">';
+          if (childSubs > 0) html += childSubs + ' subtask' + (childSubs !== 1 ? 's' : '');
+          if (childSubs > 0 && childSess > 0) html += ' \u00B7 ';
+          if (childSess > 0) html += childSess + ' session' + (childSess !== 1 ? 's' : '');
+          html += '</span>';
+        }
         // Hover actions: edit, delete
         html += `<div class="kanban-drill-subtask-actions">`;
         html += `<button class="kanban-subtask-action-btn" onclick="event.stopPropagation();_inlineRenameSubtask('${child.id}', this.closest('.kanban-drill-subtask-row').querySelector('.kanban-drill-subtask-title'))" title="Rename"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>`;
@@ -2354,6 +2373,7 @@ async function openSessionSpawner(taskId) {
 }
 
 function _kanbanOpenSession(taskId, sessionId) {
+  sessionId = _resolveSessionId(sessionId);
   kanbanDetailTaskId = taskId;
   // Push history so back/forward works
   history.pushState(
@@ -2364,6 +2384,7 @@ function _kanbanOpenSession(taskId, sessionId) {
 }
 
 async function _unlinkSession(taskId, sessionId) {
+  sessionId = _resolveSessionId(sessionId);
   try {
     await fetch('/api/kanban/tasks/' + taskId + '/sessions/' + sessionId, { method: 'DELETE' });
     // Remove the row from DOM
@@ -2396,6 +2417,7 @@ function _kanbanSessionClose(target) {
 // Open an existing session in kanban — uses #main-body (where startLivePanel writes)
 // but adds a kanban crumb bar above it
 function _openSessionInKanban(sessionId) {
+  sessionId = _resolveSessionId(sessionId);
   const s = allSessions.find(x => x.id === sessionId);
   const sessionName = s ? (s.display_title || 'Session') : 'Session';
   const taskId = kanbanDetailTaskId || null;
@@ -3603,11 +3625,24 @@ function restoreFromHash() {
   const sessMatch = hash.match(/^#kanban\/task\/([^/]+)\/session\/(.+)$/);
   if (sessMatch) {
     const taskId = sessMatch[1];
-    const sessionId = sessMatch[2];
+    let sessionId = _resolveSessionId(sessMatch[2]);
     kanbanDetailTaskId = taskId;
-    renderTaskDetail(taskId).then(() => {
-      _openSessionInKanban(sessionId);
-    });
+
+    // After a page refresh _idRemaps is empty — ask the server to resolve
+    // the session ID in case it was remapped before the refresh.
+    const _doOpen = (sid) => renderTaskDetail(taskId).then(() => _openSessionInKanban(sid));
+    if (sessionId === sessMatch[2] && !allSessions.find(x => x.id === sessionId)) {
+      fetch('/api/resolve-session/' + sessionId).then(r => r.json()).then(d => {
+        if (d.remapped) {
+          sessionId = d.id;
+          // Fix the URL hash to the canonical ID
+          history.replaceState(null, '', window.location.pathname + '#kanban/task/' + taskId + '/session/' + sessionId);
+        }
+        _doOpen(sessionId);
+      }).catch(() => _doOpen(sessionId));
+    } else {
+      _doOpen(sessionId);
+    }
     return;
   }
 
@@ -3665,7 +3700,8 @@ window.addEventListener('popstate', (e) => {
     if (e.state.session && e.state.taskId && e.state.sessionId) {
       // Forward into a session — wait for drill-down to render first
       kanbanDetailTaskId = e.state.taskId;
-      renderTaskDetail(e.state.taskId).then(() => _openSessionInKanban(e.state.sessionId));
+      const _sid = _resolveSessionId(e.state.sessionId);
+      renderTaskDetail(e.state.taskId).then(() => _openSessionInKanban(_sid));
     } else if (e.state.taskId) {
       goToTask(e.state.taskId);
     } else {
@@ -3677,7 +3713,8 @@ window.addEventListener('popstate', (e) => {
     const sessMatch = hash.match(/^#kanban\/task\/([^/]+)\/session\/(.+)$/);
     if (sessMatch) {
       kanbanDetailTaskId = sessMatch[1];
-      renderTaskDetail(sessMatch[1]).then(() => _openSessionInKanban(sessMatch[2]));
+      const _sid = _resolveSessionId(sessMatch[2]);
+      renderTaskDetail(sessMatch[1]).then(() => _openSessionInKanban(_sid));
     } else if (hash && hash.startsWith('#kanban/task/')) {
       const tid = hash.replace('#kanban/task/', '').replace('/session', '');
       if (tid) goToTask(tid);

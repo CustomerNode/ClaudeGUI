@@ -133,6 +133,15 @@ socket.on('state_snapshot', (data) => {
     runningIds = newRunning;
     sessionKinds = newKinds;
 
+    // Populate _idRemaps from server aliases so kanban and other code
+    // can resolve old→new session IDs even after a page refresh
+    if (data.aliases) {
+        if (!window._idRemaps) window._idRemaps = {};
+        for (const oldId in data.aliases) {
+            window._idRemaps[oldId] = data.aliases[oldId];
+        }
+    }
+
     // Inject stub entries into allSessions for SDK-managed sessions that
     // haven't written a .jsonl yet (e.g. first response still in progress).
     // Without this, sessions disappear from the sidebar on page refresh
@@ -628,6 +637,16 @@ socket.on('session_id_remapped', (data) => {
     // Update folder tree mapping (workplace mode)
     if (typeof _remapSessionInFolders === 'function') {
         _remapSessionInFolders(oldId, newId);
+    }
+
+    // Remap kanban task-session link (server-side DB is updated by session_manager,
+    // but update client-side kanban state and URL hash too)
+    if (window.location.hash.includes(oldId)) {
+        const newHash = window.location.hash.replace(oldId, newId);
+        history.replaceState(history.state, '', window.location.pathname + newHash);
+    }
+    if (history.state && history.state.sessionId === oldId) {
+        history.replaceState(Object.assign({}, history.state, { sessionId: newId }), '', window.location.href);
     }
 
     // Update toolbar data attribute

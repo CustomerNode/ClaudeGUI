@@ -1192,6 +1192,15 @@ class SessionManager:
                         del self._sessions[session_id]
                     self._id_aliases[session_id] = result_session_id
 
+                # Remap kanban task-session links so the board
+                # still references the correct session after the ID change
+                try:
+                    from .db import create_repository
+                    repo = create_repository()
+                    repo.remap_session(session_id, result_session_id)
+                except Exception:
+                    pass  # kanban DB not available or no linked task
+
                 # Notify frontend to update its references (URL, activeId, etc.)
                 if self._socketio:
                     import threading

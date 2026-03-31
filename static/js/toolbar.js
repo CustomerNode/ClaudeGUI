@@ -538,6 +538,12 @@ async function autoName(id, silent, reEvaluate, promptText) {
       const kbTitle = document.querySelector('.kanban-session-title');
       if (kbTitle) kbTitle.textContent = data.title;
     }
+    // Update kanban drill-down session row name and breadcrumb in-place
+    const _kbRow = document.querySelector('.kanban-drill-session-row[data-session-id="' + effectiveId + '"] .kanban-drill-session-name')
+      || document.querySelector('.kanban-drill-session-row[data-session-id="' + id + '"] .kanban-drill-session-name');
+    if (_kbRow) _kbRow.textContent = data.title;
+    const _kbCrumb = document.querySelector('#kanban-session-bar .kanban-drill-crumb.current');
+    if (_kbCrumb && (effectiveId === activeId || id === activeId)) _kbCrumb.textContent = data.title;
     if (!silent) showToast('Auto-named: "' + data.title + '"');
   } else {
     _updateNamingIndicator(id);

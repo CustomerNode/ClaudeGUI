@@ -30,6 +30,14 @@ def _get_repo():
     return create_repository()
 
 
+def _count_descendant_sessions(repo, task_id):
+    """Count all sessions linked to a task and all its descendants."""
+    count = len(repo.get_task_sessions(task_id))
+    for child in repo.get_children(task_id):
+        count += _count_descendant_sessions(repo, child.id)
+    return count
+
+
 def _get_project_id():
     """Return the active project identifier."""
     return get_active_project()
@@ -138,7 +146,9 @@ def get_board():
 
             if hasattr(repo, 'get_children_counts_batch'):
                 child_counts = repo.get_children_counts_batch(task_ids)
-                session_counts = repo.get_session_counts_batch(task_ids)
+                # Always use recursive count for sessions (batch only counts direct)
+                for tid in task_ids:
+                    session_counts[tid] = _count_descendant_sessions(repo, tid)
             else:
                 for tid in task_ids:
                     children = repo.get_children(tid)
@@ -146,7 +156,7 @@ def get_board():
                         len(children),
                         sum(1 for c in children if c.status.value == 'complete'),
                     )
-                    session_counts[tid] = len(repo.get_task_sessions(tid))
+                    session_counts[tid] = _count_descendant_sessions(repo, tid)
 
             for t in page_tasks:
                 td = t.to_dict() if hasattr(t, 'to_dict') else t
@@ -249,7 +259,7 @@ def get_task(task_id):
             cd['children_complete'] = sum(
                 1 for gc in grandchildren if gc.status.value == 'complete'
             )
-            cd['session_count'] = len(repo.get_task_sessions(c.id))
+            cd['session_count'] = _count_descendant_sessions(repo, c.id)
             cd['active_sessions'] = 0
             enriched_children.append(cd)
 
@@ -258,7 +268,9 @@ def get_task(task_id):
         result['children_complete'] = sum(
             1 for c in children if c.status.value == 'complete'
         )
-        result['session_count'] = len(sessions)
+        result['session_count'] = len(sessions) + sum(
+            _count_descendant_sessions(repo, c.id) for c in children
+        )
         result['active_sessions'] = 0
 
         result["children"] = enriched_children
