@@ -12,11 +12,43 @@ Client -> Server events:
 
 import json
 import logging
+import re
 
 from flask import request as flask_request
 from flask_socketio import emit
 
 logger = logging.getLogger(__name__)
+
+# Markers that indicate a UserMessage is SDK/CLI system content, not human input
+_SYSTEM_USER_MARKERS = (
+    "This session is being continued from a previous conversation",
+    "<system-reminder>",
+    "<local-command-stdout>",
+    "<local-command-caveat>",
+    "<command-name>",
+    "<command-message>",
+    "<command-args>",
+)
+
+def _is_system_user_content(text: str) -> bool:
+    for marker in _SYSTEM_USER_MARKERS:
+        if marker in text:
+            return True
+    return False
+
+def _system_user_label(text: str) -> str:
+    if "This session is being continued from a previous conversation" in text:
+        return "Session continued from previous conversation"
+    m = re.search(r'<command-name>(/?\w+)</command-name>', text)
+    if m:
+        cmd = m.group(1)
+        m2 = re.search(r'<local-command-stdout>(.*?)</local-command-stdout>', text, re.DOTALL)
+        stdout = m2.group(1).strip() if m2 else ""
+        return f"{cmd}: {stdout[:100]}" if stdout else f"Local command: {cmd}"
+    m = re.search(r'<local-command-stdout>(.*?)</local-command-stdout>', text, re.DOTALL)
+    if m:
+        return f"Command output: {m.group(1).strip()[:100]}"
+    return "System message"
 
 
 def _parse_jsonl_entries(app, session_id: str, since: int = 0) -> list:
@@ -48,12 +80,20 @@ def _parse_jsonl_entries(app, session_id: str, since: int = 0) -> list:
             msg = obj.get("message", {})
             content = msg.get("content", "")
             if isinstance(content, str) and content.strip():
-                entries.append({"kind": "user", "text": content.strip()[:2000]})
+                text = content.strip()[:20000]
+                if _is_system_user_content(text):
+                    entries.append({"kind": "system", "text": _system_user_label(text)})
+                else:
+                    entries.append({"kind": "user", "text": text})
             elif isinstance(content, list):
                 for block in content:
                     bt = block.get("type", "")
                     if bt == "text" and block.get("text", "").strip():
-                        entries.append({"kind": "user", "text": block["text"].strip()[:2000]})
+                        text = block["text"].strip()[:20000]
+                        if _is_system_user_content(text):
+                            entries.append({"kind": "system", "text": _system_user_label(text)})
+                        else:
+                            entries.append({"kind": "user", "text": text})
                     elif bt == "tool_result":
                         rc = block.get("content", "")
                         if isinstance(rc, list):
@@ -66,19 +106,19 @@ def _parse_jsonl_entries(app, session_id: str, since: int = 0) -> list:
                         entries.append({
                             "kind": "tool_result",
                             "tool_use_id": block.get("tool_use_id", ""),
-                            "text": rt[:600],
+                            "text": rt[:20000],
                             "is_error": bool(block.get("is_error")),
                         })
         elif t == "assistant":
             msg = obj.get("message", {})
             content = msg.get("content", "")
             if isinstance(content, str) and content.strip():
-                entries.append({"kind": "asst", "text": content.strip()[:3000]})
+                entries.append({"kind": "asst", "text": content.strip()[:50000]})
             elif isinstance(content, list):
                 for block in content:
                     bt = block.get("type", "")
                     if bt == "text" and block.get("text", "").strip():
-                        entries.append({"kind": "asst", "text": block["text"].strip()[:3000]})
+                        entries.append({"kind": "asst", "text": block["text"].strip()[:50000]})
                     elif bt == "tool_use":
                         inp = block.get("input") or {}
                         if "command" in inp:
@@ -117,12 +157,30 @@ def register_ws_events(socketio, app):
             q = s.get('queue')
             if q:
                 queues[s['session_id']] = q
-        emit('state_snapshot', {'sessions': sessions, 'queues': queues})
+        # Include ID aliases so the client can resolve remapped session IDs
+        # (e.g. client stored old UUID in localStorage, server knows the new one)
+        aliases = dict(sm._id_aliases) if hasattr(sm, '_id_aliases') else {}
+        emit('state_snapshot', {'sessions': sessions, 'queues': queues, 'aliases': aliases})
         logger.debug("WebSocket client connected, sent %d session states", len(sessions))
 
     @socketio.on('disconnect')
     def handle_disconnect():
         logger.debug("WebSocket client disconnected")
+
+    @socketio.on('request_state_snapshot')
+    def handle_request_state_snapshot():
+        """Re-send full state snapshot on demand (e.g. after workspace switch)."""
+        sm = app.session_manager
+        if hasattr(sm, "is_connected") and not sm.is_connected:
+            return
+        sessions = sm.get_all_states()
+        queues = {}
+        for s in sessions:
+            q = s.get('queue')
+            if q:
+                queues[s['session_id']] = q
+        aliases = dict(sm._id_aliases) if hasattr(sm, '_id_aliases') else {}
+        emit('state_snapshot', {'sessions': sessions, 'queues': queues, 'aliases': aliases})
 
     @socketio.on('start_session')
     def handle_start_session(data):
@@ -294,6 +352,12 @@ def register_ws_events(socketio, app):
 
         First checks the SDK SessionManager for live entries, then falls
         back to parsing the .jsonl file on disk for historical sessions.
+
+        Supports pagination via ``limit`` and ``before`` parameters:
+        - ``limit``: max entries to return (omit for all — backwards compat)
+        - ``before``: return entries ending before this index (for "load older")
+        Response includes ``total``, ``offset``, ``has_more``, and ``prepend``
+        so the client can render a "Load older messages" button and prepend.
         """
         if not isinstance(data, dict):
             emit('error', {'message': 'Invalid data'})
@@ -304,6 +368,20 @@ def register_ws_events(socketio, app):
             since = int(data.get('since', 0))
         except (ValueError, TypeError):
             since = 0
+
+        # Pagination params
+        limit = data.get('limit')  # None = all (backwards compat)
+        before = data.get('before')  # Load entries before this index
+        if limit is not None:
+            try:
+                limit = int(limit)
+            except (ValueError, TypeError):
+                limit = None
+        if before is not None:
+            try:
+                before = int(before)
+            except (ValueError, TypeError):
+                before = None
 
         if not session_id:
             emit('error', {'message': 'session_id is required'})
@@ -327,10 +405,41 @@ def register_ws_events(socketio, app):
         else:
             entries = []
 
-        emit('session_log', {
-            'session_id': session_id,
-            'entries': entries,
-        })
+        total = len(entries)
+
+        if before is not None:
+            # Loading older entries: return entries ending before `before` index
+            end = min(before, total)
+            start = max(0, end - (limit or 50))
+            page = entries[start:end]
+            emit('session_log', {
+                'session_id': session_id,
+                'entries': page,
+                'total': total,
+                'offset': start,
+                'has_more': start > 0,
+                'prepend': True,
+            })
+        elif limit and total > limit:
+            # Initial load with pagination: return last `limit` entries
+            start = total - limit
+            page = entries[start:]
+            emit('session_log', {
+                'session_id': session_id,
+                'entries': page,
+                'total': total,
+                'offset': start,
+                'has_more': start > 0,
+            })
+        else:
+            # No pagination needed (backwards compat or small log)
+            emit('session_log', {
+                'session_id': session_id,
+                'entries': entries,
+                'total': total,
+                'offset': 0,
+                'has_more': False,
+            })
 
     @socketio.on('set_permission_policy')
     def handle_set_permission_policy(data):

@@ -7,10 +7,15 @@ function setToolbarSession(id, titleText, isUntitled, customTitle) {
   titleEl.dataset.customTitle = customTitle || '';
   titleEl.dataset.editable = id ? 'true' : 'false';
   titleEl.title = id ? 'Click to rename' : '';
+  // In kanban mode, main-toolbar NEVER shows
+  if (typeof viewMode !== 'undefined' && viewMode === 'kanban') {
+    document.getElementById('main-toolbar').style.display = 'none';
+    return;
+  }
   ['btn-autoname','btn-open','btn-open-gui','btn-delete','btn-duplicate','btn-continue','btn-summary','btn-extract','btn-export','btn-fork','btn-rewind','btn-fork-rewind'].forEach(b => {
-    document.getElementById(b).disabled = !id;
+    const el = document.getElementById(b);
+    if (el) el.disabled = !id;
   });
-  // Hide entire toolbar when no session is selected
   document.getElementById('main-toolbar').style.display = id ? '' : 'none';
   // btn-close enabled when session is running or open in GUI
   const btnClose = document.getElementById('btn-close');
@@ -38,6 +43,20 @@ function deselectSession() {
     filterSessions();
     return;
   }
+  // In kanban mode, restore the board
+  if (typeof viewMode !== 'undefined' && viewMode === 'kanban') {
+    const kb = document.getElementById('kanban-board');
+    const mb = document.getElementById('main-body');
+    if (kb) kb.style.display = '';
+    if (mb) mb.style.display = 'none';
+    document.getElementById('main-toolbar').style.display = 'none';
+    const sessionBar = document.getElementById('kanban-session-bar');
+    if (sessionBar) sessionBar.remove();
+    window._kanbanSessionTaskId = null;
+    if (typeof initKanban === 'function') initKanban(true);
+    filterSessions();
+    return;
+  }
   filterSessions();
   setToolbarSession(null, 'No session selected', true, '');
   document.getElementById('main-body').innerHTML = _buildDashboard();
@@ -46,6 +65,20 @@ function deselectSession() {
 function handleSessionClick(id) {
   if (id === activeId) { startListInlineRename(); } else { selectSession(id); }
 }
+
+/**
+ * _ensureMainBodyVisible() — If in kanban mode, swap the board out and show
+ * main-body + back button. Called before ANY action that renders into main-body.
+ * Safe to call from any view — no-ops if not in kanban.
+ */
+function _ensureMainBodyVisible() {
+  if (typeof viewMode === 'undefined' || viewMode !== 'kanban') return;
+  // Don't touch kanban-board or main-body — the session renders inside kanban-board
+  // with the kanban titlebar. openSessionSpawner in kanban.js handles this.
+}
+
+function _backToKanban() { deselectSession(); }
+function _showKanbanBackBtn() {}
 
 async function handleNameClick(id) {
   if (id !== activeId) {
@@ -61,6 +94,8 @@ async function selectSession(id) {
     expandWorkspaceCard(id);
     return;
   }
+
+  _ensureMainBodyVisible();
 
   activeId = id;
   localStorage.setItem('activeSessionId', id || '');
@@ -448,7 +483,7 @@ const _autoNamingInFlight = new Set();
 // Sessions the user has manually renamed — auto-naming will never touch these.
 const _userNamedSessions = new Set();
 
-async function autoName(id, silent, reEvaluate) {
+async function autoName(id, silent, reEvaluate, promptText) {
   // Never auto-name a session the user has explicitly renamed
   if (_userNamedSessions.has(id)) return;
   const btn = silent ? null : document.getElementById('btn-autoname');
@@ -461,8 +496,9 @@ async function autoName(id, silent, reEvaluate) {
 
   let data;
   try {
-    const body = reEvaluate ? JSON.stringify({ re_evaluate: true }) : null;
-    const headers = reEvaluate ? { 'Content-Type': 'application/json' } : {};
+    const payload = reEvaluate ? { re_evaluate: true } : promptText ? { prompt: promptText } : null;
+    const headers = payload ? { 'Content-Type': 'application/json' } : {};
+    const body = payload ? JSON.stringify(payload) : null;
     const resp = await fetch('/api/autonname/' + id, { method: 'POST', headers, body });
     data = await resp.json();
   } catch(e) {
@@ -483,10 +519,13 @@ async function autoName(id, silent, reEvaluate) {
     const s = allSessions.find(x => x.id === id);
     if (s) { s.custom_title = data.title; s.display_title = data.title; }
     filterSessions();
-    // Only touch the toolbar title if this is the active session
+    // Update toolbar title if this is the active session
     if (id === activeId) {
       const titleEl = document.getElementById('main-title');
-      if (titleEl) { titleEl.textContent = data.title; titleEl.classList.remove('untitled'); }
+      if (titleEl) { titleEl.textContent = data.title; titleEl.classList.remove('untitled'); titleEl.dataset.customTitle = data.title; }
+      // Also update kanban session title bar if present
+      const kbTitle = document.querySelector('.kanban-session-title');
+      if (kbTitle) kbTitle.textContent = data.title;
     }
     if (!silent) showToast('Auto-named: "' + data.title + '"');
   } else {
@@ -552,6 +591,8 @@ async function deleteSession(id) {
     allSessions = allSessions.filter(x => x.id !== id);
     // Remove from folder tree
     if (typeof removeSessionFromAllFolders === 'function') removeSessionFromAllFolders(id);
+    // Unlink from any kanban tasks (best-effort, don't block)
+    fetch('/api/kanban/sessions/' + id + '/unlink-all', { method: 'DELETE' }).catch(() => {});
     if (liveSessionId === id) stopLivePanel();
     deselectSession();
     document.getElementById('search').placeholder = 'Search ' + allSessions.length + ' sessions\u2026';

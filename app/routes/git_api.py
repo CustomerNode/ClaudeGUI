@@ -3,7 +3,10 @@ Git status and sync routes.
 """
 
 import subprocess
+import sys
 from pathlib import Path
+
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 from flask import Blueprint, jsonify, request
 
@@ -50,7 +53,7 @@ def project_git_status():
         # Check if it's a git repo
         check = subprocess.run(
             ["git", "-C", proj_str, "rev-parse", "--is-inside-work-tree"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW,
         )
         if check.returncode != 0:
             return jsonify({"is_git": False, "project_path": proj_str})

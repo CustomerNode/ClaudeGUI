@@ -26,7 +26,7 @@ driver = webdriver.Chrome(options=options)
 
 try:
     print("=== 1. PAGE LOAD ===")
-    driver.get("http://localhost:5050")
+    driver.get(BASE_URL)
     time.sleep(3)
     check("Page loads", "Claude" in driver.title)
 
@@ -147,7 +147,7 @@ try:
     check("No JS errors", len(severe) == 0)
 
     print("=== 13. PERMISSION FLOW ===")
-    driver.get("http://localhost:5050")
+    driver.get(BASE_URL)
     time.sleep(3)
     driver.execute_script("""
         const overlay = document.getElementById('project-overlay');

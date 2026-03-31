@@ -27,6 +27,61 @@ let liveLineCount = 0;
 let _liveSending = false;
 let liveAutoScroll = true;
 const _renderedUserTexts = new Set();
+
+// Client-side pagination for long chat threads.
+// The server sends ALL entries; we stash them in memory and only render
+// the last PAGE_SIZE initially. "Load older" renders more from the stash.
+const LIVE_PAGE_SIZE = 100;
+let _liveEntryStash = [];       // full entry list from server (kept in memory)
+let _liveRenderedFrom = 0;      // index into _liveEntryStash of the oldest rendered entry
+
+function _createLoadMoreButton() {
+  const wrap = document.createElement('div');
+  wrap.className = 'live-load-more';
+  const remaining = _liveRenderedFrom;
+  wrap.innerHTML =
+    '<button class="live-load-more-btn" id="live-load-more-btn" onclick="liveLoadMore()">' +
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:middle;"><polyline points="18 15 12 9 6 15"/></svg> ' +
+    'Load older messages' +
+    '<span style="color:var(--text-faint);margin-left:4px;">(' + remaining + ' more)</span>' +
+    '</button>';
+  return wrap;
+}
+
+function liveLoadMore() {
+  if (_liveRenderedFrom <= 0 || !liveSessionId) return;
+  const logEl = document.getElementById('live-log');
+  if (!logEl) return;
+
+  const prevHeight = logEl.scrollHeight;
+  const prevScroll = logEl.scrollTop;
+
+  // Remove existing "load more" button
+  const existingBtn = logEl.querySelector('.live-load-more');
+  if (existingBtn) existingBtn.remove();
+
+  // Render the next batch from the stash
+  const start = Math.max(0, _liveRenderedFrom - LIVE_PAGE_SIZE);
+  const batch = _liveEntryStash.slice(start, _liveRenderedFrom);
+  _liveRenderedFrom = start;
+
+  const frag = document.createDocumentFragment();
+  if (_liveRenderedFrom > 0) {
+    frag.appendChild(_createLoadMoreButton());
+  }
+  batch.forEach((entry) => {
+    if (entry.kind === 'user' && entry.text) {
+      _renderedUserTexts.add(entry.text.trim());
+    }
+    frag.appendChild(renderLiveEntry(entry));
+  });
+
+  logEl.insertBefore(frag, logEl.firstChild);
+
+  // Restore scroll position so viewport stays on the same messages
+  const newHeight = logEl.scrollHeight;
+  logEl.scrollTop = prevScroll + (newHeight - prevHeight);
+}
 // Per-session queue — server-backed local cache (synced via queue_updated events)
 const _sessionQueues = {};
 let _queueViewIndex = 0;
@@ -305,8 +360,14 @@ function guiOpenDelete(id) {
 }
 
 async function openInGUI(id) {
+  // In kanban mode, render session inside the kanban board with kanban titlebar
+  if (typeof viewMode !== 'undefined' && viewMode === 'kanban' && typeof _openSessionInKanban === 'function') {
+    _openSessionInKanban(id);
+    return;
+  }
   _guiFocusPending = true;
   closeAllGrpDropdowns();
+  if (typeof _ensureMainBodyVisible === 'function') _ensureMainBodyVisible();
   activeId = id;
   localStorage.setItem('activeSessionId', id || '');
   _pushChatUrl(id);
@@ -319,7 +380,7 @@ async function openInGUI(id) {
   const initTitle = cached ? cached.display_title : 'Loading\u2026';
   setToolbarSession(id, initTitle, !(cached && cached.custom_title), (cached && cached.custom_title) || '');
   document.getElementById('main-body').innerHTML = _chatSkeleton();
-  const resp = await fetch('/api/session/' + id);
+  const resp = await fetch('/api/session/' + id + '?meta_only=1');
 
   // New session with no .jsonl yet — re-show the new session input
   if (!resp.ok) {
@@ -381,12 +442,20 @@ function startLivePanel(id, opts) {
 
   const skipLog = opts && opts.skipLog;
   const skelHtml = skipLog ? '' : _chatSkeleton().replace('<div class="conversation">', '').replace(/<\/div>$/, '');
-  document.getElementById('main-body').innerHTML =
+  const panelHtml =
     '<div class="live-panel" id="live-panel">' +
     '<div class="conversation live-log" id="live-log">' + skelHtml + '</div>' +
     '<div class="live-output-shelf" id="live-output-shelf"></div>' +
     '<div id="live-queue-area"></div>' +
     '<div class="live-input-bar" id="live-input-bar"></div></div>';
+
+  // In kanban mode, write to the kanban session body if it exists
+  const kanbanSessionBody = document.querySelector('.kanban-session-body');
+  if (kanbanSessionBody) {
+    kanbanSessionBody.innerHTML = panelHtml;
+  } else {
+    document.getElementById('main-body').innerHTML = panelHtml;
+  }
 
   _clearOutputShelf();
   const logEl = document.getElementById('live-log');
@@ -395,8 +464,15 @@ function startLivePanel(id, opts) {
     liveAutoScroll = atBottom;
   });
 
+  // Initialize sticky user message bar on the live log container
+  if (typeof initStickyUserMessages === 'function') initStickyUserMessages(logEl);
+
   const btnClose = document.getElementById('btn-close');
   if (btnClose) btnClose.disabled = false;
+
+  // Reset client-side pagination stash for new panel
+  _liveEntryStash = [];
+  _liveRenderedFrom = 0;
 
   // Request the log via WebSocket (skip for brand-new sessions — optimistic bubble is enough)
   if (!skipLog) {
@@ -495,7 +571,7 @@ function renderLiveEntry(e) {
     const role = e.kind === 'user' ? 'user' : 'assistant';
     div.className = 'msg ' + role;
     const text = e.text || '';
-    const LIMIT = e.kind === 'asst' ? 2000 : 2000;
+    const LIMIT = e.kind === 'asst' ? 600 : 800;
     const displayText = text.length > LIMIT ? text.slice(0, LIMIT) : text;
 
     const roleLabel = e.kind === 'user' ? 'me' : 'claude';
@@ -509,7 +585,6 @@ function renderLiveEntry(e) {
     div.innerHTML = '<div class="msg-role">' + roleLabel + (ts ? ' <span class="msg-time">' + ts + '</span>' : '') + '</div>' +
       '<div class="msg-body msg-content">' + body + '</div>';
 
-    // Smart copy buttons for assistant messages
     if (e.kind === 'asst' && typeof addSmartCopyButtons === 'function') {
       addSmartCopyButtons(div.querySelector('.msg-body'), displayText);
     }
@@ -570,14 +645,19 @@ function renderLiveEntry(e) {
   } else if (e.kind === 'system') {
     div.className = 'live-entry live-entry-result';
     const text = e.text || e.message || '';
+    const isErr = !!e.is_error;
     const line = document.createElement('div');
-    line.className = 'live-result-line live-result-err';
+    line.className = isErr ? 'live-result-line live-result-err' : 'live-result-line';
     line.style.cursor = 'pointer';
-    line.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:middle;margin-right:4px;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>' + escHtml(text.slice(0, 120)) + (text.length > 120 ? '\u2026' : '');
+    if (!isErr) line.style.color = 'var(--text-muted)';
+    const icon = isErr
+      ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:middle;margin-right:4px;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'
+      : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:middle;margin-right:4px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
+    line.innerHTML = icon + escHtml(text.slice(0, 120)) + (text.length > 120 ? '\u2026' : '');
 
     const detail = document.createElement('div');
     detail.className = 'live-tool-detail';
-    detail.innerHTML = '<pre style="white-space:pre-wrap;margin:0;color:var(--result-err);">' + escHtml(text) + '</pre>';
+    detail.innerHTML = '<pre style="white-space:pre-wrap;margin:0;color:' + (isErr ? 'var(--result-err)' : 'var(--text-muted)') + ';">' + escHtml(text) + '</pre>';
 
     line.onclick = () => detail.classList.toggle('open');
     div.appendChild(line);
@@ -592,6 +672,32 @@ function renderLiveEntry(e) {
   }
 
   return div;
+}
+
+/** Build a compact context circle indicator. Clickable to trigger compact when not working. */
+function _buildCtxBarCompact(id, disabled) {
+  const _usage = (window._sessionUsage && window._sessionUsage[id]) || null;
+  if (!_usage) return '';
+  const _ctxWindow = 200000;
+  let _tokens = (_usage.input_tokens || 0)
+    + (_usage.cache_read_input_tokens || 0)
+    + (_usage.cache_creation_input_tokens || 0);
+  if (_tokens <= 0 || _tokens > _ctxWindow * 1.5) return '';
+  const _pct = Math.min(100, Math.round((_tokens / _ctxWindow) * 100));
+  const _color = _pct >= 90 ? 'var(--result-err)' : _pct >= 70 ? '#ffb700' : 'var(--accent)';
+  // SVG circle: radius=7, circumference=~43.98
+  const _circ = 2 * Math.PI * 7;
+  const _filled = _circ * (_pct / 100);
+  const _cls = disabled ? 'ctx-circle ctx-disabled' : 'ctx-circle ctx-clickable';
+  const _click = disabled ? '' : ' onclick="liveCompact()"';
+  const _title = disabled ? 'Context ' + _pct + '%' : 'Context ' + _pct + '% — click to compact';
+  return '<div class="' + _cls + '"' + _click + ' title="' + _title + '">' +
+    '<svg width="18" height="18" viewBox="0 0 18 18">' +
+    '<circle cx="9" cy="9" r="7" fill="none" stroke="var(--border-subtle)" stroke-width="2"/>' +
+    '<circle cx="9" cy="9" r="7" fill="none" stroke="' + _color + '" stroke-width="2"' +
+    ' stroke-dasharray="' + _filled.toFixed(2) + ' ' + _circ.toFixed(2) + '"' +
+    ' stroke-linecap="round" transform="rotate(-90 9 9)"/>' +
+    '</svg></div>';
 }
 
 function updateLiveInputBar() {
@@ -653,6 +759,7 @@ function updateLiveInputBar() {
       '<textarea id="live-input-ta" class="live-textarea" rows="2" placeholder="Type a message to continue\u2026"' +
       ' onkeydown="if(_shouldSend(event)){event.preventDefault();liveSubmitContinue(\'' + id + '\')}"></textarea>' +
       '<div class="live-bar-row">' +
+      _buildCtxBarCompact(id) +
       '<span class="send-hint" style="font-size:10px;color:var(--text-faint);">' + _sendHint() + '</span>' +
       '<button class="live-send-btn" id="live-voice-btn"></button>' +
       '</div>';
@@ -712,6 +819,7 @@ function updateLiveInputBar() {
       '<textarea id="live-input-ta" class="live-textarea waiting-focus" rows="2" placeholder="Type your response\u2026 (or click an option above)"' +
       ' onkeydown="if(_shouldSend(event)){event.preventDefault();liveSubmitWaiting()}"></textarea>' +
       '<div class="live-bar-row">' +
+      _buildCtxBarCompact(id) +
       '<span class="send-hint" style="font-size:10px;color:var(--text-faint);">' + _sendHint() + '</span>' +
       '<button class="live-send-btn waiting" id="live-voice-btn"></button>' +
       '</div>';
@@ -733,6 +841,7 @@ function updateLiveInputBar() {
       '<textarea id="live-input-ta" class="live-textarea" rows="2" placeholder="Type your next command\u2026"' +
       ' onkeydown="if(_shouldSend(event)){event.preventDefault();liveSubmitIdle()}"></textarea>' +
       '<div class="live-bar-row">' +
+      _buildCtxBarCompact(id) +
       '<span class="send-hint" style="font-size:10px;color:var(--text-faint);">' + _sendHint() + '</span>' +
       '<button class="live-send-btn" id="live-voice-btn"></button>' +
       '</div>';
@@ -753,15 +862,22 @@ function updateLiveInputBar() {
     const _elapsedStr = _elapsed >= 60 ? Math.floor(_elapsed/60) + 'm ' + (_elapsed%60) + 's' : _elapsed + 's';
     const qCount = _getQueueList(id).length;
 
+    // Detect compacting substatus
+    const _sub = (window._sessionSubstatus && window._sessionSubstatus[id]) || '';
+    const _isCompacting = _sub === 'compacting';
+    const _statusLabel = _isCompacting ? 'Compacting\u2026' : 'Working\u2026';
+    const _spinnerClass = _isCompacting ? 'spinner compacting-spinner' : 'spinner';
+
     bar.innerHTML =
       '<div class="live-working-status">' +
-      '<div class="live-working-indicator"><span class="spinner"></span> Working\u2026 <span id="live-elapsed" style="color:var(--text-faint);font-size:10px;margin-left:6px;">' + _elapsedStr + '</span></div>' +
+      '<div class="live-working-indicator"><span class="' + _spinnerClass + '"></span> ' + _statusLabel + ' <span id="live-elapsed" style="color:var(--text-faint);font-size:10px;margin-left:6px;">' + _elapsedStr + '</span></div>' +
       '<button class="live-stop-btn" onclick="liveSubmitInterrupt()" title="Interrupt session">\u25A0 Stop</button>' +
       '</div>' +
       '<textarea id="live-queue-ta" class="live-textarea live-queue-ta" rows="2" ' +
       'placeholder="' + (qCount ? 'Queue another command\u2026' : 'Type your next command \u2014 will send when Claude finishes\u2026') + '"' +
       ' onkeydown="if(_shouldSend(event)){event.preventDefault();liveQueueSave()}"></textarea>' +
       '<div class="live-bar-row">' +
+      _buildCtxBarCompact(id, true) +
       '<span id="live-queue-hint" style="font-size:10px;color:var(--text-faint);">' +
       (qCount ? qCount + ' queued \u2022 will send in order when idle' : 'Will send automatically when done') +
       '</span>' +
@@ -775,6 +891,7 @@ function updateLiveInputBar() {
     }, 50);
     _renderQueueBanner();
     // Start elapsed timer — update only the time span, NOT the whole bar
+    // Update elapsed timer and compacting label dynamically (no ctx bar in working state)
     if (!_liveWorkingTimer) {
       _liveWorkingTimer = setInterval(() => {
         if (!liveBarState || !liveBarState.startsWith('working') || !_liveWorkingStart) return;
@@ -782,6 +899,21 @@ function updateLiveInputBar() {
         if (!el) return;
         const s = Math.round((Date.now() - _liveWorkingStart) / 1000);
         el.textContent = s >= 60 ? Math.floor(s/60) + 'm ' + (s%60) + 's' : s + 's';
+        // Update compacting label dynamically without full re-render
+        const indicator = el.closest('.live-working-indicator');
+        if (indicator) {
+          const curSub = (window._sessionSubstatus && window._sessionSubstatus[liveSessionId]) || '';
+          const spinnerEl = indicator.querySelector('.spinner');
+          if (curSub === 'compacting') {
+            if (spinnerEl && !spinnerEl.classList.contains('compacting-spinner')) spinnerEl.classList.add('compacting-spinner');
+            const textNodes = [...indicator.childNodes].filter(n => n.nodeType === 3);
+            if (textNodes.length && !textNodes[0].textContent.includes('Compacting')) textNodes[0].textContent = ' Compacting\u2026 ';
+          } else {
+            if (spinnerEl) spinnerEl.classList.remove('compacting-spinner');
+            const textNodes = [...indicator.childNodes].filter(n => n.nodeType === 3);
+            if (textNodes.length && textNodes[0].textContent.includes('Compacting')) textNodes[0].textContent = ' Working\u2026 ';
+          }
+        }
       }, 1000);
     }
   }
@@ -890,10 +1022,24 @@ function _liveSubmitDirect(sid, text, opts) {
   } else if (runningIds.has(sid)) {
     // Send message — server will process if idle, or queue if busy
     socket.emit('send_message', {session_id: sid, text: text});
+  } else {
+    // Session not in runningIds — resume it so the message isn't silently lost.
+    // This covers race conditions where the frontend thinks it's stopped but
+    // the daemon still has it, or stale state after a missed event.
+    console.warn('[submit] Session', sid, 'not in runningIds — resuming with start_session');
+    socket.emit('start_session', {
+      session_id: sid,
+      prompt: text,
+      cwd: _currentProjectDir(),
+      resume: true,
+    });
+    runningIds.add(sid);
+    guiOpenAdd(sid);
   }
 
-  // Add optimistic user bubble only for real messages (not permission answers)
-  if (!wasPermission && text.length > 1) {
+  // Add optimistic user bubble only for real messages (not permission answers, not slash commands)
+  const _isSlash = text.trim().startsWith('/') && !text.trim().includes(' ');
+  if (!wasPermission && text.length > 1 && !_isSlash) {
     _addOptimisticBubble(sid, text);
   }
 
@@ -904,8 +1050,105 @@ function _liveSubmitDirect(sid, text, opts) {
   liveBarState = null;
   updateLiveInputBar();
 
+  // Start the message watchdog — if we don't get ANY response activity within
+  // 10 seconds, force a state resync to unstick the UI.
+  _startMessageWatchdog(sid);
+
   // Reset sending flag after brief delay (keeps session_entry dedup working)
   setTimeout(() => { _liveSending = false; }, 500);
+}
+
+// ── Message watchdog ──
+// After sending a message, if no session_entry or session_state event arrives
+// for this session within 10s, force a state resync from the server. This is
+// the catch-all safety net that prevents the UI from ever getting permanently
+// stuck in "working" when a response was silently lost.
+//
+// Escalation ladder:
+//   10s — request_state_snapshot via WebSocket (fast, covers most hiccups)
+//   16s — direct HTTP fetch of /api/live/state/<sid> to get ground truth
+//   22s — force UI to idle if server says idle/stopped but WS event was lost
+let _watchdogTimer = null;
+let _watchdogSid = null;
+
+function _startMessageWatchdog(sid) {
+  // Clear any previous watchdog
+  if (_watchdogTimer) clearTimeout(_watchdogTimer);
+  _watchdogSid = sid;
+  _watchdogTimer = setTimeout(() => {
+    _watchdogTimer = null;
+    if (_watchdogSid !== sid || sessionKinds[sid] !== 'working') return;
+
+    // Tier 1: WS snapshot resync
+    console.warn('[watchdog] No response activity for', sid, 'after 10s — requesting state snapshot');
+    socket.emit('request_state_snapshot');
+
+    // Tier 2: direct HTTP fetch (bypasses WS entirely)
+    setTimeout(() => {
+      if (sessionKinds[sid] !== 'working') return;
+      console.warn('[watchdog] Still stuck after WS resync for', sid, '— fetching state via HTTP');
+      _watchdogHttpCheck(sid);
+    }, 6000);
+
+    // Tier 3: last resort — fetch again and force-apply
+    setTimeout(() => {
+      if (sessionKinds[sid] !== 'working') return;
+      console.warn('[watchdog] STILL stuck for', sid, 'after 22s — force-fetching and applying');
+      _watchdogHttpCheck(sid, true);
+    }, 12000);
+  }, 10000);
+}
+
+function _watchdogHttpCheck(sid, forceApply) {
+  fetch('/api/live/state/' + encodeURIComponent(sid))
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (!data) return;
+      const serverState = data.state;
+      console.log('[watchdog] HTTP state for', sid, '=', serverState, '(UI thinks: working)');
+      if (serverState && serverState !== 'working') {
+        // Server knows it's not working — force the UI to match
+        console.warn('[watchdog] Forcing UI state to', serverState, 'for', sid);
+        if (serverState === 'waiting') {
+          sessionKinds[sid] = 'question';
+        } else if (serverState === 'idle') {
+          sessionKinds[sid] = 'idle';
+        } else if (serverState === 'stopped') {
+          delete sessionKinds[sid];
+          runningIds.delete(sid);
+        }
+        if (sid === liveSessionId) {
+          liveBarState = null;
+          updateLiveInputBar();
+        }
+        filterSessions();
+      } else if (forceApply && serverState === 'working') {
+        // Server also thinks working — request a fresh snapshot one last time
+        // to resync any other stale state
+        socket.emit('request_state_snapshot');
+      }
+    })
+    .catch(err => console.error('[watchdog] HTTP check failed:', err));
+}
+
+// Called by socket event handlers to signal that response activity was received,
+// cancelling the watchdog (everything is fine, response is flowing).
+function _cancelMessageWatchdog(sid) {
+  if (_watchdogTimer && _watchdogSid === sid) {
+    clearTimeout(_watchdogTimer);
+    _watchdogTimer = null;
+    _watchdogSid = null;
+  }
+}
+
+// Called by streaming event handlers (session_entry, session_usage) to signal
+// that data IS flowing but the session has not completed yet.  Instead of
+// cancelling the watchdog outright (which leaves no safety-net if the final
+// IDLE event is silently lost), restart the timer so we keep monitoring.
+function _resetMessageWatchdog(sid) {
+  // Only reset if the session is still working
+  if (sessionKinds[sid] !== 'working') return;
+  _startMessageWatchdog(sid);
 }
 
 function _addOptimisticBubble(sid, text) {
@@ -978,6 +1221,9 @@ function liveSubmitContinue(fromId) {
   liveBarState = null;
   updateLiveInputBar();
 
+  // Start watchdog for this submit path too
+  _startMessageWatchdog(sid);
+
   // Reset sending flag after brief delay (keeps session_entry dedup working)
   setTimeout(() => { _liveSending = false; }, 1000);
 }
@@ -1001,8 +1247,9 @@ function liveSubmitWaiting() {
     sessionKinds[liveSessionId] = 'working';
     liveBarState = null;
     updateLiveInputBar();
+    _startMessageWatchdog(liveSessionId);
   } else {
-    // Fallback to direct send
+    // Fallback to direct send (watchdog is started inside _liveSubmitDirect)
     _liveSubmitDirect(liveSessionId, text);
   }
 }
@@ -1034,13 +1281,19 @@ function liveSubmitInterrupt() {
 function liveClearDisplay() {
   const logEl = document.getElementById('live-log');
   if (logEl) { logEl.innerHTML = ''; liveLineCount = 0; }
+  _liveEntryStash = [];
+  _liveRenderedFrom = 0;
   showToast('Display cleared');
 }
 
 function liveCompact() {
   if (!liveSessionId) return;
+  // Optimistically set compacting substatus so bar immediately shows
+  // "Compacting…" instead of "Working…" while waiting for compact_boundary
+  if (!window._sessionSubstatus) window._sessionSubstatus = {};
+  window._sessionSubstatus[liveSessionId] = 'compacting';
   socket.emit('send_message', {session_id: liveSessionId, text: '/compact'});
-  showToast('Sent /compact command');
+  showToast('Compacting context\u2026');
 }
 
 async function closeSession(id) {

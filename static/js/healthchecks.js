@@ -42,7 +42,13 @@ function _getHealthOverlay() {
 function _runHealthChecks() {
     var failing = null;
     for (var i = 0; i < _healthChecks.length; i++) {
-        if (!_healthChecks[i].test()) {
+        try {
+            if (!_healthChecks[i].test()) {
+                failing = _healthChecks[i];
+                break;
+            }
+        } catch (e) {
+            // If a test throws, treat it as failing
             failing = _healthChecks[i];
             break;
         }
@@ -90,15 +96,45 @@ function _restartHealthPoll(ms) {
 
 /* ---- Built-in: WiFi / Internet connectivity ---- */
 
+/*
+ * Two-layer detection:
+ *   1. navigator.onLine  — instant but unreliable on Windows (stays true if
+ *      any adapter is up, even loopback)
+ *   2. Real probe        — HEAD request to a known external URL to confirm
+ *      actual internet reachability.  Falls back to navigator.onLine if the
+ *      probe can't run yet.
+ */
+var _internetReachable = navigator.onLine;  // seed with browser hint
+
+function _probeInternet() {
+    // Tiny cacheless HEAD to a highly-available endpoint
+    fetch('https://www.gstatic.com/generate_204', {
+        method: 'HEAD', mode: 'no-cors', cache: 'no-store'
+    })
+    .then(function() { _internetReachable = true;  _runHealthChecks(); })
+    .catch(function() { _internetReachable = false; _runHealthChecks(); });
+}
+
 registerHealthCheck('wifi', {
     label: 'No Internet Connection',
     icon: '<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l22 22"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.56 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>',
     message: 'VibeNode requires an active internet connection to communicate with Claude. Please check your WiFi or network settings.',
-    test: function() { return navigator.onLine; }
+    test: function() { return _internetReachable; }
 });
 
-window.addEventListener('offline', _runHealthChecks);
-window.addEventListener('online', _runHealthChecks);
+// Browser events give us an instant trigger for the obvious cases
+window.addEventListener('offline', function() {
+    _internetReachable = false;
+    _runHealthChecks();
+});
+window.addEventListener('online', function() {
+    // Don't trust online event blindly — verify with a real probe
+    _probeInternet();
+});
+
+// Run the real probe on load and then on the same cadence as the health poll
+_probeInternet();
+setInterval(_probeInternet, 15000);
 
 /* ---- Built-in: Claude Code auth ---- */
 
@@ -107,7 +143,12 @@ var _claudeLoggedIn = true; // assume ok until first poll says otherwise
 (function _pollAuthStatus() {
     fetch('/api/auth-status')
         .then(function(r) { return r.json(); })
-        .then(function(d) { _claudeLoggedIn = !!d.loggedIn; })
+        .then(function(d) {
+            var prev = _claudeLoggedIn;
+            _claudeLoggedIn = !!d.loggedIn;
+            // Immediately re-evaluate if state changed
+            if (prev !== _claudeLoggedIn) _runHealthChecks();
+        })
         .catch(function() { /* can't reach our own server — wifi check will handle it */ });
     setTimeout(_pollAuthStatus, _healthBlocking ? 3000 : 10000);
 })();

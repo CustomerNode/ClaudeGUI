@@ -1,6 +1,11 @@
 """
 Session title generation — uses Claude Haiku for concise, high-quality names
 with a fast heuristic fallback if the API is unavailable.
+
+Title generation chain:
+  1. Direct Anthropic API  (fastest, needs ANTHROPIC_API_KEY)
+  2. Claude CLI             (uses CLI auth/OAuth, no key needed)
+  3. Heuristic              (instant, no API needed)
 """
 
 import re
@@ -22,12 +27,37 @@ _TRIVIAL = {
 _STRIP_PREFIXES = re.compile(
     r"^(can you|could you|please|i need (you )?to|i want (you )?to|"
     r"help me (to )?|i'd like (you )?to|i would like (you )?to|"
-    r"how do i|how can i|what is|what are|can we|let's|lets|"
+    r"how do i|how can i|how come|what is|what are|can we|let's|lets|"
     r"i have a|i've got a|i got a|i'm trying to|i am trying to)\s+",
     re.IGNORECASE
 )
 
+# Second pass: strip action-verb fluff that leaves titles sounding like commands
+# e.g. "take a look at the websocket code" → "the websocket code"
+_STRIP_ACTION_FLUFF = re.compile(
+    r"^(please\s+)?(go ahead and |go into |go and |go |"
+    r"take a look at |take a look |look at |look into |"
+    r"check out |check on |check |have a look at |have a look |"
+    r"figure out |work on |deal with |sort out |dig into |dive into |get into |"
+    r"see if you can |see if |see about |see )",
+    re.IGNORECASE
+)
+
 _ARROW = "\u2192"   # → (Read tool line-number prefix)
+
+# URLs, file paths, and IP:port patterns to strip from title text
+_URL_OR_PATH = re.compile(
+    r"(https?://\S+|file:///\S+|[A-Z]:\\[\w\\./\-]+|/[\w/.\-]{10,}|"
+    r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?)",
+    re.IGNORECASE
+)
+
+# Leading filler words to strip after prefix removal
+_LEADING_FILLER = re.compile(
+    r"^(the|my|a|an|our|this|that|some|and|or|but|so|into|every time|"
+    r"i see|i\'?m|i am|i)\s+",
+    re.IGNORECASE
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -91,7 +121,11 @@ def _extract_user_texts(messages: list, max_msgs: int = 5, max_chars: int = 300)
         if m.get("role") != "user" or m.get("type") == "tool_result":
             continue
         raw = _clean_message(m.get("content", ""))
-        if not raw or _is_trivial(raw) or _is_system_junk(raw):
+        if not raw or _is_trivial(raw):
+            continue
+        # Only check system junk on the first ~500 chars — long user messages
+        # with pasted content can trigger false positives (e.g. arrow chars)
+        if _is_system_junk(raw[:500]):
             continue
         texts.append(raw[:max_chars])
         if len(texts) >= max_msgs:
@@ -103,8 +137,64 @@ def _extract_user_texts(messages: list, max_msgs: int = 5, max_chars: int = 300)
 # LLM title generation (primary)
 # ---------------------------------------------------------------------------
 
+def _has_word_overlap(title: str, source_texts: list) -> bool:
+    """Check that the title shares at least one meaningful word with the input."""
+    title_words = {w.lower().strip(".,;:!?\"'") for w in title.split() if len(w) > 3}
+    if not title_words:
+        return True  # very short words only — can't validate, allow it
+    source_blob = " ".join(source_texts).lower()
+    return any(w in source_blob for w in title_words)
+
+
+_TITLE_SYSTEM_PROMPT = (
+    "You generate short titles for coding chat sessions. "
+    "Rules: 3-8 words, describe the task/goal, use words from the messages, "
+    "never include file paths or URLs.\n\n"
+    "Examples:\n"
+    "Input: 'can you look at the incoming git changes and see whether its trivial to pull them?'\n"
+    "Title: Review incoming git changes\n\n"
+    "Input: 'I'm hitting issues where it goes into idle state after messaging'\n"
+    "Title: Debug idle state after messaging\n\n"
+    "Input: 'take a look at the front end and identify polish opportunities'\n"
+    "Title: Frontend polish opportunities\n\n"
+    "Input: 'audit my test suite and identify gaps then patch them'\n"
+    "Title: Test suite gap analysis and fixes\n\n"
+    "Input: 'in prod i keep getting random 502 errors'\n"
+    "Title: Intermittent 502 errors in production\n\n"
+    "Reply with ONLY the title, nothing else."
+)
+
+
+def _validate_llm_title(title: str, source_texts: list) -> str | None:
+    """Apply quality checks to an LLM-generated title. Returns the title or None."""
+    title = title.strip().strip("\"'").rstrip(".")
+    if not title or len(title) <= 2 or len(title) >= 80:
+        return None
+    # Reject single-word titles — too vague to be useful
+    if len(title.split()) < 2:
+        log.debug("LLM title rejected (single word): %r", title)
+        return None
+    # Reject all-caps gibberish (e.g. "FOOT")
+    if title.isupper() and len(title) > 4:
+        log.debug("LLM title rejected (all caps): %r", title)
+        return None
+    # Reject titles with no meaningful word overlap with the source text
+    if not _has_word_overlap(title, source_texts):
+        log.debug("LLM title rejected (no overlap): %r", title)
+        return None
+    return title
+
+
 def _llm_title(messages: list) -> str | None:
-    """Ask Claude Haiku for a concise session title. Returns None on failure."""
+    """Ask Claude Haiku for a concise session title. Returns None on failure.
+
+    Requires ANTHROPIC_API_KEY in the environment. If not set, skips the API
+    call entirely and returns None so the CLI or heuristic fallback runs.
+    """
+    import os
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return None
+
     try:
         import anthropic
     except ImportError:
@@ -114,29 +204,172 @@ def _llm_title(messages: list) -> str | None:
     if not texts:
         return None
 
-    # Build a compact prompt — just the user's opening messages
     msg_block = "\n".join(f"- {t}" for t in texts)
-    prompt = (
-        "Here are the user's messages from the start of a coding chat session:\n\n"
-        f"{msg_block}\n\n"
-        "Write a short title (3-8 words) that captures what this session is about. "
-        "Focus on the user's intent/goal, not file names or implementation details. "
-        "Reply with ONLY the title, no quotes, no punctuation at the end."
-    )
 
     try:
         client = anthropic.Anthropic()
         resp = client.messages.create(
-            model="claude-haiku-4-20250414",
+            model="claude-haiku-4-5-20251001",
             max_tokens=30,
-            messages=[{"role": "user", "content": prompt}],
+            system=_TITLE_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": msg_block}],
         )
-        title = resp.content[0].text.strip().strip("\"'").rstrip(".")
-        if title and 2 < len(title) < 80:
-            return title
-        return None
+        return _validate_llm_title(resp.content[0].text, texts)
     except Exception as e:
         log.debug("LLM title generation failed: %s", e)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Daemon title generation — routes through the existing daemon connection
+# so it doesn't spawn a competing CLI process that steals the TCP socket.
+# ---------------------------------------------------------------------------
+
+def _daemon_title(messages: list) -> str | None:
+    """Generate a title via the session daemon (uses the web server's existing connection)."""
+    import time
+    import uuid
+
+    try:
+        from flask import current_app
+        sm = current_app.session_manager
+    except Exception as e:
+        log.debug("_daemon_title: no flask context: %s", e)
+        return None
+
+    if not hasattr(sm, 'start_session') or not hasattr(sm, 'is_connected'):
+        log.debug("_daemon_title: session_manager missing methods")
+        return None
+    if not sm.is_connected:
+        log.debug("_daemon_title: daemon not connected")
+        return None
+
+    texts = _extract_user_texts(messages)
+    if not texts:
+        log.debug("_daemon_title: no user texts extracted")
+        return None
+
+    msg_block = "\n".join(f"- {t}" for t in texts)
+    sid = f"_title_{uuid.uuid4().hex[:8]}"
+
+    result = sm.start_session(
+        session_id=sid,
+        prompt=msg_block,
+        system_prompt=_TITLE_SYSTEM_PROMPT + "\n\nIMPORTANT: Do NOT use any tools. Just reply with the title text directly.",
+        max_turns=1,
+        model="haiku",
+        allowed_tools=[],
+        permission_mode="plan",
+    )
+    log.debug("_daemon_title: start_session result: %s", result)
+    if not result or not result.get("ok"):
+        return None
+
+    # Poll for completion (max ~8s — Haiku titles finish in 2-3s)
+    for _ in range(40):
+        time.sleep(0.2)
+        # Check state first — faster than fetching entries
+        state = sm.get_session_state(sid)
+        done = False
+        if isinstance(state, str) and state in ("idle", "stopped"):
+            done = True
+        elif isinstance(state, dict) and state.get("state") in ("idle", "stopped"):
+            done = True
+        if done:
+            entries = sm.get_entries(sid, since=0)
+            title = _extract_title_from_entries(entries, texts)
+            sm.remove_session(sid)
+            return title
+
+    # Timeout — grab whatever we have
+    entries = sm.get_entries(sid, since=0)
+    sm.remove_session(sid)
+    return _extract_title_from_entries(entries, texts)
+
+
+def _extract_title_from_entries(entries, texts):
+    """Extract a valid title from daemon session entries.
+
+    The SDK wraps responses in agent behavior, so Haiku may return a long
+    response instead of just a title. Try the full text first, then try
+    each line individually (the title is usually the first non-empty line).
+    """
+    for e in entries:
+        if not isinstance(e, dict) or e.get("kind") != "asst":
+            continue
+        raw = (e.get("text") or "").strip()
+        if not raw:
+            continue
+        # Try full text first (works when response is just the title)
+        title = _validate_llm_title(raw, texts)
+        if title:
+            return title
+        # Agent response — try each line (title is usually the first line)
+        for line in raw.split("\n"):
+            line = line.strip().strip("#*-").strip()
+            if not line:
+                continue
+            title = _validate_llm_title(line, texts)
+            if title:
+                return title
+    return None
+
+
+# ---------------------------------------------------------------------------
+# CLI title generation (fallback when no API key — uses Claude CLI auth)
+# NOTE: Not called by smart_title() — kept for reference. Spawning `claude -p`
+# connects to the daemon on port 5051, replacing the web server's TCP socket
+# and breaking all real-time session state updates.
+# ---------------------------------------------------------------------------
+
+def _cli_title(messages: list) -> str | None:
+    """Use the Claude CLI to generate a title. Works with OAuth/CLI auth.
+
+    Falls back to None if the CLI is unavailable or fails.
+    """
+    import subprocess
+    import sys
+
+    texts = _extract_user_texts(messages)
+    if not texts:
+        return None
+
+    msg_block = "\n".join(f"- {t}" for t in texts)
+
+    prompt = (
+        _TITLE_SYSTEM_PROMPT + "\n\n"
+        "Here are the user messages:\n" + msg_block
+    )
+
+    try:
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        r = subprocess.run(
+            ["claude", "-p", prompt, "--output-format", "text",
+             "--max-turns", "1", "--model", "haiku"],
+            capture_output=True, text=True, timeout=20,
+            creationflags=creationflags
+        )
+        if r.returncode != 0:
+            log.debug("CLI title generation failed (exit %d): %s", r.returncode, r.stderr[:200])
+            return None
+        raw = r.stdout.strip()
+        # The CLI may return multi-line output; take the first non-empty line
+        for line in raw.split("\n"):
+            line = line.strip()
+            if line:
+                title = _validate_llm_title(line, texts)
+                if title:
+                    return title
+        log.debug("CLI title generation produced no valid title from: %r", raw[:200])
+        return None
+    except FileNotFoundError:
+        log.debug("CLI title generation skipped: 'claude' command not found")
+        return None
+    except subprocess.TimeoutExpired:
+        log.debug("CLI title generation timed out")
+        return None
+    except Exception as e:
+        log.debug("CLI title generation failed: %s", e)
         return None
 
 
@@ -144,17 +377,41 @@ def _llm_title(messages: list) -> str | None:
 # Heuristic fallback
 # ---------------------------------------------------------------------------
 
-def _to_title(text: str, max_chars: int = 65) -> str:
+def _to_title(text: str, max_chars: int = 55) -> str:
     """Turn raw message text into a clean readable title."""
+    # Strip URLs and file paths, then clean up dangling prepositions
+    text = _URL_OR_PATH.sub("", text).strip()
+    text = re.sub(r"\b(at|from|in|on|to|via|of)\s+(and|but|or|,)", r"\2", text)
+    # Two-pass prefix stripping
     text = _STRIP_PREFIXES.sub("", text).strip()
-    text = re.sub("^(//|/\\*|\\*/|#!?\\s|" + _ARROW + ")\\s*", "", text).strip()
-    for sep in ("\n", ". ", "? ", "! "):
-        if sep in text[:120]:
-            text = text[:text.index(sep)].strip()
+    text = _STRIP_ACTION_FLUFF.sub("", text).strip()
+    # Strip leading punctuation left over from URL/path removal
+    text = text.lstrip(".,;:!?-– ").strip()
+    # Strip leading filler words ("the", "my", "a", "I'm", etc.) — loop for chained filler
+    for _ in range(3):
+        prev = text
+        text = _LEADING_FILLER.sub("", text).strip()
+        if text == prev:
             break
+    # Strip code comment prefixes
+    text = re.sub("^(//|/\\*|\\*/|#!?\\s|" + _ARROW + ")\\s*", "", text).strip()
+    # Take the first sentence/clause — find the earliest separator match
+    _seps = ("\n", ". ", "? ", "! ", ", and ", ", but ", " and see ",
+             " and then ", " and come back", " I think ", " i think ",
+             " I'm ", " i'm ", " I don't ", " i don't ")
+    best_pos = len(text)
+    for sep in _seps:
+        pos = text.find(sep, 0, 120)
+        if pos != -1 and pos < best_pos:
+            best_pos = pos
+    if best_pos < len(text):
+        text = text[:best_pos].strip()
     text = " ".join(text.split())
+    # If stripping left us with almost nothing, signal with empty return
+    if len(text.split()) < 2:
+        return ""
     if len(text) > max_chars:
-        text = text[:max_chars].rsplit(" ", 1)[0].rstrip(".,;:!?") + "\u2026"
+        text = text[:max_chars].rsplit(" ", 1)[0].rstrip(".,;:!?")
     else:
         text = text.rstrip(".,;:!?")
     return text[:1].upper() + text[1:] if text else ""
@@ -168,10 +425,22 @@ def _heuristic_title(messages: list) -> str:
 
     title = _to_title(texts[0])
 
-    if len(title) < 15 and len(texts) > 1:
+    # If first message produced a weak title, try the second message
+    if len(title) < 12 and len(texts) > 1:
         runner = _to_title(texts[1], max_chars=45)
         if runner and runner.lower() not in title.lower():
-            title = title.rstrip("\u2026") + " \u2014 " + runner
+            if title:
+                title = title.rstrip("\u2026") + " \u2014 " + runner
+            else:
+                title = runner
+
+    # Last resort: if stripping left us empty, take the raw first message
+    if not title:
+        raw = _URL_OR_PATH.sub("", texts[0]).strip()
+        raw = " ".join(raw.split())
+        if len(raw) > 55:
+            raw = raw[:55].rsplit(" ", 1)[0].rstrip(".,;:!?")
+        title = raw[:1].upper() + raw[1:] if raw else "Untitled Session"
 
     return title or "Untitled Session"
 
@@ -181,8 +450,21 @@ def _heuristic_title(messages: list) -> str:
 # ---------------------------------------------------------------------------
 
 def smart_title(messages: list) -> str:
-    """Generate a session title. Tries LLM first, falls back to heuristic."""
+    """Generate a session title.
+
+    Tries three strategies in order:
+      1. Direct Anthropic API  (needs ANTHROPIC_API_KEY)
+      2. Claude CLI             (uses CLI auth / OAuth)
+      3. Local heuristic        (instant, no API)
+    """
     title = _llm_title(messages)
     if title:
+        log.debug("Title from API: %r", title)
         return title
-    return _heuristic_title(messages)
+    title = _cli_title(messages)
+    if title:
+        log.debug("Title from CLI: %r", title)
+        return title
+    title = _heuristic_title(messages)
+    log.debug("Title from heuristic: %r", title)
+    return title

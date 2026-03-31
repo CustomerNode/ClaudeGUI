@@ -12,9 +12,60 @@ from pathlib import Path
 # Path constants
 # ---------------------------------------------------------------------------
 
+import os as _os
+
 _CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 _active_project: str = ""   # encoded dir name; empty = auto-detect
 _VIBENODE_DIR = Path(__file__).resolve().parent.parent  # always the VibeNode repo
+# Allow tests to override config path via env var
+_KANBAN_CONFIG_FILE = Path(_os.environ["VIBENODE_CONFIG"]) if _os.environ.get("VIBENODE_CONFIG") else _VIBENODE_DIR / "kanban_config.json"
+
+
+# ---------------------------------------------------------------------------
+# Kanban config store
+# ---------------------------------------------------------------------------
+
+def get_kanban_config() -> dict:
+    """Load kanban configuration from kanban_config.json.
+
+    Missing keys are filled from defaults so callers always see the full set.
+    """
+    try:
+        stored = json.loads(_KANBAN_CONFIG_FILE.read_text(encoding="utf-8"))
+        merged = _kanban_config_defaults()
+        merged.update(stored)
+        # Migrate old key
+        if "kanban_auto_advance" in stored and "auto_advance_to_validating" not in stored:
+            merged["auto_advance_to_validating"] = bool(stored["kanban_auto_advance"])
+        return merged
+    except Exception:
+        return _kanban_config_defaults()
+
+
+def _kanban_config_defaults() -> dict:
+    return {
+        "kanban_backend": "sqlite",
+        "supabase_url": "",
+        "supabase_secret_key": "",
+        "supabase_publishable_key": "",
+        "kanban_depth_limit": 5,
+        # ── Behavior preferences ──
+        # Session starts → task moves to Working
+        "auto_start_on_session": True,
+        # Child Working → parent moves from Not Started to Working
+        "auto_parent_working": True,
+        # Child Remediating → parent reverts from Complete to Remediating
+        "auto_parent_reopen": True,
+        # All children/sessions done → task moves to Validating
+        "auto_advance_to_validating": False,
+    }
+
+
+def save_kanban_config(config: dict) -> None:
+    """Save kanban configuration to kanban_config.json."""
+    _KANBAN_CONFIG_FILE.write_text(
+        json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -35,17 +86,33 @@ def set_active_project(value: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _sessions_dir() -> Path:
-    """Return the active project's session directory, auto-detecting if needed."""
+    """Return the active project's session directory, auto-detecting if needed.
+
+    Priority:
+      1. Explicit _active_project (set by UI project picker)
+      2. Match based on server working directory (_VIBENODE_DIR)
+      3. Most recently modified .jsonl across all projects
+    """
     global _active_project
     if _active_project:
-        # Reject subagent directories — they contain internal Claude state
         if not _active_project.startswith("subagents"):
             p = _CLAUDE_PROJECTS / _active_project
             if p.is_dir():
                 return p
-        # Active project is invalid or a subagent dir — fall through to auto-detect
         _active_project = ""
-    # Auto-detect: pick the project with the most recent .jsonl file
+
+    # Derive from server's own repo path — Claude encodes paths with dashes
+    # e.g. C:\Users\foo\Documents\ClaudeGUI -> C--Users-foo-Documents-ClaudeGUI
+    repo_path = str(_VIBENODE_DIR).replace("\\", "-").replace("/", "-").replace(":", "-")
+    for d in _CLAUDE_PROJECTS.iterdir():
+        if not d.is_dir() or d.name.startswith("subagents"):
+            continue
+        # Case-insensitive match — Claude's encoding may differ in case
+        if d.name.lower() == repo_path.lower():
+            _active_project = d.name
+            return d
+
+    # Fallback: most recently modified .jsonl
     best, best_ts = None, 0.0
     if not _CLAUDE_PROJECTS.is_dir():
         return _CLAUDE_PROJECTS

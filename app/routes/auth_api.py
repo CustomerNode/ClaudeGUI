@@ -5,12 +5,16 @@ Auth routes -- check Claude Code login status and trigger login flow.
 import json
 import subprocess
 import shutil
+import sys
 
 from flask import Blueprint, jsonify
 
 bp = Blueprint('auth_api', __name__)
 
 _claude_bin = shutil.which("claude") or "claude"
+
+# On Windows, prevent subprocess from flashing a console window
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
 @bp.route("/api/auth-status")
@@ -20,6 +24,7 @@ def api_auth_status():
         result = subprocess.run(
             [_claude_bin, "auth", "status", "--json"],
             capture_output=True, text=True, timeout=10,
+            creationflags=_NO_WINDOW,
         )
         data = json.loads(result.stdout)
         return jsonify(data)

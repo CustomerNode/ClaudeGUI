@@ -624,6 +624,9 @@ function navigateToFolder(folderId, skipHistory) {
 
 // Restore folder + chat from URL on load + handle back/forward
 window.addEventListener('popstate', function(e) {
+  // Don't interfere with kanban navigation
+  if (typeof viewMode !== 'undefined' && viewMode === 'kanban') return;
+
   const state = e.state || {};
   const url = new URL(window.location);
 
@@ -661,48 +664,44 @@ window.addEventListener('popstate', function(e) {
 // ---- Permission panel ----
 function _buildPermissionPanel() {
   const policyIcons = {
-    manual: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
-    auto: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
-    custom: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9"/></svg>',
+    manual: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+    auto: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+    custom: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9"/></svg>',
   };
   const policyLabels = {auto: 'Auto-Approve', manual: 'Manual', custom: 'Custom Rules'};
 
-  let headerHtml = `<div class="ws-perm-header">
-    <span class="ws-perm-title">Permissions</span>
-    <button class="ws-policy-btn" onclick="openPermissionPolicySelector()">
-      <span class="ws-policy-indicator ws-policy-${permissionPolicy}">${policyIcons[permissionPolicy] || ''} ${policyLabels[permissionPolicy] || 'Manual'}</span>
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity:0.5;"><polyline points="6 9 12 15 18 9"/></svg>
-    </button>
-  </div>`;
+  let html = '<div class="kanban-sidebar-section">';
+  html += '<div class="kanban-sidebar-label">Permissions</div>';
 
-  let rowsHtml = '';
-  if (permissionQueue.length === 0) {
-    rowsHtml = '<div class="ws-perm-empty">No pending permission requests</div>';
-  } else {
-    rowsHtml = permissionQueue.map(entry => {
+  // Policy button — same style as other sidebar buttons
+  html += `<button class="kanban-sidebar-btn" onclick="openPermissionPolicySelector()">
+    ${policyIcons[permissionPolicy] || ''} ${policyLabels[permissionPolicy] || 'Manual'}
+  </button>`;
+
+  // Pending permission requests
+  if (permissionQueue.length > 0) {
+    html += permissionQueue.map(entry => {
       const s = allSessions.find(x => x.id === entry.sessionId);
       const name = s ? escHtml((s.display_title||'').slice(0,30)) : entry.sessionId.slice(0,8);
       const toolDisplay = entry.toolName ? escHtml(entry.toolName) : 'unknown';
-      const cmdDisplay = entry.command ? escHtml(entry.command.slice(0,80)) : '';
-      return `<div class="ws-perm-row" data-sid="${entry.sessionId}">
-        <div class="ws-perm-session">${name}</div>
-        <div class="ws-perm-detail">
+      const cmdDisplay = entry.command ? escHtml(entry.command.slice(0,60)) : '';
+      return `<div class="ws-perm-card" data-sid="${entry.sessionId}">
+        <div class="ws-perm-card-top">
+          <span class="ws-perm-card-session">${name}</span>
           <span class="ws-perm-tool">${toolDisplay}</span>
-          ${cmdDisplay ? '<span class="ws-perm-cmd">' + cmdDisplay + '</span>' : ''}
         </div>
+        ${cmdDisplay ? '<div class="ws-perm-cmd">' + cmdDisplay + '</div>' : ''}
         <div class="ws-perm-actions">
-          <button class="ws-perm-btn ws-perm-allow" onclick="wsPermissionAnswer('${entry.sessionId}','y')" title="Allow">Allow</button>
-          <button class="ws-perm-btn ws-perm-deny" onclick="wsPermissionAnswer('${entry.sessionId}','n')" title="Deny">Deny</button>
-          <button class="ws-perm-btn ws-perm-always" onclick="wsPermissionAnswer('${entry.sessionId}','a')" title="Always Allow">Always</button>
+          <button class="ws-perm-btn ws-perm-allow" onclick="wsPermissionAnswer('${entry.sessionId}','y')">Allow</button>
+          <button class="ws-perm-btn ws-perm-deny" onclick="wsPermissionAnswer('${entry.sessionId}','n')">Deny</button>
+          <button class="ws-perm-btn ws-perm-always" onclick="wsPermissionAnswer('${entry.sessionId}','a')">Always</button>
         </div>
       </div>`;
     }).join('');
   }
 
-  return `<div class="ws-perm-panel">
-    ${headerHtml}
-    <div class="ws-perm-body">${rowsHtml}</div>
-  </div>`;
+  html += '</div>';
+  return html;
 }
 
 // ---- Permission queue update (called from socket events) ----
@@ -745,13 +744,8 @@ function _updatePermissionQueue(newWaiting) {
 
   // When a card is expanded, renderWorkspace() skips, so do incremental update
   if (_wsExpandedId) {
-    const panel = document.querySelector('.ws-perm-panel');
-    if (panel) {
-      const temp = document.createElement('div');
-      temp.innerHTML = _buildPermissionPanel();
-      const newPanel = temp.firstElementChild;
-      panel.replaceWith(newPanel);
-    }
+    const permEl = document.getElementById('sidebar-perm-panel');
+    if (permEl) permEl.innerHTML = _buildPermissionPanel();
   }
 }
 
@@ -819,12 +813,8 @@ async function wsPermissionAnswer(sessionId, answer) {
   delete waitingData[sessionId];
   sessionKinds[sessionId] = 'working';
   if (workspaceActive && !_wsExpandedId) {
-    const panel = document.querySelector('.ws-perm-panel');
-    if (panel) {
-      const temp = document.createElement('div');
-      temp.innerHTML = _buildPermissionPanel();
-      panel.replaceWith(temp.firstElementChild);
-    }
+    const permEl = document.getElementById('sidebar-perm-panel');
+    if (permEl) permEl.innerHTML = _buildPermissionPanel();
     const card = document.querySelector('.ws-card[data-sid="' + sessionId + '"]');
     if (card) card.className = 'ws-card ws-working';
   }
@@ -898,7 +888,11 @@ function setPermissionPolicy(policy) {
     pending.forEach(entry => wsPermissionAnswer(entry.sessionId, 'y'));
   }
 
-  // Re-render panel
+  // Re-render permission panel in sidebar
+  const permEl = document.getElementById('sidebar-perm-panel');
+  if (permEl) permEl.innerHTML = _buildPermissionPanel();
+
+  // Re-render workspace if active
   if (workspaceActive && !_wsExpandedId) {
     filterSessions();
   }

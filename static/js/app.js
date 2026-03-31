@@ -7,7 +7,7 @@ let sortMode = localStorage.getItem('sortMode') || 'date';
 let sortAsc  = localStorage.getItem('sortAsc') === 'true';
 let viewMode = localStorage.getItem('viewMode') || 'workforce';
 // Guard against invalid view modes persisted in localStorage
-if (!['workforce', 'list', 'workplace'].includes(viewMode)) viewMode = 'workforce';
+if (!['workforce', 'list', 'workplace', 'kanban'].includes(viewMode)) viewMode = 'workforce';
 let wfSort = localStorage.getItem('wfSort') || 'status';
 let runningIds = new Set();
 let waitingData = {};   // { session_id: {question, options, kind} }
@@ -36,6 +36,8 @@ let _waitingPolledOnce = true;  // WebSocket push means we always have state
 let _skipChatHistory = false;
 function _pushChatUrl(chatId) {
   if (_skipChatHistory) return;
+  // Don't push chat URLs in kanban mode — kanban manages its own history
+  if (typeof viewMode !== 'undefined' && viewMode === 'kanban') return;
   const url = new URL(window.location);
   if (chatId) url.searchParams.set('chat', chatId);
   else url.searchParams.delete('chat');
@@ -94,6 +96,10 @@ async function setProject(encoded, reload = true) {
   // Reset agent catalog so it gets re-written for the new project
   _agentCatalogPath = null;
   _agentCatalogPromise = null;
+  // Re-sync live session states from daemon (working_since, sessionKinds, etc.)
+  if (typeof socket !== 'undefined' && socket.connected) {
+    socket.emit('request_state_snapshot');
+  }
   if (reload) loadSessions();
 }
 
@@ -389,6 +395,12 @@ const _viewModes = {
     title: 'Workforce',
     desc: 'Organize sessions by department with specialized skills',
     badge: 'Experimental',
+  },
+  kanban: {
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="5" height="18" rx="1"/><rect x="10" y="3" width="5" height="12" rx="1"/><rect x="17" y="3" width="5" height="15" rx="1"/></svg>',
+    label: 'Workflow View',
+    title: 'Workflow',
+    desc: 'Task board with workflow columns and AI session orchestration',
   },
 };
 
@@ -693,6 +705,7 @@ async function addNewAgent() {
     setToolbarSession(newId, 'New Session', true, '');
     _addWorkspaceBackBtn();
   } else {
+    if (typeof _ensureMainBodyVisible === 'function') _ensureMainBodyVisible();
     activeId = newId;
     localStorage.setItem('activeSessionId', newId);
     setToolbarSession(newId, 'New Session', true, '');
@@ -885,19 +898,16 @@ async function _newSessionSubmit(sessionId) {
   _addOptimisticBubble(sessionId, text);
   setTimeout(() => { _liveSending = false; }, 500);
 
-  // Auto-name after a delay. Silent retry if .jsonl not ready yet.
-  // Skips if user has manually renamed (autoName checks _userNamedSessions).
-  setTimeout(() => {
-    if (!_userNamedSessions.has(sessionId)) autoName(sessionId, true);
-    // Retry at 20s in case the first attempt was too early
-    setTimeout(() => { if (!_userNamedSessions.has(sessionId)) autoName(sessionId, true); }, 12000);
-  }, 8000);
+  // Auto-name immediately using the prompt text (no need to wait for JSONL)
+  if (!_userNamedSessions.has(sessionId)) autoName(sessionId, true, false, text);
 }
 
 // _showNewSessionDialog removed — addNewAgent now goes straight to chat
 
 // --- Keyboard Navigation ---
 document.addEventListener('keydown', (e) => {
+  // Never block browser shortcuts (refresh, dev tools, etc)
+  if (e.ctrlKey || e.metaKey) return;
   // Don't intercept when typing in inputs
   if (e.target.matches('input, textarea, select, [contenteditable]')) return;
   // Don't intercept if a modal is open

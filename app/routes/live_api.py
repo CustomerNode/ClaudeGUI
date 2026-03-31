@@ -12,6 +12,7 @@ work with CLI 2.x.
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -24,6 +25,37 @@ from werkzeug.utils import secure_filename
 from .. import socketio as _app_socketio
 
 from ..config import _sessions_dir, get_active_project, _decode_project, _CLAUDE_PROJECTS
+
+# Markers that indicate a UserMessage is SDK/CLI system content, not human input
+_SYSTEM_USER_MARKERS = (
+    "This session is being continued from a previous conversation",
+    "<system-reminder>",
+    "<local-command-stdout>",
+    "<local-command-caveat>",
+    "<command-name>",
+    "<command-message>",
+    "<command-args>",
+)
+
+def _is_system_user_content(text):
+    for marker in _SYSTEM_USER_MARKERS:
+        if marker in text:
+            return True
+    return False
+
+def _system_user_label(text):
+    if "This session is being continued from a previous conversation" in text:
+        return "Session continued from previous conversation"
+    m = re.search(r'<command-name>(/?\w+)</command-name>', text)
+    if m:
+        cmd = m.group(1)
+        m2 = re.search(r'<local-command-stdout>(.*?)</local-command-stdout>', text, re.DOTALL)
+        stdout = m2.group(1).strip() if m2 else ""
+        return f"{cmd}: {stdout[:100]}" if stdout else f"Local command: {cmd}"
+    m = re.search(r'<local-command-stdout>(.*?)</local-command-stdout>', text, re.DOTALL)
+    if m:
+        return f"Command output: {m.group(1).strip()[:100]}"
+    return "System message"
 
 bp = Blueprint('live_api', __name__)
 
@@ -70,6 +102,20 @@ def hook_pre_tool():
     return jsonify({"action": "allow"})
 
 
+@bp.route("/api/live/state/<session_id>")
+def api_live_state(session_id):
+    """Lightweight endpoint returning just the session state.
+
+    Used by the frontend watchdog to bypass WebSocket and get ground truth
+    when the UI suspects it's stuck.
+    """
+    sm = current_app.session_manager
+    state = sm.get_session_state(session_id)
+    if state is None:
+        return jsonify({"state": "stopped", "managed": False})
+    return jsonify({"state": state, "managed": True})
+
+
 @bp.route("/api/session-log/<session_id>")
 def api_session_log(session_id):
     """Return structured log entries for the live terminal panel.
@@ -113,12 +159,20 @@ def api_session_log(session_id):
             msg = obj.get("message", {})
             content = msg.get("content", "")
             if isinstance(content, str) and content.strip():
-                entries.append({"kind": "user", "text": content.strip()[:2000]})
+                text = content.strip()[:20000]
+                if _is_system_user_content(text):
+                    entries.append({"kind": "system", "text": _system_user_label(text)})
+                else:
+                    entries.append({"kind": "user", "text": text})
             elif isinstance(content, list):
                 for block in content:
                     bt = block.get("type", "")
                     if bt == "text" and block.get("text", "").strip():
-                        entries.append({"kind": "user", "text": block["text"].strip()[:2000]})
+                        text = block["text"].strip()[:20000]
+                        if _is_system_user_content(text):
+                            entries.append({"kind": "system", "text": _system_user_label(text)})
+                        else:
+                            entries.append({"kind": "user", "text": text})
                     elif bt == "tool_result":
                         rc = block.get("content", "")
                         if isinstance(rc, list):
@@ -128,19 +182,19 @@ def api_session_log(session_id):
                         entries.append({
                             "kind": "tool_result",
                             "tool_use_id": block.get("tool_use_id", ""),
-                            "text": rt[:600],
+                            "text": rt[:20000],
                             "is_error": bool(block.get("is_error"))
                         })
         elif t == "assistant":
             msg = obj.get("message", {})
             content = msg.get("content", "")
             if isinstance(content, str) and content.strip():
-                entries.append({"kind": "asst", "text": content.strip()[:3000]})
+                entries.append({"kind": "asst", "text": content.strip()[:50000]})
             elif isinstance(content, list):
                 for block in content:
                     bt = block.get("type", "")
                     if bt == "text" and block.get("text", "").strip():
-                        entries.append({"kind": "asst", "text": block["text"].strip()[:3000]})
+                        entries.append({"kind": "asst", "text": block["text"].strip()[:50000]})
                     elif bt == "tool_use":
                         inp = block.get("input") or {}
                         if "command" in inp:
@@ -372,10 +426,12 @@ def get_models():
     try:
         import subprocess
         # Query the CLI for its init message which includes the current model
+        import sys as _sys
+        _nw = subprocess.CREATE_NO_WINDOW if _sys.platform == "win32" else 0
         r = subprocess.run(
             ["claude", "-p", "hi", "--output-format", "stream-json",
              "--verbose", "--max-turns", "1"],
-            capture_output=True, text=True, timeout=15
+            capture_output=True, text=True, timeout=15, creationflags=_nw
         )
         current_model = None
         for line in r.stdout.strip().split("\n"):

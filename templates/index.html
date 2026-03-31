@@ -8,7 +8,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=19">
+<link href="/static/vendor/quill.snow.css" rel="stylesheet">
+<script src="/static/vendor/quill.min.js"></script>
 <script>
 // Apply saved theme immediately to avoid flash
 (function(){
@@ -39,10 +41,13 @@
       <button onclick="openPreferences();closeHdrSys()">Preferences</button>
       <div class="sys-separator"></div>
       <button onclick="openPermissionPolicySelector();closeHdrSys()">Permission Policy</button>
+      <button onclick="openPersistentStorage();closeHdrSys()">Persistent Storage <span class="sys-item-value" id="sys-storage-label">Local</span></button>
       <button onclick="openWorkspaceTemplateSelector();closeHdrSys()">Workspace Template</button>
       <div class="sys-separator"></div>
       <button onclick="openBulkOperations();closeHdrSys()">Bulk Operations</button>
       <button onclick="_showHelpModal();closeHdrSys()">Keyboard Shortcuts</button>
+      <div class="sys-separator"></div>
+      <button onclick="restartServer();closeHdrSys()">Restart Server</button>
     </div>
   </div>
   <button id="btn-git-update" onclick="openGitUpdate()">Update App <span id="git-badge-pull"></span></button>
@@ -109,21 +114,45 @@
     </div>
     <script>
     (function(){
-      var el = document.getElementById('session-list');
-      var html = '';
-      for (var i = 0; i < 20; i++) {
-        var nw = 40 + Math.random() * 45;
-        var d = (i * 0.06).toFixed(2);
-        html += '<div class="skel-row">'
-          + '<div><div class="skel-bar name" style="width:' + nw + '%;animation-delay:' + d + 's"></div></div>'
-          + '<div><div class="skel-bar date" style="animation-delay:' + d + 's"></div></div>'
-          + '<div><div class="skel-bar size" style="animation-delay:' + d + 's"></div></div>'
-          + '</div>';
+      var mode = localStorage.getItem('viewMode') || 'workforce';
+      if (mode === 'kanban') {
+        // Show kanban sidebar skeleton
+        var kb = document.getElementById('kanban-sidebar');
+        if (kb) {
+          kb.style.display = '';
+          var html = '<div class="kanban-sidebar-section">';
+          html += '<div class="skel-shimmer" style="width:50px;height:10px;margin-bottom:8px;border-radius:3px;"></div>';
+          for (var i = 0; i < 4; i++) {
+            html += '<div class="skel-shimmer" style="width:100%;height:36px;border-radius:6px;margin-bottom:6px;"></div>';
+          }
+          html += '</div>';
+          kb.innerHTML = html;
+        }
+        // Hide everything that doesn't belong in kanban
+        document.getElementById('session-list').style.display = 'none';
+        var sr = document.querySelector('.sidebar-search-row'); if (sr) sr.style.display = 'none';
+        var mw = document.querySelector('.sidebar-menu-wrap'); if (mw) mw.style.display = 'none';
+        var ba = document.getElementById('btn-add-agent'); if (ba) ba.style.display = 'none';
+        var kbBoard = document.getElementById('kanban-board'); if (kbBoard) kbBoard.style.display = '';
+      } else {
+        // Show session list skeleton
+        var el = document.getElementById('session-list');
+        var html = '';
+        for (var i = 0; i < 20; i++) {
+          var nw = 40 + Math.random() * 45;
+          var d = (i * 0.06).toFixed(2);
+          html += '<div class="skel-row">'
+            + '<div><div class="skel-bar name" style="width:' + nw + '%;animation-delay:' + d + 's"></div></div>'
+            + '<div><div class="skel-bar date" style="animation-delay:' + d + 's"></div></div>'
+            + '<div><div class="skel-bar size" style="animation-delay:' + d + 's"></div></div>'
+            + '</div>';
+        }
+        el.innerHTML = html;
       }
-      el.innerHTML = html;
     })();
     </script>
     <div id="workforce-grid"></div>
+    <div id="kanban-sidebar" style="display:none;"></div>
     <div id="sidebar-perm-panel" style="display:none;"></div>
     <div class="sidebar-footer"><span>by <a href="https://customernode.com" target="_blank">CustomerNode&trade;</a> and <a href="https://claude.ai/download" target="_blank">Claude Code</a></span><span>&copy; 2026 CustomerNode LLC</span></div>
   </div>
@@ -157,11 +186,32 @@
       <button class="find-nav-btn" onclick="findNav(1)">&darr;</button>
       <button class="find-nav-btn" onclick="closeFind()">&#10005;</button>
     </div>
-    <div id="main-body">
+    <div id="main-body" style="display:none;">
       <div class="empty-state">
         <div class="icon">&#x1F4AC;</div>
         <div>Select a session to preview it</div>
       </div>
+    </div>
+    <div id="kanban-board" style="display:none;">
+      <script>
+      (function(){
+        if ((localStorage.getItem('viewMode') || '') === 'kanban') {
+          var b = document.getElementById('kanban-board');
+          var h = '<div class="kanban-columns-wrapper">';
+          var names = ['Not Started','Working','Validating','Remediating','Complete'];
+          for (var c = 0; c < 5; c++) {
+            h += '<div class="kanban-column kanban-skel-col"><div class="kanban-column-header"><div class="skel-shimmer skel-col-title"></div><div class="skel-shimmer skel-col-count"></div></div><div class="kanban-column-body">';
+            var n = 2 + Math.floor(Math.random() * 3);
+            for (var i = 0; i < n; i++) {
+              h += '<div class="kanban-card kanban-skel-card"><div class="skel-shimmer skel-card-title" style="width:' + (50 + Math.random() * 40) + '%;"></div><div class="skel-shimmer skel-card-meta" style="width:' + (30 + Math.random() * 30) + '%;"></div></div>';
+            }
+            h += '</div></div>';
+          }
+          h += '</div>';
+          b.innerHTML = h;
+        }
+      })();
+      </script>
     </div>
   </div>
 </div>
@@ -391,7 +441,11 @@
 <script src="/static/js/workforce.js"></script>
 <script src="/static/js/folder-superset.js"></script>
 <script src="/static/js/folders.js"></script>
-<script src="/static/js/workspace.js"></script>
+<script src="/static/js/workspace.js?v=15"></script>
+<script src="/static/js/time-utils.js"></script>
+<script src="/static/js/kanban.js?v=26"></script>
+<script src="/static/js/kanban-report.js?v=15"></script>
+<script src="/static/js/kanban-planner.js?v=15"></script>
 <script src="/static/js/sessions.js"></script>
 <script src="/static/js/toolbar.js"></script>
 <script src="/static/js/modals.js"></script>
@@ -399,14 +453,14 @@
 <script src="/static/js/templates.js"></script>
 <script src="/static/js/git-sync.js"></script>
 <script src="/static/js/sticky-user-msg.js"></script>
-<script src="/static/js/live-panel.js"></script>
+<script src="/static/js/live-panel.js?v=21"></script>
 <script src="/static/js/find.js"></script>
 <script src="/static/js/extract.js"></script>
 <script src="/static/js/compare.js"></script>
 <script src="/static/js/voice.js"></script>
 <script src="/static/js/theme.js"></script>
 <script src="/static/js/healthchecks.js"></script>
-<script src="/static/js/socket.js"></script>
+<script src="/static/js/socket.js?v=21"></script>
 
 <div id="session-tooltip"></div>
 </body>

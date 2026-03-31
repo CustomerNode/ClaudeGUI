@@ -15,7 +15,8 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
-DAEMON_PORT = 5051
+import os as _os
+DAEMON_PORT = int(_os.environ.get("VIBENODE_DAEMON_PORT", 5051))
 
 
 class DaemonClient:
@@ -147,13 +148,16 @@ class DaemonClient:
                 )
             log_file = daemon_script.parent.parent / "daemon_debug.log"
             fh = open(log_file, "a")
-            subprocess.Popen(
-                [sys.executable, str(daemon_script)],
-                cwd=str(daemon_script.parent.parent),
-                creationflags=creation_flags,
-                stdout=fh,
-                stderr=fh,
-            )
+            try:
+                subprocess.Popen(
+                    [sys.executable, str(daemon_script)],
+                    cwd=str(daemon_script.parent.parent),
+                    creationflags=creation_flags,
+                    stdout=fh,
+                    stderr=fh,
+                )
+            finally:
+                fh.close()  # child inherits its own fd copy
         except Exception as e:
             logger.warning("Failed to restart daemon: %s", e)
 
@@ -214,7 +218,7 @@ class DaemonClient:
             # happened while we were reading (prevents stale disconnect from
             # overwriting a successful reconnect).
             current_sock = self._sock
-            buffer = ""
+            buffer = b""  # raw bytes buffer to avoid UTF-8 boundary splits
             try:
                 while self._should_run and self._connected:
                     try:
@@ -223,9 +227,22 @@ class DaemonClient:
                         break
                     if not data:
                         break
-                    buffer += data.decode("utf-8")
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
+                    buffer += data
+                    # Decode only up to the last newline (complete lines).
+                    # This avoids UnicodeDecodeError when a multi-byte char
+                    # is split across recv() calls.
+                    last_nl = buffer.rfind(b"\n")
+                    if last_nl == -1:
+                        continue  # no complete line yet
+                    decodable = buffer[:last_nl + 1]
+                    buffer = buffer[last_nl + 1:]
+                    try:
+                        text = decodable.decode("utf-8")
+                    except UnicodeDecodeError:
+                        # Corrupted data — skip this chunk
+                        logger.warning("UTF-8 decode error in IPC reader, skipping chunk")
+                        continue
+                    for line in text.splitlines():
                         line = line.strip()
                         if not line:
                             continue
@@ -268,7 +285,7 @@ class DaemonClient:
         try:
             self._socketio.emit(event_name, data)
         except Exception as e:
-            logger.debug("SocketIO emit error: %s", e)
+            logger.warning("SocketIO emit FAILED for %s: %s", event_name, e)
 
     # ------------------------------------------------------------------
     # Public API — same signatures as SessionManager

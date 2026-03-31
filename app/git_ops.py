@@ -3,9 +3,13 @@ Git operations — background fetch, status cache, and sync logic.
 """
 
 import subprocess
+import sys
 import threading
 
 from .config import _VIBENODE_DIR
+
+# On Windows, prevent subprocess from flashing a console window
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 # ---------------------------------------------------------------------------
 # Git cache and lock
@@ -27,14 +31,14 @@ def _bg_git_fetch():
         return
     try:
         subprocess.run(["git", "-C", str(proj), "fetch", "--quiet"],
-                       capture_output=True, timeout=15)
+                       capture_output=True, timeout=15, creationflags=_NO_WINDOW)
     except Exception:
         pass
     ahead = behind = 0
     try:
         r = subprocess.run(
             ["git", "-C", str(proj), "rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
-            capture_output=True, text=True, timeout=5)
+            capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW)
         if r.returncode == 0:
             parts = r.stdout.strip().split()
             if len(parts) == 2:
@@ -44,7 +48,7 @@ def _bg_git_fetch():
     uncommitted = False
     try:
         dirty = subprocess.run(["git", "-C", str(proj), "status", "--porcelain"],
-                               capture_output=True, text=True, timeout=5)
+                               capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW)
         uncommitted = bool(dirty.stdout.strip())
     except Exception:
         pass
@@ -89,15 +93,16 @@ def do_git_sync(action: str) -> dict:
 
     if action in ("pull", "both"):
         stash = subprocess.run(["git", "-C", str(proj), "stash", "--include-untracked"],
-                               capture_output=True, text=True, timeout=15)
+                               capture_output=True, text=True, timeout=15, creationflags=_NO_WINDOW)
         stashed = "No local changes" not in stash.stdout
         pull = subprocess.run(
             ["git", "-C", str(proj), "pull", "--rebase", "-X", "theirs"],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, timeout=30, creationflags=_NO_WINDOW)
         if pull.returncode != 0:
-            subprocess.run(["git", "-C", str(proj), "rebase", "--abort"], capture_output=True)
+            subprocess.run(["git", "-C", str(proj), "rebase", "--abort"],
+                          capture_output=True, creationflags=_NO_WINDOW)
             pull2 = subprocess.run(["git", "-C", str(proj), "pull", "-X", "theirs"],
-                                   capture_output=True, text=True, timeout=30)
+                                   capture_output=True, text=True, timeout=30, creationflags=_NO_WINDOW)
             if pull2.returncode != 0:
                 ok = False
                 messages.append("Could not pull: " + pull2.stderr.strip())
@@ -106,7 +111,8 @@ def do_git_sync(action: str) -> dict:
         else:
             out = pull.stdout.strip()
         if stashed:
-            subprocess.run(["git", "-C", str(proj), "stash", "pop"], capture_output=True)
+            subprocess.run(["git", "-C", str(proj), "stash", "pop"],
+                          capture_output=True, creationflags=_NO_WINDOW)
         if "Already up to date" in out:
             messages.append("VibeNode is already up to date.")
         else:
@@ -115,16 +121,17 @@ def do_git_sync(action: str) -> dict:
     if action in ("push", "both") and ok:
         # Auto-commit any uncommitted changes before pushing
         dirty = subprocess.run(["git", "-C", str(proj), "status", "--porcelain"],
-                               capture_output=True, text=True, timeout=5)
+                               capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW)
         if dirty.stdout.strip():
             from datetime import datetime as _dt
-            subprocess.run(["git", "-C", str(proj), "add", "-A"], capture_output=True)
+            subprocess.run(["git", "-C", str(proj), "add", "-A"],
+                          capture_output=True, creationflags=_NO_WINDOW)
             msg = "Update VibeNode " + _dt.now().strftime("%Y-%m-%d %H:%M")
             subprocess.run(["git", "-C", str(proj), "commit", "-m", msg],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True, timeout=10, creationflags=_NO_WINDOW)
             messages.append("Saved your local changes as a new version.")
         push = subprocess.run(["git", "-C", str(proj), "push"],
-                               capture_output=True, text=True, timeout=30)
+                               capture_output=True, text=True, timeout=30, creationflags=_NO_WINDOW)
         if push.returncode != 0:
             ok = False
             messages.append("Could not push: " + (push.stderr.strip() or push.stdout.strip()))
@@ -135,14 +142,14 @@ def do_git_sync(action: str) -> dict:
     try:
         r = subprocess.run(
             ["git", "-C", str(proj), "rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
-            capture_output=True, text=True, timeout=5)
+            capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW)
         a = b = 0
         if r.returncode == 0:
             parts = r.stdout.strip().split()
             if len(parts) == 2:
                 a, b = int(parts[0]), int(parts[1])
         d = subprocess.run(["git", "-C", str(proj), "status", "--porcelain"],
-                           capture_output=True, text=True, timeout=5)
+                           capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW)
         _git_cache.update({"has_git": True, "ahead": a, "behind": b,
                            "uncommitted": bool(d.stdout.strip()), "ready": True})
     except Exception:

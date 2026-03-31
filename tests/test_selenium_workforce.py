@@ -13,7 +13,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 
-BASE_URL = "http://localhost:5050"
+from tests.conftest import TEST_BASE_URL as BASE_URL
 LONG_WAIT = 90
 
 

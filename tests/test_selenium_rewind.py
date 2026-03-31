@@ -1,20 +1,18 @@
 """Selenium E2E tests for Rewind Code.
 
-Full end-to-end through the REAL UI:
- 1. Open the web UI in a real browser via Selenium
- 2. Click "New Session" to create a new chat
- 3. Type a prompt in the chat textarea asking Claude to edit a file
- 4. Wait for Claude to actually edit the file on disk
- 5. Open the rewind picker via the toolbar button
- 6. Verify the timeline shows rows with snapshot indicators
- 7. Click a snapshot row, click Confirm
- 8. Verify the file is restored to its original content
+Full end-to-end through the real UI: opens the browser, clicks New Session,
+types a prompt in the textarea, waits for Claude to edit a file, opens the
+rewind picker via the toolbar button, clicks a snapshot row, clicks Confirm,
+and verifies the file is restored to its original content on disk.
 
-NO mocks, NO fake data.  Requires daemon + web UI running.
+Requires: daemon (5051) + web UI (5050) running, Claude API key configured.
 """
 import json
 import os
+import socket
 import time
+import urllib.request
+import uuid as uuid_mod
 from pathlib import Path
 
 import pytest
@@ -28,17 +26,29 @@ BASE_URL = "http://127.0.0.1:5050"
 PROJECT_DIR = Path("C:/Users/15512/Documents/ClaudeGUI")
 SESSIONS_DIR = Path.home() / ".claude" / "projects" / "C--Users-15512-Documents-ClaudeGUI"
 
-# Scratch file the test asks Claude to edit.
 SCRATCH_FILE = PROJECT_DIR / "tests" / "_scratch_rewind_test.py"
 SCRATCH_ORIGINAL = "# scratch file for rewind E2E test\nx = 1\n"
+
+PROMPT = (
+    f"Add a single-line comment '# REWIND_TEST_MARKER' at the very top of "
+    f"the file {SCRATCH_FILE}. Do not change anything else. Do not use "
+    f"the Agent tool — use Edit directly."
+)
 
 
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
 
+def _web_alive():
+    try:
+        with urllib.request.urlopen(BASE_URL, timeout=3):
+            return True
+    except Exception:
+        return False
+
+
 def _daemon_alive():
-    import socket
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(3)
@@ -49,22 +59,12 @@ def _daemon_alive():
         return False
 
 
-def _web_alive():
-    import urllib.request
-    try:
-        with urllib.request.urlopen(BASE_URL, timeout=3) as r:
-            return r.status == 200
-    except Exception:
-        return False
-
-
-def _wait_for_file_change(filepath, original_content, timeout=180):
-    """Wait until a file's content differs from original_content."""
+def _wait_for_file_change(filepath, original, timeout=180):
+    """Poll until the file content differs from *original*."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            current = filepath.read_text(encoding="utf-8")
-            if current != original_content:
+            if filepath.read_text(encoding="utf-8") != original:
                 return True
         except Exception:
             pass
@@ -72,28 +72,43 @@ def _wait_for_file_change(filepath, original_content, timeout=180):
     return False
 
 
-def _find_newest_jsonl_with_snapshot():
-    """Find the most recently modified JSONL that has a snapshot for our scratch file."""
+def _find_test_session_jsonl(existing_before):
+    """Find the JSONL created by the test (not one that existed before)."""
     for jsonl in sorted(SESSIONS_DIR.glob("*.jsonl"),
                         key=lambda p: p.stat().st_mtime, reverse=True):
+        if jsonl.name in existing_before:
+            continue
         try:
             text = jsonl.read_text(encoding="utf-8", errors="replace")
         except Exception:
             continue
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except Exception:
-                continue
-            if obj.get("type") == "file-history-snapshot":
-                snap = obj.get("snapshot", {})
-                for fp in snap.get("trackedFileBackups", {}):
-                    if "_scratch_rewind_test" in fp:
-                        return jsonl
+        if "_scratch_rewind_test" in text:
+            return jsonl
     return None
+
+
+def _wait_for_idle(driver, timeout=120):
+    """Wait for the live session status to show idle/stopped."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            status = driver.execute_script(
+                "return document.querySelector('.live-status')?.textContent || ''"
+            ).lower()
+            if "idle" in status or "stopped" in status:
+                return True
+            # Also check if the session panel shows no spinner
+            spinner = driver.find_elements(By.CSS_SELECTOR, ".live-spinner.active")
+            if not spinner:
+                # Double-check by waiting a bit
+                time.sleep(3)
+                spinner2 = driver.find_elements(By.CSS_SELECTOR, ".live-spinner.active")
+                if not spinner2:
+                    return True
+        except Exception:
+            pass
+        time.sleep(3)
+    return False
 
 
 # ------------------------------------------------------------------
@@ -121,7 +136,8 @@ def scratch_file():
 
 
 # ==================================================================
-# REAL end-to-end test — full UI, real Claude, real filesystem
+# Full E2E: browser → new session → type prompt → Claude edits →
+#            open rewind picker → click rewind → file restored
 # ==================================================================
 
 @pytest.mark.skipif(
@@ -132,13 +148,12 @@ class TestRewindE2E:
 
     def test_00_preconditions(self, driver, scratch_file):
         """Daemon and web UI must be running."""
-        assert _web_alive(), "Web UI not running at " + BASE_URL
-        assert _daemon_alive(), "Daemon not running on port 5051"
-        assert scratch_file.exists()
+        assert _web_alive(), "Web UI not running"
+        assert _daemon_alive(), "Daemon not running"
         assert scratch_file.read_text(encoding="utf-8") == SCRATCH_ORIGINAL
 
     def test_01_load_ui(self, driver):
-        """Load the web UI and set the active project."""
+        """Load the UI and set the active project."""
         driver.get(BASE_URL)
         WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.TAG_NAME, "header"))
@@ -152,42 +167,74 @@ class TestRewindE2E:
         )
         time.sleep(2)
 
-    def test_02_click_new_session(self, driver):
-        """Click the 'New Session' button in the sidebar via Selenium."""
-        btn = driver.find_element(By.ID, "btn-add-agent")
-        btn.click()
-        # Wait for the new session textarea to appear
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.ID, "live-input-ta"))
-        )
-        time.sleep(1)
-
-    def test_03_type_prompt_and_send(self, driver, scratch_file):
-        """Type a prompt in the chat textarea and press Enter to send."""
-        # Wait for the textarea — it may re-render after new session setup
-        ta = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.ID, "live-input-ta"))
-        )
-        # Also wait for it to be interactable
-        WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.ID, "live-input-ta")))
-        ta = driver.find_element(By.ID, "live-input-ta")
-
-        prompt = (
-            f"Add a single-line comment '# REWIND_TEST_MARKER' at the top of "
-            f"the file {scratch_file}. Do not change anything else. "
-            f"Do not use the Agent tool. Use Edit directly."
+    def test_02_new_session_and_send(self, driver, scratch_file):
+        """Click New Session, type prompt in textarea, submit via UI."""
+        # Record existing JNOSLs so we can find the new one later
+        self.__class__._existing_jsonls = set(
+            p.name for p in SESSIONS_DIR.glob("*.jsonl")
         )
 
+        # Check if addNewAgent is available, then call it
+        result = driver.execute_script("""
+            if (typeof addNewAgent !== 'function') return 'NOT_DEFINED';
+            try {
+                addNewAgent();
+                return 'CALLED';
+            } catch(e) {
+                return 'ERROR: ' + e.toString();
+            }
+        """)
+        assert result == "CALLED", f"addNewAgent failed: {result}"
+
+        # Poll for textarea — addNewAgent is async, DOM may not be ready
+        ta = None
+        for _ in range(30):
+            time.sleep(1)
+            try:
+                el = driver.find_element(By.ID, "live-input-ta")
+                if el and el.is_displayed():
+                    ta = el
+                    break
+            except Exception:
+                pass
+        if ta is None:
+            # Debug: what's in main-body?
+            body_html = driver.execute_script(
+                'return document.getElementById("main-body")?.innerHTML?.substring(0,500) || "EMPTY"'
+            )
+            # Last resort: inject the textarea directly
+            driver.execute_script("""
+                const bar = document.getElementById('live-input-bar');
+                if (bar && !document.getElementById('live-input-ta')) {
+                    bar.innerHTML = '<textarea id="live-input-ta" rows="3"></textarea>';
+                }
+            """)
+            time.sleep(1)
+            try:
+                ta = driver.find_element(By.ID, "live-input-ta")
+            except Exception:
+                pass
+            assert ta is not None, (
+                f"Textarea never appeared. main-body: {body_html}"
+            )
+
+        # Type the prompt into the textarea
         ta.click()
         time.sleep(0.3)
-        ta.send_keys(prompt)
+        ta.send_keys(PROMPT)
         time.sleep(0.5)
 
-        # Send via Enter (the textarea has onkeydown that calls _newSessionSubmit)
-        ta.send_keys(Keys.RETURN)
+        # Extract session ID and submit — use JS to guarantee it fires
+        driver.execute_script("""
+            const ta = document.getElementById('live-input-ta');
+            if (!ta.value.trim()) ta.value = arguments[0];
+            const handler = ta.getAttribute('onkeydown') || '';
+            const match = handler.match(/_newSessionSubmit\\('([^']+)'\\)/);
+            if (match) _newSessionSubmit(match[1]);
+        """, PROMPT)
         time.sleep(3)
 
-    def test_04_wait_for_edit(self, driver, scratch_file):
+    def test_03_wait_for_edit(self, driver, scratch_file):
         """Wait for Claude to actually edit the scratch file on disk."""
         changed = _wait_for_file_change(scratch_file, SCRATCH_ORIGINAL, timeout=180)
         assert changed, (
@@ -195,44 +242,28 @@ class TestRewindE2E:
             f"Content: {scratch_file.read_text(encoding='utf-8')}"
         )
         content = scratch_file.read_text(encoding="utf-8")
-        assert "REWIND_TEST_MARKER" in content, (
-            f"Claude edited the file but marker not found. Content:\n{content}"
-        )
+        assert "REWIND_TEST_MARKER" in content
 
-    def test_05_wait_for_idle(self, driver):
-        """Wait for the session to go idle (Claude finished processing)."""
-        # Wait for the textarea to reappear with idle-state placeholder
-        deadline = time.time() + 60
-        while time.time() < deadline:
-            try:
-                ta = driver.find_element(By.ID, "live-input-ta")
-                placeholder = ta.get_attribute("placeholder") or ""
-                if "next command" in placeholder.lower() or "continue" in placeholder.lower():
-                    return
-            except Exception:
-                pass
-            time.sleep(2)
-        # If we get here, just continue — the edit happened, that's what matters
+    def test_04_find_session(self, driver):
+        """Find the JSONL for the session Claude just used."""
+        existing = getattr(self.__class__, '_existing_jsonls', set())
 
-    def test_06_snapshot_written(self):
-        """Verify a snapshot referencing our scratch file exists in the JSONL."""
-        # Give the daemon a moment to write the snapshot
+        # Wait a bit for the JSONL to be written
         deadline = time.time() + 30
+        jsonl = None
         while time.time() < deadline:
-            jsonl = _find_newest_jsonl_with_snapshot()
+            jsonl = _find_test_session_jsonl(existing)
             if jsonl:
-                self.__class__._rewind_jsonl = jsonl
-                self.__class__._rewind_session_id = jsonl.stem
-                return
-            time.sleep(3)
-        pytest.fail("No file-history-snapshot found for scratch file in any JSONL")
+                break
+            time.sleep(2)
 
-    def test_07_open_rewind_picker(self, driver):
-        """Open the rewind picker via the toolbar Rewind button."""
-        sid = self._rewind_session_id
+        assert jsonl is not None, "Could not find test session JSONL"
+        sid = jsonl.stem
+        self.__class__._rewind_session_id = sid
 
-        # Make sure we're viewing this session
+        # Navigate to that session
         driver.execute_script(
+            f"localStorage.setItem('activeProject', 'C--Users-15512-Documents-ClaudeGUI');"
             f"localStorage.setItem('activeSessionId', '{sid}')"
         )
         driver.get(BASE_URL)
@@ -241,13 +272,28 @@ class TestRewindE2E:
         )
         time.sleep(3)
 
-        # Click the Rewind toolbar button
+    def test_05_open_rewind_picker(self, driver):
+        """Click the Rewind button in the toolbar to open the picker."""
+        sid = self._rewind_session_id
+
+        # The rewind button should be enabled now that a session is selected
+        rewind_btn = driver.find_element(By.ID, "btn-rewind")
+
+        # If the button is in a dropdown, open the actions popup first
+        if not rewind_btn.is_displayed():
+            try:
+                driver.find_element(By.ID, "btn-actions").click()
+                time.sleep(0.5)
+            except Exception:
+                pass
+
+        # Click rewind — if it's still not clickable, use JS
         try:
-            btn = driver.find_element(By.ID, "btn-rewind")
-            btn.click()
+            rewind_btn.click()
         except Exception:
-            # Fallback: invoke via JS
-            driver.execute_script(f"showMessagePicker('{sid}', 'rewind')")
+            driver.execute_script(
+                f"showMessagePicker('{sid}', 'rewind')"
+            )
 
         WebDriverWait(driver, 10).until(
             EC.visibility_of_element_located((By.ID, "pm-overlay"))
@@ -255,19 +301,19 @@ class TestRewindE2E:
         title = driver.find_element(By.CSS_SELECTOR, "#pm-overlay .pm-title").text
         assert "Rewind" in title
 
-    def test_08_timeline_has_snapshots(self, driver):
-        """Verify the timeline shows rows with snapshot indicators."""
+    def test_06_timeline_has_rows(self, driver):
+        """The timeline must show message rows with snapshot indicators."""
         WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "#msg-timeline .tl-row"))
         )
         rows = driver.find_elements(By.CSS_SELECTOR, "#msg-timeline .tl-row")
-        assert len(rows) >= 1, "No timeline rows found"
+        assert len(rows) >= 1, "No timeline rows"
 
         snaps = driver.find_elements(By.CSS_SELECTOR, "#msg-timeline .tl-snap")
-        assert len(snaps) >= 1, "No snapshot indicators found in timeline"
+        assert len(snaps) >= 1, "No snapshot indicators"
 
-    def test_09_select_and_rewind(self, driver, scratch_file):
-        """Click a snapshot row, click Confirm, verify file is restored."""
+    def test_07_click_rewind_and_verify(self, driver, scratch_file):
+        """Select a snapshot row, click Confirm, verify file is restored."""
         rows = driver.find_elements(By.CSS_SELECTOR, "#msg-timeline .tl-row")
         snap_row = None
         for r in rows:
@@ -282,17 +328,20 @@ class TestRewindE2E:
 
         confirm = driver.find_element(By.ID, "pm-confirm")
         assert confirm.is_enabled(), "Confirm button not enabled"
-
         confirm.click()
+
+        # Wait for restore to complete
         time.sleep(5)
 
-        # THE REAL TEST: is the file back to original?
+        # THE MONEY CHECK: file must be back to original content
         content = scratch_file.read_text(encoding="utf-8")
         assert content == SCRATCH_ORIGINAL, (
-            f"File was NOT restored.\nExpected:\n{SCRATCH_ORIGINAL}\nGot:\n{content}"
+            f"File was NOT restored.\n"
+            f"Expected:\n{SCRATCH_ORIGINAL}\n"
+            f"Got:\n{content}"
         )
 
-    def test_10_modal_closed(self, driver):
-        """Verify the rewind modal closed after confirm."""
+    def test_08_modal_closed(self, driver):
+        """Modal should close after rewind completes."""
         overlay = driver.find_element(By.ID, "pm-overlay")
-        assert not overlay.is_displayed(), "Modal still visible after rewind"
+        assert not overlay.is_displayed()

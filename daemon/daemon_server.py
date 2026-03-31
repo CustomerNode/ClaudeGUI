@@ -22,8 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from daemon.session_manager import SessionManager
 
-DAEMON_PORT = 5051
-PID_FILE = Path.home() / ".claude" / "gui_daemon.pid"
+DAEMON_PORT = int(os.environ.get("VIBENODE_DAEMON_PORT", 5051))
+PID_FILE = Path.home() / ".claude" / (f"gui_daemon_{DAEMON_PORT}.pid" if DAEMON_PORT != 5051 else "gui_daemon.pid")
 
 
 class SessionDaemon:
@@ -35,6 +35,7 @@ class SessionDaemon:
         self._server_socket = None
         self._client_socket = None
         self._client_lock = threading.Lock()
+        self._write_lock = threading.Lock()   # serialize all socket writes
         self._running = False
 
     def start(self):
@@ -108,10 +109,14 @@ class SessionDaemon:
             return  # No client connected, discard event
         msg = json.dumps({"event": event_name, "data": data}) + "\n"
         try:
-            sock.sendall(msg.encode("utf-8"))
-        except Exception:
+            with self._write_lock:
+                sock.sendall(msg.encode("utf-8"))
+        except Exception as push_err:
+            logger.warning("Push event %s failed: %s", event_name, push_err)
             with self._client_lock:
-                self._client_socket = None
+                # Only clear if no new client has connected since we grabbed the ref
+                if self._client_socket is sock:
+                    self._client_socket = None
 
     def _handle_client(self, sock):
         """Handle one Web UI TCP connection."""
@@ -135,7 +140,7 @@ class SessionDaemon:
             logger.warning("Failed to send state snapshot: %s", e)
 
         # Read requests
-        buffer = ""
+        buffer = b""
         try:
             while self._running:
                 try:
@@ -146,9 +151,18 @@ class SessionDaemon:
                 if not data:
                     logger.info("Client sent EOF (empty recv)")
                     break
-                buffer += data.decode("utf-8")
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
+                buffer += data
+                last_nl = buffer.rfind(b"\n")
+                if last_nl == -1:
+                    continue
+                decodable = buffer[:last_nl + 1]
+                buffer = buffer[last_nl + 1:]
+                try:
+                    text = decodable.decode("utf-8")
+                except UnicodeDecodeError:
+                    logger.warning("UTF-8 decode error in client handler, skipping chunk")
+                    continue
+                for line in text.splitlines():
                     line = line.strip()
                     if not line:
                         continue
@@ -224,7 +238,8 @@ class SessionDaemon:
 
         line = json.dumps(resp) + "\n"
         try:
-            sock.sendall(line.encode("utf-8"))
+            with self._write_lock:
+                sock.sendall(line.encode("utf-8"))
         except Exception:
             pass
 
@@ -238,7 +253,8 @@ class SessionDaemon:
 
         line = json.dumps(resp) + "\n"
         try:
-            sock.sendall(line.encode("utf-8"))
+            with self._write_lock:
+                sock.sendall(line.encode("utf-8"))
         except Exception:
             pass
 
@@ -253,8 +269,16 @@ def main():
     # Singleton gate: only one daemon allowed system-wide
     from singleton import acquire_daemon_singleton
     if not acquire_daemon_singleton():
-        print("Session daemon already running (mutex held). Exiting.", flush=True)
-        sys.exit(0)
+        # Double-check: is the port actually in use? If not, mutex is stale.
+        try:
+            _chk = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            _chk.settimeout(1)
+            _chk.connect(("127.0.0.1", DAEMON_PORT))
+            _chk.close()
+            print("Session daemon already running (mutex held). Exiting.", flush=True)
+            sys.exit(0)
+        except (ConnectionRefusedError, OSError):
+            print("Stale daemon mutex detected (port not listening). Starting anyway.", flush=True)
 
     daemon = SessionDaemon()
 

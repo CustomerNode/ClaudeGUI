@@ -15,7 +15,7 @@ Two layers of protection:
 Run source guards only (fast, no server needed):
     pytest tests/test_auto_send_and_text_preserve.py -k "SourceGuard"
 
-Run E2E (requires server on localhost:5050 + Chrome):
+Run E2E (requires server on test server + Chrome):
     pytest tests/test_auto_send_and_text_preserve.py -k "E2E"
 """
 
@@ -324,7 +324,7 @@ try:
 except ImportError:
     HAS_SELENIUM = False
 
-BASE_URL = "http://localhost:5050"
+from tests.conftest import TEST_BASE_URL as BASE_URL
 LONG_WAIT = 90
 
 

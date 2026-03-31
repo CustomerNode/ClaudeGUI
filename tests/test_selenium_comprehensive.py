@@ -12,7 +12,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
 
-BASE_URL = "http://localhost:5050"
+from tests.conftest import TEST_BASE_URL as BASE_URL
 LONG_WAIT = 90  # seconds for Claude to respond
 
 

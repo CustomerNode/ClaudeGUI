@@ -29,16 +29,52 @@ bp = Blueprint('sessions_api', __name__)
 
 @bp.route("/api/sessions")
 def api_sessions():
-    return jsonify(all_sessions(summary_only=True))
+    sessions = all_sessions(summary_only=True)
+
+    # Merge in SDK-managed sessions that haven't written a .jsonl yet.
+    # Without this, sessions started via the GUI disappear on page refresh
+    # until their first .jsonl flush (i.e. first response completes).
+    existing_ids = {s["id"] for s in sessions}
+    sm = current_app.session_manager
+    names = _load_names()  # check _session_names.json for auto-named titles
+    for state in sm.get_all_states():
+        sid = state.get("session_id", "")
+        if sid and sid not in existing_ids and state.get("state") != "stopped":
+            saved_name = names.get(sid, "")
+            title = saved_name or state.get("name") or "New Session"
+            sessions.insert(0, {
+                "id": sid,
+                "display_title": title,
+                "custom_title": saved_name or state.get("name") or "",
+                "user_named": bool(saved_name),
+                "date": "",
+                "last_activity": "",
+                "last_activity_ts": 0,
+                "sort_ts": 0,
+                "size": "",
+                "file_bytes": 0,
+                "message_count": 0,
+                "preview": "",
+            })
+
+    return jsonify(sessions)
 
 
 @bp.route("/api/session/<session_id>")
 def api_session(session_id):
+    meta_only = request.args.get("meta_only") == "1"
+
     path = _sessions_dir() / f"{session_id}.jsonl"
     if not path.exists():
         # Check if it's an SDK-managed session with no .jsonl yet
         sm = current_app.session_manager
         if sm.has_session(session_id):
+            if meta_only:
+                return jsonify({
+                    "id": session_id,
+                    "display_title": "New Session",
+                    "custom_title": "",
+                })
             entries = sm.get_entries(session_id)
             state = sm.get_session_state(session_id) or "idle"
             return jsonify({
@@ -54,6 +90,13 @@ def api_session(session_id):
                 "preview": entries[0].get("text", "")[:100] if entries else "",
             })
         return jsonify({"error": "Not found"}), 404
+    if meta_only:
+        data = load_session(path)
+        return jsonify({
+            "id": data.get("id", session_id),
+            "display_title": data.get("display_title", ""),
+            "custom_title": data.get("custom_title", ""),
+        })
     return jsonify(load_session(path))
 
 
@@ -103,22 +146,69 @@ def api_remap_name():
 
 @bp.route("/api/autonname/<session_id>", methods=["POST"])
 def api_autoname(session_id):
-    path = _sessions_dir() / f"{session_id}.jsonl"
-    if not path.exists():
-        return jsonify({"error": "Not found"}), 404
-
     # Never override a name the user manually set
     existing = _load_names().get(session_id)
     if existing:
         return jsonify({"ok": True, "title": existing, "skipped": True,
                         "reason": "User-set name preserved"})
 
-    session = load_session(path)
-    messages = [m for m in session["messages"] if m["content"]]
+    # Accept prompt text directly (for immediate naming before JSONL exists)
+    data = request.get_json(silent=True) or {}
+    prompt_text = (data.get("prompt") or "").strip()
+    messages = []
+    if prompt_text:
+        messages = [{"role": "user", "content": prompt_text}]
+    else:
+        # Fall back to reading from JSONL
+        path = _sessions_dir() / f"{session_id}.jsonl"
+        if not path.exists():
+            from ..config import _CLAUDE_PROJECTS
+            for d in _CLAUDE_PROJECTS.iterdir():
+                if not d.is_dir() or d.name.startswith("subagents"):
+                    continue
+                candidate = d / f"{session_id}.jsonl"
+                if candidate.exists():
+                    path = candidate
+                    break
+        if not path.exists():
+            return jsonify({"error": "Not found"}), 404
+
+        session = load_session(path)
+        messages = [m for m in session["messages"] if m.get("content")]
+
+    # Fallback: if load_session found no messages with content, scan the raw
+    # JSONL for user text (queue-operation entries, user role with message.content)
+    if not messages:
+        import json as json_mod
+        try:
+            with open(path, encoding="utf-8") as _f:
+                for _line in _f:
+                    _line = _line.strip()
+                    if not _line:
+                        continue
+                    _entry = json_mod.loads(_line)
+                    _t = _entry.get("type", "")
+                    # queue-operation entries contain the original user prompt
+                    if _t == "queue-operation" and _entry.get("content"):
+                        messages.append({"role": "user", "content": _entry["content"]})
+                        break
+                    # user entries may have content in message.content blocks
+                    if _entry.get("role") == "user":
+                        mc = _entry.get("message", {}).get("content", [])
+                        if isinstance(mc, list):
+                            for block in mc:
+                                if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                                    messages.append({"role": "user", "content": block["text"]})
+                                    break
+                        if messages:
+                            break
+        except Exception:
+            pass
 
     # Check if this is a re-evaluate request (session already has an auto-title)
-    old_title = session.get("custom_title", "")
-    data = request.get_json(silent=True) or {}
+    session = session if 'session' in dir() else {}
+    path = path if 'path' in dir() else None
+    old_title = session.get("custom_title", "") if isinstance(session, dict) else ""
     is_re_evaluate = data.get("re_evaluate", False) and old_title
 
     if not messages:
@@ -129,22 +219,26 @@ def api_autoname(session_id):
             or (not s.get("custom_title") and s.get("message_count", 0) == 0)
         )
         title = f"Empty Session ({empty_count})"
-        entry = json.dumps({"type": "custom-title", "customTitle": title, "sessionId": session_id})
-        with open(path, "a", encoding="utf-8") as f:
-            f.write("\n" + entry + "\n")
+        if path:
+            entry = json.dumps({"type": "custom-title", "customTitle": title, "sessionId": session_id})
+            with open(path, "a", encoding="utf-8") as f:
+                f.write("\n" + entry + "\n")
         return jsonify({"ok": True, "title": title})
 
     try:
-        title = smart_title(session["messages"])
+        title = smart_title(messages)
 
         # If re-evaluating, only update if the new title is meaningfully different
         if is_re_evaluate and title == old_title:
             return jsonify({"ok": True, "title": old_title, "skipped": True,
                             "reason": "Title unchanged"})
 
-        entry = json.dumps({"type": "custom-title", "customTitle": title, "sessionId": session_id})
-        with open(path, "a", encoding="utf-8") as f:
-            f.write("\n" + entry + "\n")
+        # Persist title — write to JSONL if available, always save to names file
+        if path and path.exists():
+            entry = json.dumps({"type": "custom-title", "customTitle": title, "sessionId": session_id})
+            with open(path, "a", encoding="utf-8") as f:
+                f.write("\n" + entry + "\n")
+        _save_name(session_id, title)
 
         return jsonify({"ok": True, "title": title, "renamed": is_re_evaluate})
 
@@ -556,16 +650,16 @@ def api_rewind(session_id):
     if not up_to_line or not isinstance(up_to_line, int):
         return jsonify({"error": "up_to_line is required"}), 400
 
-    # Merge all snapshots at or before the target line.  Later snapshots
-    # override earlier ones for the same file, giving us the most recent
-    # backup state for each tracked file.
-    merged_backups = {}
+    # Collect edits AFTER the target line.  We'll reverse them to
+    # reconstruct pre-edit file state.  This works without daemon
+    # snapshots — the JSONL itself has old_string/new_string.
+    edits_after = []  # [(file_path, old_string, new_string, tool_name)]
+    msg_uuids_before = set()
+    all_snapshots = []
     line_num = 0
     with open(src, encoding="utf-8") as f:
         for line in f:
             line_num += 1
-            if line_num > up_to_line:
-                break
             raw = line.strip()
             if not raw:
                 continue
@@ -573,50 +667,107 @@ def api_rewind(session_id):
                 obj = json.loads(raw)
             except Exception:
                 continue
-            if obj.get("type") == "file-history-snapshot":
+            t = obj.get("type", "")
+            if t in ("user", "assistant") and line_num <= up_to_line:
+                uid = obj.get("uuid", "")
+                if uid:
+                    msg_uuids_before.add(uid)
+            if t == "assistant" and line_num > up_to_line:
+                for blk in obj.get("message", {}).get("content", []):
+                    if not isinstance(blk, dict) or blk.get("type") != "tool_use":
+                        continue
+                    tname = blk.get("name", "")
+                    inp = blk.get("input", {})
+                    fp = inp.get("file_path", "") or inp.get("path", "")
+                    if not fp:
+                        continue
+                    if tname == "Edit":
+                        edits_after.append((fp, inp.get("old_string", ""),
+                                            inp.get("new_string", ""), "Edit"))
+                    elif tname == "Write":
+                        edits_after.append((fp, None, inp.get("content", ""), "Write"))
+            if t == "file-history-snapshot":
+                mid = obj.get("messageId", "")
                 snap = obj.get("snapshot", {})
-                for fp, binfo in snap.get("trackedFileBackups", {}).items():
-                    # Only overwrite if the new entry has a real backup
-                    if isinstance(binfo, dict) and binfo.get("backupFileName"):
-                        merged_backups[fp] = binfo
-                    elif fp not in merged_backups:
-                        merged_backups[fp] = binfo
+                inner_mid = snap.get("messageId", "")
+                all_snapshots.append((mid, inner_mid, snap))
 
-    if not merged_backups:
-        return jsonify({"error": "No file snapshot found at or before this message"}), 400
+    # Also try snapshot-based restore (works when daemon wrote proper entries)
+    merged_backups = {}
+    for mid, inner_mid, snap in all_snapshots:
+        if mid in msg_uuids_before or inner_mid in msg_uuids_before:
+            for fp, binfo in snap.get("trackedFileBackups", {}).items():
+                if isinstance(binfo, dict) and binfo.get("backupFileName"):
+                    merged_backups[fp] = binfo
 
-    # Restore files from merged snapshot
+    if not edits_after and not merged_backups:
+        return jsonify({"error": "No edits found after this message to rewind"}), 400
+
     active_project = get_active_project()
     proj_dir = _decode_project(active_project) if active_project else str(Path.home())
-    history_dir = Path.home() / ".claude" / "file-history" / session_id
 
     restored = []
     skipped = []
-    for rel_path, backup_info in merged_backups.items():
-        if not isinstance(backup_info, dict):
-            continue
-        backup_name = backup_info.get("backupFileName", "")
-        if not backup_name:
-            continue
-        backup_path = history_dir / backup_name
-        if not backup_path.exists():
-            skipped.append(rel_path)
-            continue
 
-        # Resolve target path — handle both absolute and relative paths
-        norm = rel_path.replace("\\", "/")
-        if Path(norm).is_absolute():
-            target = Path(norm)
-        else:
-            target = Path(proj_dir) / norm
-
+    # Primary method: reverse edits from the JSONL (no daemon needed).
+    # Process in REVERSE order so nested edits undo correctly.
+    files_reversed = set()
+    for fp, old_s, new_s, tname in reversed(edits_after):
+        norm = fp.replace("\\", "/")
+        target = Path(norm) if Path(norm).is_absolute() else Path(proj_dir) / norm
+        if not target.exists():
+            continue
         try:
-            backup_content = backup_path.read_bytes()
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(backup_content)
-            restored.append(rel_path)
+            content = target.read_text(encoding="utf-8")
+            if tname == "Edit" and old_s is not None and new_s:
+                if new_s in content:
+                    content = content.replace(new_s, old_s, 1)
+                    target.write_text(content, encoding="utf-8")
+                    files_reversed.add(fp)
+            elif tname == "Write":
+                # For Write, we need a backup or git — can't reverse
+                pass
         except Exception:
-            skipped.append(rel_path)
+            pass
+
+    for fp in files_reversed:
+        restored.append(fp)
+
+    # Fallback: snapshot-based restore for files not handled by reversal
+    if merged_backups:
+        history_base = Path.home() / ".claude" / "file-history"
+        candidate_dirs = [history_base / session_id]
+        if history_base.is_dir():
+            for d in sorted(history_base.iterdir(),
+                            key=lambda x: x.stat().st_mtime, reverse=True):
+                if d.is_dir() and d != candidate_dirs[0]:
+                    candidate_dirs.append(d)
+
+        for rel_path, backup_info in merged_backups.items():
+            if rel_path in files_reversed:
+                continue
+            if not isinstance(backup_info, dict):
+                continue
+            backup_name = backup_info.get("backupFileName", "")
+            if not backup_name:
+                continue
+            backup_path = None
+            for d in candidate_dirs:
+                p = d / backup_name
+                if p.exists():
+                    backup_path = p
+                    break
+            if not backup_path:
+                skipped.append(rel_path)
+                continue
+            norm = rel_path.replace("\\", "/")
+            target = Path(norm) if Path(norm).is_absolute() else Path(proj_dir) / norm
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(backup_path.read_bytes())
+                restored.append(rel_path)
+            except Exception:
+                skipped.append(rel_path)
 
     return jsonify({
         "ok": True,

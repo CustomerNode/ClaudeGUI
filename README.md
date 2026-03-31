@@ -51,18 +51,43 @@ Run this once in PowerShell to create a desktop shortcut that launches VibeNode 
 ```powershell
 $WshShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\VibeNode.lnk")
-$Shortcut.TargetPath = "python"
-$Shortcut.Arguments = "session_manager.py"
+$Shortcut.TargetPath = (Get-Command pythonw).Source
+$Shortcut.Arguments = "`"$env:USERPROFILE\Documents\VibeNode\session_manager.py`""
 $Shortcut.WorkingDirectory = "$env:USERPROFILE\Documents\VibeNode"
 $Shortcut.IconLocation = "$env:USERPROFILE\Documents\VibeNode\vibenode.ico,0"
 $Shortcut.WindowStyle = 7
 $Shortcut.Save()
 ```
 
-This starts the server minimized and opens the browser automatically.
+Uses `pythonw.exe` (windowless) so no console flashes on launch. The app self-heals this shortcut on every startup — if you created it with `python` instead, it will be silently upgraded to `pythonw` next time you run VibeNode.
+
+## Platform support
+
+**Currently Windows only.** VibeNode relies on Windows-specific features:
+
+- **PowerShell SendKeys** for sending input to Claude terminal sessions
+- **`pythonw.exe`** for windowless background processes
+- **`netstat` / `taskkill`** for process management and port cleanup
+- **PowerShell COM objects** for desktop shortcut creation
+
+### Running on macOS or Linux (not yet supported)
+
+The core web UI (Flask + SocketIO) is cross-platform. The platform-specific parts that would need replacement:
+
+| Feature | Windows (current) | macOS / Linux (needed) |
+|---|---|---|
+| Send input to sessions | PowerShell SendKeys | `tmux send-keys`, `osascript`, or PTY pipes |
+| Background launch | `pythonw.exe` + `CREATE_NO_WINDOW` | `nohup` / `launchd` / `systemd` |
+| Process management | `netstat -ano` + `taskkill` | `lsof -i` + `kill` |
+| Desktop shortcut | PowerShell COM `.lnk` | `.desktop` file (Linux) / Automator (macOS) |
+| Port kill on restart | `Get-NetTCPConnection` | `lsof -ti :PORT \| xargs kill` |
+
+A macOS or Linux port would primarily need a platform adapter for `run.py`, `session_manager.py`, and the daemon's process detection. The web UI, kanban board, Supabase integration, and all frontend code work as-is.
+
+**Contributions welcome** — if you're interested in adding macOS or Linux support, see [CONTRIBUTING.md](CONTRIBUTING.md) or open an issue.
 
 ## Notes
 
 - Sessions are read from `~/.claude/projects/`
 - Input is sent to Claude terminals via PowerShell SendKeys
-- No data leaves your machine
+- No data leaves your machine (unless you enable Supabase cloud storage for tasks)

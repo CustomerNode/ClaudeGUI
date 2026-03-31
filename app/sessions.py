@@ -413,6 +413,51 @@ def load_session_timeline(path: Path) -> dict:
                     for v in backups.values()
                 ))
 
+    # Fallback: if no explicit snapshots exist but there ARE Edit/Write
+    # tool uses, check file-history directories for backup files created
+    # by the daemon (which may not have flushed JSONL entries due to
+    # session ID remap timing).  If backups exist, mark the first user
+    # message as having a snapshot so the rewind UI is available.
+    if not has_any_snapshot:
+        has_edits = any(
+            m.get("changes", {}).get("files")
+            for m in messages
+        )
+        if has_edits:
+            # Check if ANY file-history directory has backups for this session.
+            # The session ID is the JSONL filename stem.
+            sid = path.stem
+            history_base = Path.home() / ".claude" / "file-history"
+            # Check primary dir and scan for backup files
+            found_backups = False
+            for candidate_sid in [sid]:
+                hdir = history_base / candidate_sid
+                if hdir.is_dir() and any(hdir.iterdir()):
+                    found_backups = True
+                    break
+            # Also check all history dirs for files matching our edited files
+            if not found_backups and history_base.is_dir():
+                for hdir in history_base.iterdir():
+                    if hdir.is_dir() and any(hdir.iterdir()):
+                        # Check if any backup in this dir could belong to our session
+                        # by looking at recently modified dirs
+                        try:
+                            mtime = hdir.stat().st_mtime
+                            # If this dir was modified within 60s of the JSONL
+                            jsonl_mtime = path.stat().st_mtime
+                            if abs(mtime - jsonl_mtime) < 60:
+                                found_backups = True
+                                break
+                        except Exception:
+                            pass
+            if found_backups:
+                has_any_snapshot = True
+                # Mark the first user message as having a snapshot
+                for m in messages:
+                    if m["role"] == "user":
+                        m["has_snapshot"] = True
+                        break
+
     return {
         "messages": messages,
         "has_snapshots": has_any_snapshot,

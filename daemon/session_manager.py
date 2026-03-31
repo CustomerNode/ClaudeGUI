@@ -28,6 +28,7 @@ from claude_code_sdk.types import (
     AssistantMessage,
     UserMessage,
     ResultMessage,
+    SystemMessage,
     StreamEvent,
     TextBlock,
     ThinkingBlock,
@@ -178,6 +179,34 @@ try:
 except Exception as _patch_err:
     logger.warning("Could not patch SDK: %s", _patch_err)
 
+# ---------------------------------------------------------------------------
+# Monkey-patch: prevent Claude CLI subprocesses from flashing a console window.
+# Patch subprocess.Popen at the lowest level so every subprocess spawned by
+# the SDK (or anything else) gets CREATE_NO_WINDOW automatically.
+# This is safe for concurrent use since it doesn't swap globals per-call.
+#
+# DO NOT change this to patch anyio.open_process or wrap the SDK's connect().
+# That approach was tried and broke everything: it races when multiple sessions
+# connect concurrently (they fight over the global anyio.open_process ref),
+# and it breaks the SDK's control protocol initialization (60s timeout → crash).
+# Patching Popen.__init__ once at import time is the only approach that works.
+# ---------------------------------------------------------------------------
+if os.name == "nt":
+    import subprocess as _subprocess
+    try:
+        _original_Popen_init = _subprocess.Popen.__init__
+
+        def _no_window_Popen_init(self, *args, **kwargs):
+            # Only inject if creationflags wasn't explicitly set
+            if "creationflags" not in kwargs or kwargs["creationflags"] == 0:
+                kwargs["creationflags"] = kwargs.get("creationflags", 0) | _subprocess.CREATE_NO_WINDOW
+            return _original_Popen_init(self, *args, **kwargs)
+
+        _subprocess.Popen.__init__ = _no_window_Popen_init
+        logger.info("Patched subprocess.Popen to suppress console windows")
+    except Exception as _e:
+        logger.warning("Could not patch Popen for no-window: %s", _e)
+
 
 class SessionState(str, Enum):
     STARTING = "starting"
@@ -235,6 +264,8 @@ class SessionInfo:
     pending_tool_input: dict = field(default_factory=dict)
     always_allowed_tools: set = field(default_factory=set)
     working_since: float = 0.0  # time.time() when state last became WORKING
+    substatus: str = ""  # e.g. "compacting" — sub-state shown in UI while WORKING
+    usage: dict = field(default_factory=dict)  # token usage from last ResultMessage
     tracked_files: set = field(default_factory=set)      # absolute paths modified by tools
     file_versions: dict = field(default_factory=dict)    # file_path -> backup version counter
     _last_hashes: dict = field(default_factory=dict)     # file_path -> last backed-up content hash
@@ -253,6 +284,10 @@ class SessionInfo:
             "model": self.model,
             "working_since": self.working_since if self.state == SessionState.WORKING else 0,
         }
+        if self.substatus:
+            d["substatus"] = self.substatus
+        if self.usage:
+            d["usage"] = self.usage
         # Include permission details for WAITING sessions so reconnecting
         # clients can display the permission prompt
         if self.state == SessionState.WAITING and self.pending_tool_name:
@@ -262,6 +297,50 @@ class SessionInfo:
             }
         # Queue data is included by _emit_state from SessionManager._queues
         return d
+
+
+# ---------------------------------------------------------------------------
+# Detect SDK-injected system content in UserMessage text blocks.
+# These include continuation summaries, local-command output, and
+# system-reminder tags that should NOT render as user chat bubbles.
+# ---------------------------------------------------------------------------
+_SYSTEM_CONTENT_MARKERS = (
+    "This session is being continued from a previous conversation",
+    "<system-reminder>",
+    "<local-command-stdout>",
+    "<local-command-caveat>",
+    "<command-name>",
+    "<command-message>",
+    "<command-args>",
+)
+
+def _is_system_content(text: str) -> bool:
+    """Return True if text looks like SDK/CLI system content, not human input."""
+    for marker in _SYSTEM_CONTENT_MARKERS:
+        if marker in text:
+            return True
+    return False
+
+def _system_content_label(text: str) -> str:
+    """Extract a short human-readable label for system content."""
+    if "This session is being continued from a previous conversation" in text:
+        return "Session continued from previous conversation"
+    if "<command-name>" in text:
+        # Extract command name: <command-name>/compact</command-name>
+        import re
+        m = re.search(r'<command-name>(/?\w+)</command-name>', text)
+        cmd = m.group(1) if m else "command"
+        # Extract stdout if present
+        m2 = re.search(r'<local-command-stdout>(.*?)</local-command-stdout>', text, re.DOTALL)
+        stdout = m2.group(1).strip() if m2 else ""
+        if stdout:
+            return f"{cmd}: {stdout[:100]}"
+        return f"Local command: {cmd}"
+    if "<local-command-stdout>" in text:
+        import re
+        m = re.search(r'<local-command-stdout>(.*?)</local-command-stdout>', text, re.DOTALL)
+        return f"Command output: {(m.group(1).strip()[:100]) if m else '...'}"
+    return "System message"
 
 
 # ---------------------------------------------------------------------------
@@ -430,19 +509,27 @@ class SessionManager:
             info = self._sessions.get(session_id)
         if not info:
             return {"ok": False, "error": "Session not found"}
-        if info.state == SessionState.STOPPED:
-            return {"ok": False, "error": "Session is stopped"}
-        if info.state != SessionState.IDLE:
-            # Auto-queue instead of returning an error
-            return self.queue_message(session_id, text)
 
-        # Add user entry to history (don't emit — frontend shows it optimistically)
-        entry = LogEntry(kind="user", text=text)
+        # Atomic state check + set under per-session lock to prevent two
+        # concurrent send_message calls from both seeing IDLE and both
+        # launching _send_query coroutines in parallel.
         with info._lock:
-            info.entries.append(entry)
+            if info.state == SessionState.STOPPED:
+                return {"ok": False, "error": "Session is stopped"}
+            if info.state != SessionState.IDLE:
+                # Auto-queue instead of returning an error
+                return self.queue_message(session_id, text)
+            # Add user entry to history (don't emit — frontend shows it optimistically)
+            # Skip slash commands — they're internal CLI directives, not user chat
+            _stripped = text.strip()
+            if not (_stripped.startswith('/') and ' ' not in _stripped):
+                info.entries.append(LogEntry(kind="user", text=text))
+            # Set state to WORKING before submitting query
+            info.state = SessionState.WORKING
+            # Set compacting substatus immediately so the state event carries it
+            if _stripped == '/compact':
+                info.substatus = "compacting"
 
-        # Set state to WORKING before submitting query
-        info.state = SessionState.WORKING
         self._emit_state(info)
 
         asyncio.run_coroutine_threadsafe(
@@ -859,15 +946,30 @@ class SessionManager:
                 await client.query(prompt)
 
             # Process messages (None = unknown types, skipped via monkey-patch)
+            got_result = False
+            result_handled = False
+            info._stream_evt_logged = False
             async for message in client.receive_messages():
                 if message is not None:
-                    await self._process_message(session_id, message)
+                    if isinstance(message, ResultMessage):
+                        got_result = True
+                    try:
+                        await self._process_message(session_id, message)
+                        if isinstance(message, ResultMessage):
+                            result_handled = True
+                    except Exception as pm_err:
+                        # Don't let one bad message kill the entire stream.
+                        logger.exception(
+                            "_process_message error for %s (msg type %s): %s",
+                            session_id, type(message).__name__, pm_err
+                        )
 
-            # If we exit the message loop normally, session is idle.
-            # Only set IDLE if still WORKING — _process_message may have
-            # already transitioned to IDLE and dispatched a queued message
-            # (which sets WORKING again).  Re-setting IDLE would double-dispatch.
-            if info.state == SessionState.WORKING:
+            # Safety net: if the stream ended without a ResultMessage,
+            # force IDLE so the session isn't stuck.  Skip if we already
+            # got a ResultMessage (which handles IDLE + queue dispatch).
+            if not got_result and info.state == SessionState.WORKING:
+                logger.warning("_drive_session for %s: stream ended without "
+                               "ResultMessage, forcing IDLE", session_id)
                 info.state = SessionState.IDLE
                 self._emit_state(info)
 
@@ -886,6 +988,15 @@ class SessionManager:
             self._emit_entry(session_id, entry, entry_index)
             self._emit_state(info)
         finally:
+            # Catch-all: force IDLE if stuck in WORKING. Skip if
+            # ResultMessage was processed -- _try_dispatch_queue may
+            # have legitimately set WORKING for the next queued msg.
+            if info and info.state == SessionState.WORKING and not result_handled:
+                logger.error("_drive_session finally: %s still WORKING after all "
+                             "handlers — forcing IDLE as catch-all", session_id)
+                info.state = SessionState.IDLE
+                self._emit_state(info)
+
             # Post-turn snapshot: captures file state AFTER Claude's edits.
             # By now the SDK remap has occurred (ResultMessage was processed
             # in the message loop), so _resolve_id will find the correct
@@ -905,6 +1016,16 @@ class SessionManager:
         with self._lock:
             info = self._sessions.get(session_id)
         if not info or not info.client:
+            # send_message already set state to WORKING before scheduling us.
+            # If client is gone, force back to IDLE so the session isn't stuck.
+            if info and info.state == SessionState.WORKING:
+                logger.error("_send_query: %s has no client — forcing IDLE", session_id)
+                info.state = SessionState.IDLE
+                info.error = "Session disconnected"
+                entry = LogEntry(kind="system", text="Session disconnected — no SDK client", is_error=True)
+                with info._lock:
+                    info.entries.append(entry)
+                self._emit_state(info)
             return
 
         # Pre-populate tracked_files on follow-up turns (covers daemon
@@ -924,27 +1045,66 @@ class SessionManager:
             await info.client.query(text)
 
             # Process response messages (None = unknown types, skipped)
+            got_result = False
+            result_handled = False
+            info.usage.pop('_per_call', None)  # clear stale per-call marker from previous turn
+            info._stream_evt_logged = False  # re-enable diagnostic log for this turn
             async for message in info.client.receive_response():
                 if message is not None:
-                    await self._process_message(session_id, message)
+                    if isinstance(message, ResultMessage):
+                        got_result = True
+                    try:
+                        await self._process_message(session_id, message)
+                        if isinstance(message, ResultMessage):
+                            result_handled = True
+                    except Exception as pm_err:
+                        # Don't let one bad message kill the entire stream.
+                        # Log the error and continue processing remaining
+                        # messages so ResultMessage can still arrive and set IDLE.
+                        logger.exception(
+                            "_process_message error for %s (msg type %s): %s",
+                            session_id, type(message).__name__, pm_err
+                        )
 
-            # NOTE: Do NOT set IDLE here — _process_message already sets
-            # IDLE on ResultMessage and triggers queue dispatch.  A second
-            # IDLE transition here would double-dispatch queued messages.
+            # Safety net: if the stream ended without a ResultMessage,
+            # force IDLE so the session isn't stuck forever.  Skip if we
+            # got a ResultMessage — _process_message already handled the
+            # IDLE transition (and may have dispatched a queued message
+            # which set state back to WORKING).
+            if not got_result and info.state == SessionState.WORKING:
+                logger.warning("_send_query for %s: stream ended without "
+                               "ResultMessage, forcing IDLE", session_id)
+                info.state = SessionState.IDLE
+                self._emit_state(info)
 
         except asyncio.CancelledError:
-            pass
+            # Don't leave session stuck in WORKING on cancel
+            if info.state == SessionState.WORKING:
+                info.state = SessionState.IDLE
+                self._emit_state(info)
         except Exception as e:
             logger.exception("Send query error for %s: %s", session_id, e)
             info.error = str(e)
-            info.state = SessionState.STOPPED
+            # Emit error entry so the user sees what happened
             entry = LogEntry(kind="system", text=f"Error: {e}", is_error=True)
             with info._lock:
                 info.entries.append(entry)
                 entry_index = len(info.entries) - 1
             self._emit_entry(session_id, entry, entry_index)
+            # Transition to IDLE (not STOPPED) so the session stays usable.
+            # The error is visible in the log — no need to brick the session.
+            info.state = SessionState.IDLE
             self._emit_state(info)
         finally:
+            # Catch-all: force IDLE if stuck in WORKING. Skip if
+            # ResultMessage was processed -- _try_dispatch_queue may
+            # have legitimately set WORKING for the next queued msg.
+            if info and info.state == SessionState.WORKING and not result_handled:
+                logger.error("_send_query finally: %s still WORKING after all "
+                             "handlers — forcing IDLE as catch-all", session_id)
+                info.state = SessionState.IDLE
+                self._emit_state(info)
+
             # Post-turn snapshot (isSnapshotUpdate=true, linked to assistant UUID)
             try:
                 self._write_file_snapshot(session_id, is_post_turn=True)
@@ -1112,9 +1272,16 @@ class SessionManager:
                 info.pending_tool_name = ""
                 info.pending_tool_input = {}
 
-                # Back to working
-                info.state = SessionState.WORKING
-                manager._emit_state(info)
+                # Back to working — but NOT if this was an interrupt.
+                # The interrupt handler already set state to IDLE; emitting
+                # WORKING here would race with it and flip the UI back.
+                is_interrupt = (
+                    isinstance(permission_result, PermissionResultDeny)
+                    and getattr(permission_result, 'interrupt', False)
+                )
+                if not is_interrupt:
+                    info.state = SessionState.WORKING
+                    manager._emit_state(info)
 
                 return permission_result
 
@@ -1143,12 +1310,17 @@ class SessionManager:
             return
 
         if isinstance(message, AssistantMessage):
+            # Don't clear compacting substatus here — only ResultMessage or
+            # init SystemMessage should clear it. AssistantMessage can arrive
+            # mid-compact (e.g. partial streaming) and clearing here causes
+            # the UI to flash back to "Working" during compaction.
             for block in (message.content if hasattr(message, 'content') else []):
                 if isinstance(block, TextBlock):
                     entry = LogEntry(kind="asst", text=(block.text or "")[:50000])
                     with info._lock:
                         info.entries.append(entry)
-                    self._emit_entry(session_id, entry, len(info.entries) - 1)
+                        entry_index = len(info.entries) - 1
+                    self._emit_entry(session_id, entry, entry_index)
 
                 elif isinstance(block, ToolUseBlock):
                     inp = block.input if hasattr(block, 'input') and isinstance(block.input, dict) else {}
@@ -1161,7 +1333,8 @@ class SessionManager:
                     )
                     with info._lock:
                         info.entries.append(entry)
-                    self._emit_entry(session_id, entry, len(info.entries) - 1)
+                        entry_index = len(info.entries) - 1
+                    self._emit_entry(session_id, entry, entry_index)
 
                     # Track file modifications for rewind/snapshot support
                     tool_name = entry.name
@@ -1179,7 +1352,21 @@ class SessionManager:
                     pass
 
         elif isinstance(message, UserMessage):
-            for block in (message.content if hasattr(message, 'content') else []):
+            # Messages with parent_tool_use_id are sub-agent / nested tool
+            # context — not from the human user. Skip text blocks for those.
+            is_sub_agent = bool(getattr(message, 'parent_tool_use_id', None))
+
+            # Normalize content: SDK can send str | list[ContentBlock].
+            # Wrap plain strings in a TextBlock so the block loop works.
+            raw_content = getattr(message, 'content', None) or []
+            if isinstance(raw_content, str):
+                blocks = [TextBlock(text=raw_content)] if raw_content.strip() else []
+            elif isinstance(raw_content, list):
+                blocks = raw_content
+            else:
+                blocks = []
+
+            for block in blocks:
                 if isinstance(block, ToolResultBlock):
                     # Extract text content from tool result
                     rc = getattr(block, 'content', '') or ''
@@ -1198,16 +1385,44 @@ class SessionManager:
 
                     entry = LogEntry(
                         kind="tool_result",
-                        text=rt[:5000],
+                        text=rt[:20000],
                         tool_use_id=getattr(block, 'tool_use_id', '') or '',
                         is_error=bool(getattr(block, 'is_error', False)),
                     )
                     with info._lock:
                         info.entries.append(entry)
-                    self._emit_entry(session_id, entry, len(info.entries) - 1)
+                        entry_index = len(info.entries) - 1
+                    self._emit_entry(session_id, entry, entry_index)
 
                 elif isinstance(block, TextBlock):
                     user_text = (block.text or "")[:20000]
+
+                    # Skip internal/sub-agent user messages — they're not
+                    # from the human and shouldn't show as user bubbles
+                    if is_sub_agent:
+                        logger.debug("Skipping sub-agent user text (parent_tool_use_id set)")
+                        continue
+
+                    # Skip slash commands echoed back by CLI (e.g. /compact)
+                    stripped = user_text.strip()
+                    if stripped.startswith('/') and ' ' not in stripped:
+                        logger.debug("Skipping CLI slash command echo: %s", stripped[:50])
+                        continue
+
+                    # Detect SDK-injected system content (continuation
+                    # summaries, local-command output, system-reminders).
+                    # Render as collapsed system entry, not user bubble.
+                    if _is_system_content(stripped):
+                        logger.debug("Rendering SDK system content as system entry (len=%d)", len(stripped))
+                        # Extract a short human-readable label
+                        label = _system_content_label(stripped)
+                        entry = LogEntry(kind="system", text=label)
+                        with info._lock:
+                            info.entries.append(entry)
+                            entry_index = len(info.entries) - 1
+                        self._emit_entry(session_id, entry, entry_index)
+                        continue
+
                     # Never emit user text entries — they're already shown:
                     # - Initial prompt: added by _drive_session
                     # - Follow-ups: added by send_message
@@ -1220,18 +1435,95 @@ class SessionManager:
                             if e.kind == "user":
                                 last_user = e
                                 break
-                        if not last_user or last_user.text.strip() != user_text.strip():
+                        if not last_user or last_user.text.strip() != stripped:
                             info.entries.append(LogEntry(kind="user", text=user_text))
 
+        elif isinstance(message, SystemMessage):
+            subtype = getattr(message, 'subtype', '') or ''
+            data = getattr(message, 'data', {}) or {}
+            logger.info("SystemMessage subtype=%s keys=%s", subtype, list(data.keys())[:10])
+
+            # Detect compaction events — CLI sends "compact_boundary" subtype
+            if subtype == 'compact_boundary':
+                compact_meta = data.get('compactMetadata', {})
+                pre_tokens = compact_meta.get('preTokens', 0)
+                trigger = compact_meta.get('trigger', 'auto')
+                logger.info("Compact boundary: trigger=%s preTokens=%d", trigger, pre_tokens)
+
+                info.substatus = "compacting"
+                # Store pre-compaction token count for UI display
+                if pre_tokens:
+                    info.usage['pre_compact_tokens'] = pre_tokens
+                self._emit_state(info)
+
+                # Human-readable log entry
+                tk_str = f"{pre_tokens // 1000}k" if pre_tokens >= 1000 else str(pre_tokens)
+                label = f"Compacting context ({tk_str} tokens, {trigger})…"
+                entry = LogEntry(kind="system", text=label)
+                with info._lock:
+                    info.entries.append(entry)
+                    entry_index = len(info.entries) - 1
+                self._emit_entry(session_id, entry, entry_index)
+
+            elif subtype == 'turn_duration':
+                # Per-turn timing info — log but don't emit to UI
+                logger.info("Turn duration for %s: %s", session_id,
+                            {k: v for k, v in data.items() if k != 'type'})
+
+            elif subtype == 'init' and info.substatus == 'compacting':
+                # End of compaction — session re-initialized
+                info.substatus = ""
+                self._emit_state(info)
+                entry = LogEntry(kind="system", text="Context compacted")
+                with info._lock:
+                    info.entries.append(entry)
+                    entry_index = len(info.entries) - 1
+                self._emit_entry(session_id, entry, entry_index)
+            else:
+                # Forward any other system message as a push event for debugging
+                if self._push_callback:
+                    self._push_callback('system_message', {
+                        'session_id': session_id,
+                        'subtype': subtype,
+                        'data': data,
+                    })
+
         elif isinstance(message, ResultMessage):
+            # Clear substatus on result (compaction is done if it was in progress)
+            if info.substatus:
+                info.substatus = ""
+
             info.cost_usd = getattr(message, 'total_cost_usd', 0.0) or 0.0
+
+            # Extract token usage from ResultMessage.
+            # ResultMessage.usage is cumulative across the session — if we have
+            # per-call data from a message_start StreamEvent, keep it.
+            raw_usage = getattr(message, 'usage', None)
+            if raw_usage and isinstance(raw_usage, dict):
+                prev_pct = info.usage.get('pre_compact_tokens')
+                if not info.usage.get('_per_call'):
+                    info.usage = dict(raw_usage)
+                if prev_pct and 'pre_compact_tokens' not in info.usage:
+                    info.usage['pre_compact_tokens'] = prev_pct
+                logger.info("Usage for %s: %s (per_call=%s)", session_id,
+                            {k: v for k, v in raw_usage.items() if isinstance(v, (int, float))},
+                            bool(info.usage.get('_per_call')))
+
+            # Extract session timing metadata
+            duration_ms = getattr(message, 'duration_ms', 0) or 0
+            num_turns = getattr(message, 'num_turns', 0) or 0
+            if duration_ms or num_turns:
+                info.usage['duration_ms'] = duration_ms
+                info.usage['num_turns'] = num_turns
+
             is_error = getattr(message, 'is_error', False)
             if is_error:
                 info.error = "Session ended with error"
                 entry = LogEntry(kind="system", text="Session ended with error", is_error=True)
                 with info._lock:
                     info.entries.append(entry)
-                self._emit_entry(session_id, entry, len(info.entries) - 1)
+                    entry_index = len(info.entries) - 1
+                self._emit_entry(session_id, entry, entry_index)
 
             # Remap session ID if the SDK assigned a different one
             result_session_id = getattr(message, 'session_id', None)
@@ -1261,6 +1553,14 @@ class SessionManager:
                 except Exception:
                     pass
 
+                # Remap kanban task↔session links so they point to the new ID
+                try:
+                    from app.db import create_repository
+                    repo = create_repository()
+                    repo.remap_session(session_id, result_session_id)
+                except Exception:
+                    pass
+
                 # Notify frontend to update its references (URL, activeId, etc.)
                 if self._push_callback:
                     self._push_callback(
@@ -1278,6 +1578,53 @@ class SessionManager:
                 event_data['event'] = message.event
             if hasattr(message, 'data'):
                 event_data['data'] = message.data
+
+            # Extract per-call context usage from message_start events.
+            # This is the AUTHORITATIVE context window size — unlike
+            # ResultMessage.usage which is cumulative across the session.
+            # NOTE: message.event is a STRING like "message_start", while
+            # message.data is the dict payload with the actual content.
+            evt_type = event_data.get('event', '')
+            evt_data = event_data.get('data') or {}
+            is_message_start = (
+                evt_type == 'message_start'
+                or (isinstance(evt_data, dict) and evt_data.get('type') == 'message_start')
+            )
+            # Log first StreamEvent per session for diagnostics (shape of event/data)
+            if not getattr(info, '_stream_evt_logged', False):
+                logger.info("StreamEvent for %s: event_type=%r data_type=%s data_keys=%s",
+                            session_id, evt_type,
+                            type(evt_data).__name__,
+                            list(evt_data.keys())[:8] if isinstance(evt_data, dict) else '(not dict)')
+                info._stream_evt_logged = True
+            if is_message_start:
+                logger.info("message_start detected for %s — evt_data keys: %s",
+                            session_id, list(evt_data.keys()) if isinstance(evt_data, dict) else '(not dict)')
+            if is_message_start and isinstance(evt_data, dict):
+                msg = evt_data.get('message', {})
+                logger.info("message_start msg keys: %s, has usage: %s",
+                            list(msg.keys()) if isinstance(msg, dict) else '(not dict)',
+                            'usage' in msg if isinstance(msg, dict) else False)
+                if isinstance(msg, dict) and 'usage' in msg:
+                    call_usage = msg['usage']
+                    if isinstance(call_usage, dict):
+                        # Preserve pre_compact_tokens if set
+                        prev_pct = info.usage.get('pre_compact_tokens')
+                        info.usage = dict(call_usage)
+                        info.usage['_per_call'] = True
+                        if prev_pct:
+                            info.usage['pre_compact_tokens'] = prev_pct
+                        logger.info("Per-call usage for %s: input=%s cache_read=%s cache_create=%s",
+                                    session_id, call_usage.get('input_tokens'),
+                                    call_usage.get('cache_read_input_tokens'),
+                                    call_usage.get('cache_creation_input_tokens'))
+                        # Push lightweight usage update to frontend
+                        if self._push_callback:
+                            self._push_callback('session_usage', {
+                                'session_id': session_id,
+                                'usage': info.usage,
+                            })
+
             if self._push_callback:
                 self._push_callback('stream_event', {
                     'session_id': session_id,
@@ -1750,6 +2097,26 @@ class SessionManager:
                 cwd = meta.get("cwd", "")
                 model = meta.get("model", "")
 
+                # Guard: if the .jsonl file was deleted (user chose to delete
+                # the session), do NOT recover it — that would undo the delete.
+                jsonl_found = False
+                projects_dir = Path.home() / ".claude" / "projects"
+                if cwd:
+                    encoded = cwd.replace("\\", "/").replace(":", "-").replace("/", "-")
+                    if (projects_dir / encoded / f"{sid}.jsonl").exists():
+                        jsonl_found = True
+                if not jsonl_found and projects_dir.is_dir():
+                    for d in projects_dir.iterdir():
+                        if d.is_dir() and not d.name.startswith("subagents"):
+                            if (d / f"{sid}.jsonl").exists():
+                                jsonl_found = True
+                                break
+                if not jsonl_found:
+                    logger.info(
+                        "Skipping recovery of %s — .jsonl file was deleted", sid
+                    )
+                    continue
+
                 logger.info(
                     "Recovering session %s (%s) from registry", sid, name or "unnamed"
                 )
@@ -1804,12 +2171,39 @@ class SessionManager:
                 q = self._queues.get(info.session_id, [])
                 if q:
                     data["queue"] = list(q)
-            self._push_callback('session_state', data)
+            try:
+                self._push_callback('session_state', data)
+            except Exception as cb_err:
+                logger.error("_emit_state push_callback failed for %s (state=%s): %s",
+                             info.session_id, info.state, cb_err)
         # Keep the persistent registry up to date
         self._schedule_registry_save()
         # Auto-dispatch queued messages when session goes IDLE
         if info.state == SessionState.IDLE:
             self._try_dispatch_queue(info.session_id)
+            # Safety net: re-emit IDLE state after 3 seconds in case the first
+            # push was silently lost (SocketIO transport hiccup, tab sleeping,
+            # etc.).  If the session is no longer IDLE (queue dispatched a
+            # follow-up or user sent a new message), the re-emit is skipped.
+            sid = info.session_id
+            def _deferred_idle_reemit():
+                with self._lock:
+                    recheck = self._sessions.get(sid)
+                if recheck and recheck.state == SessionState.IDLE:
+                    logger.debug("Deferred IDLE re-emit for %s", sid)
+                    if self._push_callback:
+                        data = recheck.to_state_dict()
+                        with self._queue_lock:
+                            q = self._queues.get(sid, [])
+                            if q:
+                                data["queue"] = list(q)
+                        try:
+                            self._push_callback('session_state', data)
+                        except Exception:
+                            pass
+            t = threading.Timer(3.0, _deferred_idle_reemit)
+            t.daemon = True
+            t.start()
 
     def _emit_entry(self, session_id: str, entry: LogEntry, index: int) -> None:
         """Push a new log entry to all connected WebSocket clients."""
@@ -1819,7 +2213,11 @@ class SessionManager:
                 'entry': entry.to_dict(),
                 'index': index,
             }
-            self._push_callback('session_entry', data)
+            try:
+                self._push_callback('session_entry', data)
+            except Exception as cb_err:
+                logger.error("_emit_entry push_callback failed for %s (entry %d): %s",
+                             session_id, index, cb_err)
 
     def _emit_permission(self, session_id: str, tool_name: str, tool_input: dict) -> None:
         """Push a permission request to all connected WebSocket clients.

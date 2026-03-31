@@ -11,15 +11,27 @@ so running sessions continue uninterrupted when you restart the server.
 """
 
 import logging
+import shutil
 import socket
 import subprocess
+
+# ---------------------------------------------------------------------------
+# Purge __pycache__ on every boot so code changes always take effect
+# ---------------------------------------------------------------------------
+for _cache_dir in __import__('pathlib').Path(__file__).parent.rglob('__pycache__'):
+    shutil.rmtree(_cache_dir, ignore_errors=True)
 import sys
 import threading
+import os
 import time
 import webbrowser
 from pathlib import Path
 
-DAEMON_PORT = 5051
+# Test mode: VIBENODE_TEST_PORT=5099 starts a separate instance on that port
+# with no port killing, no singleton, no browser, no daemon dependency.
+_TEST_PORT = int(os.environ.get("VIBENODE_TEST_PORT", 0))
+
+DAEMON_PORT = int(os.environ.get("VIBENODE_DAEMON_PORT", 5051))
 
 from singleton import acquire_web_singleton
 
@@ -79,13 +91,139 @@ def ensure_daemon():
     print("  WARNING: Daemon started but not responding on port %d" % DAEMON_PORT, flush=True)
 
 
-# ---- Singleton gate: only one web server allowed ----
-if not acquire_web_singleton():
-    print("  VibeNode is already running. Open http://localhost:5050", flush=True)
-    sys.exit(0)
+# ---- Kill any stale processes on our ports before starting ----
+def _kill_port(port):
+    """Kill ALL processes listening on a port. Retries until clear."""
+    if sys.platform != "win32":
+        return
+    import subprocess as _sp
+    for attempt in range(5):
+        try:
+            r = _sp.run(
+                ["netstat", "-ano"],
+                capture_output=True, text=True, timeout=5,
+                creationflags=_sp.CREATE_NO_WINDOW,
+            )
+            killed_any = False
+            seen_pids = set()
+            for line in r.stdout.splitlines():
+                if (":%d " % port) in line and "LISTENING" in line:
+                    parts = line.split()
+                    pid = int(parts[-1])
+                    if pid > 0 and pid != os.getpid() and pid not in seen_pids:
+                        seen_pids.add(pid)
+                        _sp.run(["taskkill", "/PID", str(pid), "/F"],
+                                capture_output=True, timeout=5,
+                                creationflags=_sp.CREATE_NO_WINDOW)
+                        print("  Killed stale process %d on port %d" % (pid, port), flush=True)
+                        killed_any = True
+            if not killed_any:
+                break
+            time.sleep(0.5)
+        except Exception:
+            break
 
-# Ensure daemon is running before creating the Flask app
-ensure_daemon()
+if not _TEST_PORT:
+    _kill_port(5050)
+    _kill_port(DAEMON_PORT)
+    time.sleep(0.3)  # brief pause for ports to release
+
+    # ---- Singleton gate: only one web server allowed ----
+    if not acquire_web_singleton():
+        # Mutex held but we just killed the ports — stale mutex. Proceed.
+        print("  Stale singleton detected. Starting anyway.", flush=True)
+
+# ---------------------------------------------------------------------------
+# Self-healing desktop shortcut.
+# After a git pull the shortcut may still point to py.exe (console flash) or
+# python.exe instead of pythonw.exe (windowless).  Fix it on every launch so
+# the user never has to think about it.
+# ---------------------------------------------------------------------------
+def _fix_shortcut():
+    if sys.platform != "win32":
+        return
+    try:
+        lnk_path = Path.home() / "Desktop" / "VibeNode.lnk"
+        if not lnk_path.exists():
+            return
+        # Find pythonw.exe next to the running python.exe
+        pythonw = Path(sys.executable).parent / "pythonw.exe"
+        if not pythonw.exists():
+            return
+        script = Path(__file__).resolve().parent / "session_manager.py"
+        icon = Path(__file__).resolve().parent / "claudecodegui.ico"
+        # Read current shortcut target to see if it already points to pythonw
+        # (avoid rewriting on every launch if already correct)
+        ps_read = (
+            "$ws = New-Object -ComObject WScript.Shell;"
+            f"$lnk = $ws.CreateShortcut('{lnk_path}');"
+            "Write-Output $lnk.TargetPath"
+        )
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_read],
+            capture_output=True, text=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        current_target = r.stdout.strip().lower()
+        if "pythonw" in current_target:
+            return  # Already correct
+        # Rewrite the shortcut
+        ps_write = (
+            "$ws = New-Object -ComObject WScript.Shell;"
+            f"$lnk = $ws.CreateShortcut('{lnk_path}');"
+            f"$lnk.TargetPath = '{pythonw}';"
+            f"$lnk.Arguments = '\"{script}\"';"
+            f"$lnk.WorkingDirectory = '{script.parent}';"
+            f"$lnk.IconLocation = '{icon},0';"
+            "$lnk.WindowStyle = 7;"
+            "$lnk.Save()"
+        )
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-Command", ps_write],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except Exception:
+        pass  # Best effort — never block startup
+
+_fix_shortcut()
+
+# ---------------------------------------------------------------------------
+# Dependency health check — auto-install missing packages at boot
+# ---------------------------------------------------------------------------
+def _check_dependencies():
+    """Verify required Python packages are installed. Auto-install any missing."""
+    # (package_import_name, pip_install_name)
+    required = [
+        ("flask", "flask"),
+        ("flask_socketio", "flask-socketio"),
+        ("anthropic", "anthropic"),
+        ("supabase", "supabase"),
+        ("pg8000", "pg8000"),
+    ]
+    missing = []
+    for import_name, pip_name in required:
+        try:
+            __import__(import_name)
+        except ImportError:
+            missing.append(pip_name)
+
+    if missing:
+        print("  Installing missing packages: %s" % ", ".join(missing), flush=True)
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--quiet"] + missing,
+                timeout=120,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            print("  Packages installed successfully.", flush=True)
+        except Exception as e:
+            print("  WARNING: Could not install packages: %s" % e, flush=True)
+
+_check_dependencies()
+
+# Ensure daemon is running before creating the Flask app (skip in test mode)
+if not _TEST_PORT:
+    ensure_daemon()
 
 from app import create_app, socketio
 
@@ -130,5 +268,7 @@ if __name__ == "__main__":
           "  ---------------------------------------------------------\n",
           flush=True)
 
-    threading.Thread(target=open_browser, daemon=True).start()
-    socketio.run(app, host="0.0.0.0", port=5050, debug=False, allow_unsafe_werkzeug=True)
+    _port = _TEST_PORT or 5050
+    if not _TEST_PORT:
+        threading.Thread(target=open_browser, daemon=True).start()
+    socketio.run(app, host="0.0.0.0", port=_port, debug=False, allow_unsafe_werkzeug=True)

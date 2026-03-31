@@ -87,6 +87,9 @@ function mdParse(md) {
     html = html.replace(/^&gt;\s?(.+)$/gm, '<blockquote>$1</blockquote>');
     // Horizontal rule
     html = html.replace(/^[-*_]{3,}$/gm, '<hr>');
+    // Lists — collapse blank lines between consecutive list items so they group
+    html = html.replace(/^([-*+]\s+.+)\n\n(?=[-*+]\s)/gm, '$1\n');
+    html = html.replace(/^(\d+\.\s+.+)\n\n(?=\d+\.\s)/gm, '$1\n');
     // Lists — collect consecutive lines
     html = html.replace(/((?:^[-*+]\s+.+\n?)+)/gm, (block) => {
       const items = block.trim().split('\n').map(l => '<li>' + l.replace(/^[-*+]\s+/, '') + '</li>').join('');

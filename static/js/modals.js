@@ -11,6 +11,115 @@ document.addEventListener('click', function(e) {
   if (!document.getElementById('hdr-sys').contains(e.target)) closeHdrSys();
 });
 
+// --- Restart server ---
+async function restartServer() {
+  if (!confirm('Restart the server? All active sessions will briefly disconnect.')) return;
+  try {
+    if (typeof showToast === 'function') showToast('Restarting server...');
+    await fetch('/api/restart', { method: 'POST' });
+  } catch (e) { /* expected — server is shutting down */ }
+  // Wait for the server to come back, then reload
+  let attempts = 0;
+  const check = setInterval(async () => {
+    attempts++;
+    try {
+      const r = await fetch('/', { method: 'HEAD' });
+      if (r.ok) { clearInterval(check); window.location.reload(); }
+    } catch (e) { /* still down */ }
+    if (attempts > 30) { clearInterval(check); window.location.reload(); }
+  }, 1000);
+}
+
+// --- Persistent Storage modal (System → Persistent Storage) ---
+async function openPersistentStorage() {
+  let config = {};
+  try {
+    const r = await fetch('/api/kanban/config');
+    if (r.ok) config = await r.json();
+  } catch (e) { /* defaults */ }
+
+  const isSupa = config.kanban_backend === 'supabase';
+  const overlay = document.getElementById('pm-overlay');
+  if (!overlay) return;
+
+  // Update the System dropdown label
+  const label = document.getElementById('sys-storage-label');
+  if (label) label.textContent = isSupa ? 'Cloud' : 'Local';
+
+  let html = `<div class="pm-card pm-enter" style="max-width:520px;">
+    <h2 class="pm-title">Persistent Storage</h2>
+    <div class="pm-body">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">
+        Controls where your <strong>kanban tasks</strong> are stored. This applies to all projects &mdash; not sessions.
+        Sessions always stay local. Switching copies all existing tasks to the new backend.
+      </div>
+      <div style="display:flex;gap:12px;margin-bottom:16px;">
+        <div id="kb-opt-sqlite" class="kanban-backend-option${!isSupa ? ' active' : ''}" onclick="selectBackend('sqlite')">
+          <div style="font-weight:600;color:${!isSupa ? 'var(--accent)' : 'var(--text)'};margin-bottom:4px;">Local (SQLite)</div>
+          <div style="font-size:12px;color:var(--text-muted);">Tasks stay on this machine. Zero config.</div>
+          ${!isSupa ? '<div style="font-size:11px;color:var(--green);margin-top:4px;">Currently active</div>' : ''}
+          ${isSupa ? '<button class="kanban-settings-btn-accent" onclick="event.stopPropagation();switchToLocal()" id="kb-local-btn" style="margin-top:8px;padding:6px 14px;font-size:12px;">Switch to Local</button><span id="kb-local-status" style="font-size:11px;display:block;margin-top:4px;"></span>' : ''}
+        </div>
+        <div id="kb-opt-supabase" class="kanban-backend-option${isSupa ? ' active' : ''}" onclick="selectBackend('supabase')">
+          <div style="font-weight:600;color:${isSupa ? 'var(--accent)' : 'var(--text)'};margin-bottom:4px;">Cloud (Supabase)</div>
+          <div style="font-size:12px;color:var(--text-muted);">Tasks sync to a hosted PostgreSQL database.</div>
+          ${isSupa ? '<div style="font-size:11px;color:var(--green);margin-top:4px;">Currently active</div>' : ''}
+        </div>
+      </div>
+      <div id="kb-supabase-config" style="${isSupa ? '' : 'display:none;'}padding:16px;border:1px solid var(--border);border-radius:8px;">
+        <div style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--text-muted);">Supabase Connection</div>
+        <div class="kanban-settings-field"><label>Project URL</label><input type="text" id="kb-supa-url" value="${typeof escHtml === 'function' ? escHtml(config.supabase_url || '') : (config.supabase_url || '')}" placeholder="https://your-project.supabase.co"></div>
+        <div class="kanban-settings-field"><label>Secret Key <span style="font-size:10px;color:var(--orange);">(service_role)</span></label><input type="password" id="kb-supa-key" value="${typeof escHtml === 'function' ? escHtml(config.supabase_secret_key || '') : (config.supabase_secret_key || '')}" placeholder="eyJhbGciOi..."></div>
+        <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+          <button class="kanban-settings-btn-accent" id="kb-test-btn" onclick="testConnection()" style="padding:8px 18px;font-size:13px;">Step 1: Test Connection</button>
+          <button class="kanban-settings-btn-accent" id="kb-switch-btn" onclick="switchToSupabase()" style="display:none;padding:8px 18px;font-size:13px;">Step 3: Switch to Supabase</button>
+          <span id="kb-conn-status" style="font-size:12px;margin-left:4px;"></span>
+        </div>
+        <div id="kb-schema-setup" style="display:none;margin-top:12px;padding:16px;border:2px solid var(--orange);border-radius:8px;background:rgba(210,153,34,0.08);">
+          <div style="font-size:14px;font-weight:700;color:var(--orange);margin-bottom:8px;">Step 2: Create database tables</div>
+          <div style="font-size:13px;color:var(--text-secondary);margin-bottom:4px;">Your Supabase project is connected but empty. To create the tables automatically:</div>
+          <ol style="font-size:12px;color:var(--text-secondary);margin:4px 0 12px 16px;padding:0;line-height:1.8;">
+            <li>Go to <strong>supabase.com/dashboard/account/tokens</strong></li>
+            <li>Click <strong>Generate new token</strong>, copy it</li>
+            <li>Paste it below and click <strong>Setup Database</strong></li>
+          </ol>
+          <div class="kanban-settings-field" style="margin-bottom:10px;"><label style="font-weight:600;">Access Token</label><input type="password" id="kb-access-token" placeholder="sbp_..." style="font-size:13px;"></div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <button class="kanban-settings-btn-accent" onclick="setupSupabaseSchema()" id="kb-setup-btn" style="padding:8px 18px;font-size:13px;">Setup Database</button>
+            <span id="kb-setup-status" style="font-size:12px;"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="pm-actions">
+      <button class="pm-btn pm-btn-secondary" onclick="_closePm()">Close</button>
+    </div>
+  </div>`;
+
+  overlay.innerHTML = html;
+  overlay.classList.add('show');
+  requestAnimationFrame(() => overlay.querySelector('.pm-card')?.classList.remove('pm-enter'));
+  overlay.onclick = (e) => { if (e.target === overlay && typeof _closePm === 'function') _closePm(); };
+}
+
+// Update the storage label on page load (retry until element exists)
+(async function _updateStorageLabel() {
+  for (let i = 0; i < 20; i++) {
+    const label = document.getElementById('sys-storage-label');
+    if (label) {
+      try {
+        const r = await fetch('/api/kanban/config');
+        if (r.ok) {
+          const cfg = await r.json();
+          label.textContent = cfg.kanban_backend === 'supabase' ? 'Cloud' : 'Local';
+        }
+      } catch (e) { /* ignore */ }
+      return;
+    }
+    await new Promise(r => setTimeout(r, 200));
+  }
+})();
+
 // --- Summary modal ---
 async function showSummary(id) {
   document.getElementById('summary-body').innerHTML = '<div style="color:var(--text-faint);font-size:13px;"><span class="spinner"></span> Building summary\u2026</div>';

@@ -1,4 +1,5 @@
 /* utils.js — shared helper functions and premium modal system */
+// this line does absolutely nothing
 
 var _pmCloseTimer = null;
 

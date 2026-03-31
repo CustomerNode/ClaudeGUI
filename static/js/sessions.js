@@ -1,29 +1,6 @@
 /* sessions.js — sorting, list rendering, tooltips, column resize, click handling */
 
-function _shortDate(dateStr) {
-  const d = new Date(dateStr);
-  if (isNaN(d)) return dateStr;
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const diffDays = Math.round((today - target) / 86400000);
-
-  let h = d.getHours();
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  h = h % 12 || 12;
-  const min = String(d.getMinutes()).padStart(2, '0');
-  const time = h + ':' + min + ' ' + ampm;
-
-  if (diffDays === 0) return time;
-  if (diffDays === 1) return 'Yesterday';
-
-  const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-  if (diffDays >= 2 && diffDays <= 6) return dayNames[d.getDay()];
-
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  if (d.getFullYear() !== now.getFullYear()) return months[d.getMonth()] + ' ' + d.getDate() + " '" + String(d.getFullYear()).slice(-2);
-  return months[d.getMonth()] + ' ' + d.getDate();
-}
+// _shortDate() extracted to time-utils.js per plan Section 14 line 2894
 
 function setSort(mode) {
   if (sortMode === mode) {
@@ -81,8 +58,11 @@ function renderList(sessions) {
     const stateClass = isWaiting ? ' waiting' : (isRunning || isIdle ? ' running' : '');
     const activeClass = s.id === activeId ? ' active' : '';
     const colClick = `onclick="singleOrDouble('${s.id}',event)" style="cursor:pointer;"`;
+    const _isCompacting = isRunning && window._sessionSubstatus && window._sessionSubstatus[s.id] === 'compacting';
     const icon = isWaiting
       ? '<svg class="state-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ff9500" stroke-width="2" stroke-linecap="round" title="Waiting for input"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>'
+      : _isCompacting
+      ? '<svg class="state-icon compacting-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#aa88ff" stroke-width="2" stroke-linecap="round" title="Compacting context"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>'
       : isRunning
       ? '<img class="state-icon" src="/static/svg/pickaxe.svg" width="12" height="12" style="filter:brightness(0) saturate(100%) invert(55%) sepia(78%) saturate(1000%) hue-rotate(215deg);" title="Working">'
       : isIdle
@@ -125,7 +105,10 @@ function onRowEnter(e) {
     idle:'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:middle;"><polyline points="20 6 9 17 4 12"/></svg> Idle',
     sleeping:'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:middle;"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg> Sleeping'
   };
-  const stateLabel = stateLabels[status] || status;
+  const _isCompactingTip = status === 'working' && window._sessionSubstatus && window._sessionSubstatus[id] === 'compacting';
+  const stateLabel = _isCompactingTip
+    ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#aa88ff" stroke-width="2" stroke-linecap="round" style="vertical-align:middle;"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg> Compacting'
+    : (stateLabels[status] || status);
 
   const tip = document.getElementById('session-tooltip');
   tip.innerHTML = `

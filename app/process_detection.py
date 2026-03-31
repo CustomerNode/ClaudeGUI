@@ -7,8 +7,12 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
+
+# On Windows, prevent subprocess from flashing a console window
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 from .config import _sessions_dir
 
@@ -53,7 +57,7 @@ def _get_running_session_ids():
         result = subprocess.run(
             ["powershell", "-NoProfile", "-command",
              "Get-WmiObject Win32_Process | Where-Object { $_.Name -match 'claude|node' } | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress"],
-            capture_output=True, text=True, timeout=12
+            capture_output=True, text=True, timeout=12, creationflags=_NO_WINDOW
         )
         try:
             proc_data = json.loads(result.stdout or "[]")
@@ -99,7 +103,7 @@ def _get_running_session_ids():
                     r = subprocess.run(
                         ["wmic", "process", "where", f"ProcessId={cur}",
                          "get", "Name,ParentProcessId", "/format:csv"],
-                        capture_output=True, text=True, timeout=3)
+                        capture_output=True, text=True, timeout=3, creationflags=_NO_WINDOW)
                     found = False
                     for line in r.stdout.strip().splitlines():
                         parts = line.strip().split(",")
@@ -832,6 +836,6 @@ def send_to_clipboard(text: str) -> dict:
     """Fallback: copy text to clipboard when session is not running."""
     clip = text.replace("'", "''")
     subprocess.run(["powershell", "-NoProfile", "-command", f"Set-Clipboard '{clip}'"],
-                   capture_output=True, timeout=5)
+                   capture_output=True, timeout=5, creationflags=_NO_WINDOW)
     return {"ok": True, "method": "clipboard",
             "message": "Session not running \u2014 copied to clipboard."}
