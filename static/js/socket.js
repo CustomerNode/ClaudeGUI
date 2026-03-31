@@ -180,35 +180,9 @@ socket.on('state_snapshot', (data) => {
     // Re-render views
     filterSessions();
 
-    // Try to restore the active session if it's missing from the UI.
-    // This handles: (a) stubs injected for sessions with no .jsonl yet,
-    // (b) activeId set from localStorage but pointing to a remapped UUID,
-    // (c) activeId set but session wasn't found during loadSessions.
-    const _aliases = data.aliases || {};
-    const _urlChatId = new URL(window.location).searchParams.get('chat');
-    let _restoreId = _urlChatId || localStorage.getItem('activeSessionId');
-    // Check if we need to restore: either no active session displaying,
-    // or activeId doesn't match any session in the list (stale/remapped)
-    const _needsRestore = !activeId
-        || (activeId && !allSessions.find(x => x.id === activeId))
-        || (_restoreId && _aliases[_restoreId]);  // known remap pending
-    if (_needsRestore && _restoreId) {
-        // Resolve through ID aliases — the stored ID may be the old client-generated
-        // UUID that the SDK remapped to a new ID before the page refreshed
-        if (_aliases[_restoreId]) {
-            _restoreId = _aliases[_restoreId];
-            // Update localStorage and URL to the canonical ID
-            localStorage.setItem('activeSessionId', _restoreId);
-            const _fixUrl = new URL(window.location);
-            _fixUrl.searchParams.set('chat', _restoreId);
-            history.replaceState(null, '', _fixUrl);
-        }
-        if (allSessions.find(x => x.id === _restoreId)) {
-            _skipChatHistory = true;
-            openInGUI(_restoreId);
-            _skipChatHistory = false;
-        }
-    }
+    // Session restoration is handled by loadSessions() + /api/resolve-session.
+    // Do NOT call openInGUI here — it races with loadSessions and causes
+    // double-initialization of the live panel, dropping messages.
 
     // Update live panel input bar state
     if (liveSessionId) updateLiveInputBar();

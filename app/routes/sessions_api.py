@@ -355,66 +355,50 @@ def api_delete(session_id):
 @bp.route("/api/delete-all", methods=["DELETE"])
 def api_delete_all():
     """Delete every session in the active workspace in one shot."""
-    import os
-    import signal
     import time
-    from ..process_detection import _get_running_session_ids
+    from concurrent.futures import ThreadPoolExecutor
 
     sd = _sessions_dir()
     sm = current_app.session_manager
-    deleted = 0
 
-    # Phase 1: close all SDK-managed sessions synchronously
     sids_to_delete = [f.stem for f in sd.glob("*.jsonl")]
-    for sid in sids_to_delete:
-        if sm.has_session(sid):
-            sm.close_session_sync(sid)
-            sm.remove_session(sid)
+    if not sids_to_delete:
+        return jsonify({"ok": True, "deleted": 0})
 
-    # Phase 2: kill orphaned claude.exe processes that the session manager
-    # doesn't know about (e.g. from previous server instances).  Without this,
-    # the CLI subprocess is still alive and will re-create the .jsonl file
-    # after we delete it.
-    try:
-        running = _get_running_session_ids()  # {sid: pid}
-        for sid, pid in running.items():
-            if pid > 0:  # positive PIDs are confirmed safe to kill
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except (OSError, ProcessLookupError):
-                    pass
-        if running:
-            time.sleep(0.5)  # let processes die
-    except Exception:
-        pass  # process detection failed -- continue with best-effort deletion
+    # Phase 1: tombstone ALL immediately so UI hides them right away
+    _mark_deleted_bulk(sids_to_delete)
 
-    # Phase 3: tombstone ALL session IDs, then delete files.
-    # Tombstones go first so all_sessions() hides them immediately.
-    all_sids = [f.stem for f in sd.glob("*.jsonl")]
-    if all_sids:
-        _mark_deleted_bulk(all_sids)
+    # Phase 2: close SDK sessions in parallel (don't wait for each one)
+    def _close(sid):
+        try:
+            if sm.has_session(sid):
+                sm.close_session_sync(sid)
+                sm.remove_session(sid)
+        except Exception:
+            pass
 
-    for f in list(sd.glob("*.jsonl")):
-        sid = f.stem
-        f.unlink()
-        folder = sd / sid
-        if folder.exists() and folder.is_dir():
-            shutil.rmtree(folder)
-        _delete_name(sid)
-        deleted += 1
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        pool.map(_close, sids_to_delete)
 
-    # Phase 4: sweep for files re-created by dying processes
-    time.sleep(0.3)
+    # Phase 3: delete all files
+    deleted = 0
     for f in list(sd.glob("*.jsonl")):
         try:
             f.unlink()
             folder = sd / f.stem
             if folder.exists() and folder.is_dir():
-                shutil.rmtree(folder)
+                shutil.rmtree(folder, ignore_errors=True)
+            deleted += 1
         except Exception:
             pass
 
-    # Clear entire summary cache and force registry save
+    # Phase 4: clear names file in one write instead of per-session
+    try:
+        nf = _names_file()
+        nf.write_text("{}", encoding="utf-8")
+    except Exception:
+        pass
+
     _summary_cache.clear()
     sm._save_registry_now()
 
