@@ -14,6 +14,17 @@ BASE = "http://localhost:5050"
 SCREENSHOT_DIR = "docs/screenshots"
 PROJECT = "C--Users-15512-Documents-VibeNode"
 
+# ---------------------------------------------------------------------------
+# Reusable SVG icons (match KI in kanban.js)
+# ---------------------------------------------------------------------------
+_ICON_MENU = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>'
+_ICON_CHEVR = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>'
+_ICON_PLAN = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>'
+
+# ---------------------------------------------------------------------------
+# DATA
+# ---------------------------------------------------------------------------
+
 BOARD = [
     {"status": "not_started", "label": "Not Started", "color": "#6b7280", "tasks": [
         {"title": "Mobile responsive layouts", "desc": "Audit and fix all views for mobile breakpoints.", "tags": [["frontend", "#8b5cf6"], ["design", "#ec4899"]], "owner": "M", "date": "Mar 30"},
@@ -42,7 +53,8 @@ BOARD = [
     ]},
 ]
 
-EPIC = {
+# Subtasks drill-down (Auth epic)
+EPIC_SUBTASKS = {
     "title": "Authentication System Overhaul",
     "status": "WORKING", "color": "#3b82f6",
     "desc": "Modernize auth: OAuth2+PKCE, encrypted tokens, rate limiting, RBAC.",
@@ -56,13 +68,151 @@ EPIC = {
     ],
 }
 
-_JS_DISMISS = r"(function(){var s=document.getElementById('ps-hide');if(!s){s=document.createElement('style');s.id='ps-hide';s.textContent='#project-overlay,#health-blocker,#pm-overlay,#compare-overlay,.modal-overlay,#extract-drawer,.boot-splash,#project-card,.dashboard,#btn-git-publish,#git-sync-overlay{display:none!important;visibility:hidden!important;opacity:0!important}img{visibility:hidden!important;width:0!important;height:0!important;position:absolute!important;}';document.head.appendChild(s);}['project-overlay','health-blocker','pm-overlay','compare-overlay','git-sync-overlay'].forEach(function(id){var e=document.getElementById(id);if(e){e.classList.remove('show');e.style.display='none';}});var gb=document.getElementById('btn-git-publish');if(gb)gb.style.display='none';var d=document.querySelector('.dashboard');if(d)d.style.display='none';document.querySelectorAll('.show').forEach(function(e){var p=getComputedStyle(e).position;if(p==='fixed'||p==='absolute'){e.classList.remove('show');e.style.display='none';}});window.openProjectOverlay=function(){};window.openHealthBlocker=function(){};window.openGitPublish=function(){};})();"
+# Sessions drill-down (Performance Sprint)
+EPIC_SESSIONS = {
+    "title": "Performance Sprint",
+    "status": "WORKING", "color": "#3b82f6",
+    "desc": "Achieve sub-200ms page loads and 90+ Lighthouse scores across all routes.",
+    "tags": [["epic", "#a855f7"], ["perf", "#f59e0b"]],
+    "created": "1:10 PM", "updated": "2:05 PM",
+    "sessions": [
+        {"status": "Working", "color": "var(--status-working)", "name": "DB query caching layer"},
+        {"status": "Idle", "color": "var(--status-complete)", "name": "Frontend bundle analysis"},
+        {"status": "Sleeping", "color": "var(--text-dim)", "name": "Lighthouse perf baseline"},
+    ],
+}
+
+# Chooser drill-down (new empty task)
+EPIC_CHOOSER = {
+    "title": "API Gateway Refactor",
+    "status": "NOT STARTED", "color": "#6b7280",
+    "desc": "Consolidate all API routes behind a unified gateway with centralized auth, rate limiting, and request validation.",
+    "tags": [["backend", "#3b82f6"], ["architecture", "#14b8a6"]],
+    "created": "2:40 PM", "updated": "2:40 PM",
+}
+
+SESSIONS = [
+    {"name": "OAuth2 provider integration", "status": "working", "date": "2:31 PM", "size": "148 KB"},
+    {"name": "Rate limiting middleware", "status": "working", "date": "2:28 PM", "size": "92 KB"},
+    {"name": "DB query caching layer", "status": "working", "date": "2:15 PM", "size": "203 KB"},
+    {"name": "Fix WebSocket reconnect bug", "status": "question", "date": "2:10 PM", "size": "67 KB"},
+    {"name": "Frontend bundle analysis", "status": "idle", "date": "1:45 PM", "size": "312 KB"},
+    {"name": "API response compression", "status": "idle", "date": "1:30 PM", "size": "85 KB"},
+    {"name": "Session token encryption", "status": "idle", "date": "12:50 PM", "size": "176 KB"},
+    {"name": "CI/CD pipeline hardening", "status": "idle", "date": "12:15 PM", "size": "245 KB"},
+    {"name": "OpenAPI spec generation", "status": "sleeping", "date": "11:30 AM", "size": "134 KB"},
+    {"name": "Database migration runner", "status": "sleeping", "date": "11:00 AM", "size": "98 KB"},
+    {"name": "Telemetry dashboard setup", "status": "sleeping", "date": "10:20 AM", "size": "167 KB"},
+    {"name": "RBAC permission matrix", "status": "sleeping", "date": "9:45 AM", "size": "54 KB"},
+    {"name": "Mobile breakpoint audit", "status": "sleeping", "date": "Yesterday", "size": "189 KB"},
+    {"name": "Redis cache invalidation", "status": "sleeping", "date": "Yesterday", "size": "112 KB"},
+    {"name": "Lighthouse perf baseline", "status": "sleeping", "date": "Mar 30", "size": "276 KB"},
+    {"name": "Route-based code splitting", "status": "sleeping", "date": "Mar 30", "size": "143 KB"},
+]
+
+CONVERSATION = [
+    {"role": "user", "text": "Implement rate limiting middleware using a sliding window algorithm with Redis as the backing store. It should support per-route and per-user limits."},
+    {"role": "tool", "name": "Read", "desc": "app/middleware/__init__.py", "ok": True},
+    {"role": "tool", "name": "Read", "desc": "app/config.py (lines 45-80)", "ok": True},
+    {"role": "tool", "name": "Write", "desc": "app/middleware/rate_limit.py", "ok": True},
+    {"role": "assistant", "text": "I've created the rate limiting middleware with the following design:\n\n**Sliding Window Algorithm** \u2014 Uses Redis sorted sets to track request timestamps per key. Each request adds the current timestamp and removes entries outside the window.\n\n**Key features:**\n- **Per-route limits** \u2014 Configurable via `@rate_limit(requests=100, window=60)` decorator\n- **Per-user limits** \u2014 Automatically scoped by authenticated user ID, falls back to IP\n- **Response headers** \u2014 `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`\n- **Graceful degradation** \u2014 If Redis is unreachable, requests pass through with a warning log\n\nThe middleware is registered in `app/middleware/__init__.py`. Let me add the tests next."},
+    {"role": "tool", "name": "Write", "desc": "tests/test_rate_limit.py", "ok": True},
+    {"role": "tool", "name": "Bash", "desc": "pytest tests/test_rate_limit.py -v", "ok": True},
+    {"role": "assistant", "text": "All 8 tests pass:\n\n```\ntests/test_rate_limit.py::test_allows_under_limit PASSED\ntests/test_rate_limit.py::test_blocks_over_limit PASSED\ntests/test_rate_limit.py::test_sliding_window_reset PASSED\ntests/test_rate_limit.py::test_per_user_isolation PASSED\ntests/test_rate_limit.py::test_per_route_config PASSED\ntests/test_rate_limit.py::test_response_headers PASSED\ntests/test_rate_limit.py::test_redis_fallback PASSED\ntests/test_rate_limit.py::test_concurrent_requests PASSED\n```\n\nThe rate limiter is ready. Want me to wire it into the existing routes?"},
+]
+
+# ---------------------------------------------------------------------------
+# JS TEMPLATES
+# ---------------------------------------------------------------------------
+
+_JS_DISMISS = r"(function(){var s=document.getElementById('ps-hide');if(!s){s=document.createElement('style');s.id='ps-hide';s.textContent='#project-overlay,#health-blocker,#pm-overlay,#compare-overlay,.modal-overlay,#extract-drawer,.boot-splash,#project-card,.dashboard,#btn-git-publish,#git-sync-overlay{display:none!important;visibility:hidden!important;opacity:0!important}';document.head.appendChild(s);}['project-overlay','health-blocker','pm-overlay','compare-overlay','git-sync-overlay'].forEach(function(id){var e=document.getElementById(id);if(e){e.classList.remove('show');e.style.display='none';}});var gb=document.getElementById('btn-git-publish');if(gb)gb.style.display='none';var d=document.querySelector('.dashboard');if(d)d.style.display='none';document.querySelectorAll('.show').forEach(function(e){var p=getComputedStyle(e).position;if(p==='fixed'||p==='absolute'){e.classList.remove('show');e.style.display='none';}});window.openProjectOverlay=function(){};window.openHealthBlocker=function(){};window.openGitPublish=function(){};})();"
 
 _JS_BOARD = r"""(function(cols){var board=document.getElementById('kanban-board');if(!board)return;board.innerHTML='';var w=document.createElement('div');w.className='kanban-columns-wrapper';board.appendChild(w);cols.forEach(function(col){var c=document.createElement('div');c.className='kanban-column';c.setAttribute('data-status',col.status);var h=document.createElement('div');h.className='kanban-column-header';h.innerHTML='<div class="kanban-column-color-bar" style="background:'+col.color+'"></div><span class="kanban-column-name">'+col.label+'</span><span class="kanban-column-count">'+col.tasks.length+'</span>';c.appendChild(h);var b=document.createElement('div');b.className='kanban-column-body';b.setAttribute('data-status',col.status);c.appendChild(b);col.tasks.forEach(function(t){var card=document.createElement('div');card.className='kanban-card';card.setAttribute('data-status',col.status);var tags='';(t.tags||[]).forEach(function(g){tags+='<span class="kanban-tag-pill" style="background:'+g[1]+'22;color:'+g[1]+';border-color:'+g[1]+'44;">'+g[0]+'</span>';});var mp=[];if(t.subtasks)mp.push('<div class="kanban-card-subtask-text">'+t.subtasks+'</div>');if(t.sessions)mp.push('<div class="kanban-card-session-badge" style="background:#3b82f622;color:#60a5fa;">\u25cf '+t.sessions+'</div>');var mr=mp.length?'<div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap;">'+mp.join('')+'</div>':'';card.innerHTML='<div class="kanban-card-header"><div class="kanban-card-title-row"><span class="kanban-card-title">'+t.title+'</span><span class="kanban-card-time">'+(t.date||'')+'</span></div><span class="kanban-card-owner">'+(t.owner||'')+'</span></div><div class="kanban-card-desc">'+(t.desc||'')+'</div>'+mr+'<div class="kanban-card-bottom"><div class="kanban-card-tags">'+tags+'</div></div>';b.appendChild(card);});w.appendChild(c);});window.initKanban=function(){};
 })(arguments[0]);"""
 
-_JS_DRILL = r"""(function(d){var board=document.getElementById('kanban-board');if(!board)return;board.innerHTML='';var tb=document.createElement('div');tb.className='kanban-drill-titlebar';tb.innerHTML='<div class="kanban-drill-breadcrumb"><span class="kanban-drill-crumb"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg> Board</span><span class="kanban-drill-sep"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></span><span class="kanban-drill-crumb current">'+d.title+'</span></div>';board.appendChild(tb);var th='';(d.tags||[]).forEach(function(g){th+='<span class="kanban-tag-pill" style="background:'+g[1]+'22;color:'+g[1]+';border-color:'+g[1]+'44;">'+g[0]+'</span>';});var rh='';d.subtasks.forEach(function(s){var m=s.meta?'<span class="kanban-drill-subtask-meta">'+s.meta+'</span>':'';rh+='<div class="kanban-drill-subtask-row"><div class="kanban-drill-subtask-status" style="background:'+s.color+'26;color:'+s.color+';">'+s.status+'</div><span class="kanban-drill-subtask-title">'+s.title+'</span>'+m+'<span class="kanban-drill-subtask-chevron"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></span></div>';});rh+='<div class="kanban-drill-subtask-row kanban-drill-ghost-row"><div class="kanban-drill-subtask-status" style="background:var(--bg-subtle);color:var(--text-dim);">New</div><span style="color:var(--text-dim);font-size:13px;">Add subtask\u2026</span></div>';var bd=document.createElement('div');bd.className='kanban-drill-body';bd.innerHTML='<div class="kanban-drill-split"><div class="kanban-drill-left"><div class="kanban-drill-status" style="background:'+d.color+'26;color:'+d.color+';display:inline-block;padding:4px 14px;border-radius:6px;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:0.5px;">'+d.status+' <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M9 18l6-6-6-6"/></svg></div><div class="kanban-drill-title" style="font-size:22px;font-weight:700;margin:12px 0 4px;">'+d.title+'</div><div style="font-size:11px;color:var(--text-dim);margin:4px 0 16px;">Created '+d.created+' \u00b7 Updated '+d.updated+'</div><div class="kanban-drill-desc-wrap"><div class="kanban-drill-desc" style="font-size:14px;line-height:1.6;">'+d.desc+'</div></div><div class="kanban-drill-tags-section" style="margin-top:16px;"><div class="kanban-drill-tags-list" style="display:flex;gap:6px;flex-wrap:wrap;">'+th+'</div></div><div class="kanban-drill-ai-plan-card" style="margin-top:24px;padding:14px 18px;border-radius:10px;background:linear-gradient(135deg,rgba(139,92,246,0.12),rgba(59,130,246,0.10));border:1px solid rgba(139,92,246,0.2);display:flex;align-items:center;gap:12px;"><div style="font-size:20px;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#a855f7" stroke-width="2"><path d="M12 2a5 5 0 0 1 5 5c0 1.5-.5 2.5-1.5 3.5L12 14l-3.5-3.5C7.5 9.5 7 8.5 7 7a5 5 0 0 1 5-5z"/><path d="M12 14v8M8 18h8"/></svg></div><div style="font-weight:600;font-size:14px;color:var(--accent,#a855f7);">Plan with AI</div></div></div><div class="kanban-drill-right"><div class="kanban-drill-panel-header" style="display:flex;align-items:center;gap:8px;padding:0 0 8px;"><span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-dim);">SUBTASKS</span><span style="margin-left:auto;display:flex;align-items:center;gap:6px;"><span class="kanban-drill-inline-bar" style="width:60px;height:6px;border-radius:3px;background:var(--bg-subtle);display:inline-block;overflow:hidden;"><span class="kanban-drill-inline-fill" style="display:block;height:100%;width:'+d.pct+'%;background:#22c55e;border-radius:3px;"></span></span><span style="font-size:11px;color:var(--text-dim);">'+d.pct+'%</span></span></div><div class="kanban-drill-panel"><div class="kanban-drill-panel-body">'+rh+'</div></div></div></div>';board.appendChild(bd);
+# Shared drill-down builder: left side (status, title, timestamps, desc, tags)
+# The right side differs per mode so callers supply it via d.rightHTML
+_JS_DRILL_BASE = r"""(function(d){
+var board=document.getElementById('kanban-board');if(!board)return;board.innerHTML='';
+var menuIcon=arguments[1],chevR=arguments[2],planIcon=arguments[3];
+var tb=document.createElement('div');tb.className='kanban-drill-titlebar';
+tb.innerHTML='<div class="kanban-drill-breadcrumb"><span class="kanban-drill-crumb">'+menuIcon+' Board</span><span class="kanban-drill-sep">'+chevR+'</span><span class="kanban-drill-crumb current">'+d.title+'</span></div>';
+board.appendChild(tb);
+var th='';(d.tags||[]).forEach(function(g){th+='<span class="kanban-tag-pill" style="background:'+g[1]+'22;color:'+g[1]+';border-color:'+g[1]+'44;">'+g[0]+'</span>';});
+var left='<div class="kanban-drill-status kanban-status-clickable" style="background:'+d.color+'26;color:'+d.color+';display:inline-flex;align-items:center;gap:4px;padding:5px 12px;border-radius:6px;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">'+d.status+' '+chevR+'</div><div class="kanban-drill-title" style="font-size:22px;font-weight:700;margin:12px 0 4px;padding:2px 6px;margin-left:-6px;border-radius:6px;border:1px solid transparent;">'+d.title+'</div><div style="font-size:11px;color:var(--text-dim);margin:4px 0 16px;">Created '+d.created+' \u00b7 Updated '+d.updated+'</div><div class="kanban-drill-desc-wrap kanban-drill-desc-collapsed"><div class="kanban-drill-desc" style="font-size:14px;line-height:1.6;padding:4px 6px;">'+d.desc+'</div></div><div class="kanban-drill-tags-section" style="margin:8px 0 0;"><div class="kanban-drill-tags-list" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px;">'+th+'</div><span class="kanban-tag-add-trigger" style="display:inline-flex;align-items:center;gap:2px;padding:0 8px;border-radius:4px;color:var(--text-dim);"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity:0.5;"><path d="M12 5v14M5 12h14"/></svg><span style="font-size:11px;">Add tag</span></span></div>';
+var bd=document.createElement('div');bd.className='kanban-drill-body';
+bd.innerHTML='<div class="kanban-drill-split"><div class="kanban-drill-left">'+left+'</div><div class="kanban-drill-right">'+d.rightHTML+'</div></div>';
+board.appendChild(bd);
+})(arguments[0],arguments[1],arguments[2],arguments[3]);"""
+
+_JS_GRID = r"""(function(sessions){
+var grid=document.getElementById('workforce-grid');if(!grid)return;grid.innerHTML='';
+var icons={
+working:'<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#5555bb" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>',
+idle:'<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#44aa66" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/></svg>',
+question:'<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#ff9500" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9 9a3 3 0 115 2c0 1.5-2 2-2 3"/><circle cx="12" cy="17" r="0.5" fill="#ff9500"/></svg>',
+sleeping:'<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9h6M9 15h6"/></svg>'
+};
+var labels={working:'Working',idle:'Idle',question:'Question',sleeping:'Sleeping'};
+sessions.forEach(function(s,i){
+var card=document.createElement('div');
+card.className='wf-card wf-'+s.status+(i===0?' wf-selected':'');
+card.innerHTML='<div class="wf-avatar">'+icons[s.status]+'</div><div class="wf-status-label">'+labels[s.status]+'</div><div class="wf-name">'+s.name+'</div><div class="wf-meta">'+s.date+'</div>';
+grid.appendChild(card);
+});
 })(arguments[0]);"""
+
+_JS_LIST = r"""(function(sessions){
+var list=document.getElementById('session-list');if(!list)return;list.innerHTML='';
+var hdr=document.createElement('div');hdr.className='col-header-row';
+hdr.innerHTML='<div class="col-header sortable sort-active" id="col-h-name">Name</div><div class="col-header sortable" id="col-h-date">Date</div><div class="col-header sortable" id="col-h-size">Size</div>';
+list.appendChild(hdr);
+var icons={
+working:'<svg class="state-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#5555bb" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg> ',
+idle:'<svg class="state-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#44aa66" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/></svg> ',
+question:'<svg class="state-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ff9500" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9 9a3 3 0 115 2c0 1.5-2 2-2 3"/><circle cx="12" cy="17" r="0.5" fill="#ff9500"/></svg> ',
+sleeping:''
+};
+sessions.forEach(function(s,i){
+var row=document.createElement('div');
+row.className='session-item'+(i===0?' active':'')+(s.status==='working'?' running':'')+(s.status==='question'?' waiting':'');
+row.innerHTML='<div class="session-col-name">'+(icons[s.status]||'')+s.name+'</div><div class="session-col-date">'+s.date+'</div><div class="session-col-size">'+s.size+'</div>';
+list.appendChild(row);
+});
+})(arguments[0]);"""
+
+_JS_LIVE = r"""(function(msgs){
+var log=document.getElementById('live-log');if(!log)return;log.innerHTML='';
+var sticky=document.querySelector('.sticky-user-bar');if(sticky){sticky.innerHTML='<span class="sticky-user-text">Rate limiting middleware</span>';sticky.classList.add('visible');}
+var toolIcon='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>';
+var checkIcon='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#44aa66" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>';
+msgs.forEach(function(m){
+if(m.role==='user'){
+var d=document.createElement('div');d.className='msg user';
+d.innerHTML='<div class="msg-role">me</div><div class="msg-body msg-content"><pre style="white-space:pre-wrap;margin:0;">'+m.text+'</pre></div>';
+log.appendChild(d);
+}else if(m.role==='assistant'){
+var d=document.createElement('div');d.className='msg assistant';
+d.innerHTML='<div class="msg-role">claude</div><div class="msg-body msg-content">'+m.text.replace(/\n/g,'<br>')+'</div>';
+log.appendChild(d);
+}else if(m.role==='tool'){
+var e=document.createElement('div');e.className='live-entry live-entry-tool';
+e.innerHTML='<div class="live-tool-line"><span class="live-tool-icon">'+toolIcon+'</span><span class="live-tool-name">'+m.name+'</span><span class="live-tool-desc">'+m.desc+'</span></div>';
+log.appendChild(e);
+if(m.ok){
+var r=document.createElement('div');r.className='live-entry live-entry-result';
+r.innerHTML='<div class="live-result-line live-result-ok">'+checkIcon+' Success</div>';
+log.appendChild(r);
+}
+}
+});
+var bar=document.getElementById('live-input-bar');
+if(bar)bar.innerHTML='<textarea class="live-textarea" rows="3" placeholder="Describe what you want Claude to do\u2026" disabled></textarea><div class="live-bar-row"><span class="send-hint">Enter to send</span></div>';
+})(arguments[0]);"""
+
+# ---------------------------------------------------------------------------
+# DRIVER / HELPERS
+# ---------------------------------------------------------------------------
 
 def _driver():
     opts = Options()
@@ -89,6 +239,49 @@ def _snap(drv, name, label):
     drv.save_screenshot(p)
     print(f"    {name}.png ({os.path.getsize(p)//1024}KB) {label}")
 
+def _hide_live(drv):
+    drv.execute_script("var p=document.querySelector('.live-panel');if(p)p.style.display='none';var m=document.querySelector('.main');if(m)m.style.flex='1';var s=document.querySelector('.sticky-user-bar');if(s){s.classList.remove('visible');s.style.display='none';}")
+
+def _drill(drv, data):
+    """Inject a drill-down view. data must have 'rightHTML' key."""
+    drv.execute_script(_JS_DRILL_BASE, data, _ICON_MENU, _ICON_CHEVR, _ICON_PLAN)
+
+def _build_subtasks_right(epic):
+    """Build rightHTML for subtasks mode."""
+    chevR = _ICON_CHEVR
+    planIcon = _ICON_PLAN
+    rows = ''
+    for s in epic["subtasks"]:
+        meta = '<span class="kanban-drill-subtask-meta">' + s["meta"] + '</span>' if s.get("meta") else ''
+        rows += '<div class="kanban-drill-subtask-row"><span class="kanban-drill-subtask-grip"><svg width="4" height="14" viewBox="0 0 4 14"><circle cx="2" cy="2" r="1" fill="currentColor"/><circle cx="2" cy="7" r="1" fill="currentColor"/><circle cx="2" cy="12" r="1" fill="currentColor"/></svg></span><div class="kanban-drill-subtask-status kanban-status-clickable" style="background:' + s["color"] + '26;color:' + s["color"] + ';">' + s["status"] + '</div><span class="kanban-drill-subtask-title">' + s["title"] + '</span>' + meta + '<span class="kanban-drill-subtask-chevron">' + chevR + '</span></div>'
+    rows += '<div class="kanban-drill-subtask-row kanban-drill-ghost-row"><span class="kanban-drill-subtask-grip" style="visibility:hidden;"></span><div class="kanban-drill-subtask-status" style="background:var(--bg-subtle);color:var(--text-dim);">new</div><input type="text" class="kanban-drill-ghost-input" placeholder="Add subtask\u2026" disabled style="flex:1;background:none;border:none;outline:none;font-size:13px;color:var(--text-primary);font-family:inherit;padding:0 0 0 5px;"></div>'
+    pct = epic.get("pct", 0)
+    return '<div class="kanban-drill-panel-header"><span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-dim);">Subtasks</span><span class="kanban-drill-inline-progress" style="display:inline-flex;align-items:center;gap:6px;margin-left:auto;"><span class="kanban-drill-inline-bar"><span class="kanban-drill-inline-fill" style="width:' + str(pct) + '%;"></span></span><span class="kanban-drill-inline-pct">' + str(pct) + '%</span></span></div><div class="kanban-drill-panel"><div class="kanban-drill-panel-body">' + rows + '</div></div><button class="kanban-drill-ai-plan-btn" style="margin-top:10px;">' + planIcon + ' Plan with AI</button>'
+
+def _build_sessions_right(epic):
+    """Build rightHTML for sessions mode."""
+    chevR = _ICON_CHEVR
+    rows = ''
+    for s in epic["sessions"]:
+        rows += '<div class="kanban-drill-session-row" style="cursor:pointer;"><div class="kanban-drill-subtask-status" style="background:' + s["color"] + '26;color:' + s["color"] + ';">' + s["status"] + '</div><span class="kanban-drill-session-name">' + s["name"] + '</span><span class="kanban-drill-subtask-chevron">' + chevR + '</span></div>'
+    rows += '<div class="kanban-drill-session-row kanban-drill-ghost-row" style="cursor:pointer;"><div class="kanban-drill-subtask-status" style="background:var(--bg-subtle);color:var(--text-dim);">new</div><span class="kanban-drill-session-name" style="color:var(--text-dim);">Spawn session\u2026</span></div>'
+    return '<div class="kanban-drill-panel-header"><span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-dim);">Sessions</span></div><div class="kanban-drill-panel"><div class="kanban-drill-panel-body">' + rows + '</div></div>'
+
+def _build_chooser_right():
+    """Build rightHTML for empty-state chooser mode."""
+    listIcon = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>'
+    boltIcon = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>'
+    planIcon = _ICON_PLAN
+    return '<div class="kanban-drill-chooser"><div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">How to proceed</div>' \
+        '<div class="kanban-drill-chooser-card"><div class="kanban-drill-chooser-icon" style="color:var(--accent);">' + listIcon + '</div><div><div class="kanban-drill-chooser-title">Break into subtasks</div><div class="kanban-drill-chooser-desc">Subdivide into smaller pieces. Each subtask gets its own status and sessions.</div></div></div>' \
+        '<div class="kanban-drill-chooser-card"><div class="kanban-drill-chooser-icon" style="color:var(--green);">' + boltIcon + '</div><div><div class="kanban-drill-chooser-title">Spawn sessions</div><div class="kanban-drill-chooser-desc">Start working directly. Spawn Claude sessions scoped to this task.</div></div></div>' \
+        '<div class="kanban-drill-chooser-card kanban-drill-chooser-ai"><div class="kanban-drill-chooser-icon" style="color:var(--purple);">' + planIcon + '</div><div><div class="kanban-drill-chooser-title">Plan with AI</div><div class="kanban-drill-chooser-desc">Describe a goal and Claude will break it down into a structured set of subtasks.</div></div><svg class="kanban-drill-chooser-ai-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg></div>' \
+        '</div>'
+
+# ---------------------------------------------------------------------------
+# SCREENSHOT FLOW
+# ---------------------------------------------------------------------------
+
 def run():
     os.makedirs(SCREENSHOT_DIR, exist_ok=True)
     drv = _driver()
@@ -96,34 +289,67 @@ def run():
     try:
         _init(drv)
 
-        print("  [1/5] Session Grid")
+        # 1 -- Session Grid (with live panel showing conversation)
+        print("  [1/7] Session Grid")
         drv.execute_script("if(typeof setViewMode==='function') setViewMode('workforce');")
-        time.sleep(2)
-        drv.execute_script("var p=document.querySelector('.live-panel');if(p)p.style.display='none';var m=document.querySelector('.main');if(m)m.style.flex='1';")
-        time.sleep(1); _snap(drv, "session-grid", "workforce grid")
+        time.sleep(3)
+        # Click a real card to bootstrap the live panel
+        drv.execute_script("var c=document.querySelectorAll('.wf-card');if(c.length)c[0].click();")
+        time.sleep(4)
+        # Inject fake grid + conversation
+        drv.execute_script(_JS_GRID, SESSIONS)
+        drv.execute_script(_JS_LIVE, CONVERSATION)
+        time.sleep(1); _snap(drv, "session-grid", "workforce grid with live panel")
 
-        print("  [2/5] Workflow Board")
+        # 2 -- Workflow Board
+        print("  [2/7] Workflow Board")
+        _hide_live(drv)
         drv.execute_script("if(typeof setViewMode==='function') setViewMode('kanban');")
         time.sleep(3); drv.execute_script(_JS_DISMISS)
         drv.execute_script(_JS_BOARD, BOARD)
         time.sleep(1); _snap(drv, "workflow-board", "kanban with demo tasks")
 
-        print("  [3/5] Task Hierarchy")
-        drv.execute_script(_JS_DRILL, EPIC)
-        time.sleep(1); _snap(drv, "task-hierarchy", "epic drill-down")
+        # 3 -- Task Hierarchy: Subtasks
+        print("  [3/7] Task Hierarchy (subtasks)")
+        d = dict(EPIC_SUBTASKS)
+        d["rightHTML"] = _build_subtasks_right(d)
+        _drill(drv, d)
+        time.sleep(1); _snap(drv, "task-hierarchy", "epic drill-down subtasks")
 
-        print("  [4/5] Live Session")
+        # 4 -- Task Hierarchy: Sessions
+        print("  [4/7] Task Hierarchy (sessions)")
+        d = dict(EPIC_SESSIONS)
+        d["rightHTML"] = _build_sessions_right(d)
+        _drill(drv, d)
+        time.sleep(1); _snap(drv, "task-sessions", "epic drill-down sessions")
+
+        # 5 -- Task Hierarchy: Chooser (empty state)
+        print("  [5/7] Task Hierarchy (chooser)")
+        d = dict(EPIC_CHOOSER)
+        d["rightHTML"] = _build_chooser_right()
+        _drill(drv, d)
+        time.sleep(1); _snap(drv, "task-chooser", "empty task chooser")
+
+        # 6 -- Live Session
+        print("  [6/7] Live Session")
         drv.execute_script("if(typeof setViewMode==='function') setViewMode('workforce');")
-        time.sleep(2)
-        drv.execute_script("var p=document.querySelector('.live-panel');if(p)p.style.display='';var m=document.querySelector('.main');if(m)m.style.flex='';")
+        time.sleep(3)
+        drv.execute_script(_JS_GRID, SESSIONS)
         time.sleep(1)
         drv.execute_script("var c=document.querySelectorAll('.wf-card');if(c.length)c[0].click();")
-        time.sleep(4); _snap(drv, "live-session", "session with live panel")
+        time.sleep(4)
+        drv.execute_script(_JS_GRID, SESSIONS)
+        drv.execute_script(_JS_LIVE, CONVERSATION)
+        time.sleep(1); _snap(drv, "live-session", "session with live panel")
 
-        print("  [5/5] Session List")
-        drv.execute_script("var p=document.querySelector('.live-panel');if(p)p.style.display='none';")
+        # 7 -- Session List (with live panel showing conversation)
+        print("  [7/7] Session List")
         drv.execute_script("if(typeof setViewMode==='function') setViewMode('list');")
-        time.sleep(2); _snap(drv, "session-list", "compact list view")
+        time.sleep(3)
+        drv.execute_script(_JS_LIST, SESSIONS)
+        drv.execute_script(_JS_LIVE, CONVERSATION)
+        time.sleep(1); _snap(drv, "session-list", "list view with live panel")
+
         print(f"\n  All saved to {SCREENSHOT_DIR}/")
     finally:
         drv.quit()

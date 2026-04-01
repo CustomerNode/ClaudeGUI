@@ -455,6 +455,9 @@ class DaemonClient:
             params["allowed_tools"] = allowed_tools
         if permission_mode:
             params["permission_mode"] = permission_mode
+        # Pass extra CLI args (e.g. effort="low" for title generation)
+        if kwargs.get("extra_args"):
+            params["extra_args"] = kwargs["extra_args"]
         # Track utility sessions at proxy layer — don't pass to daemon
         # (the running daemon may not support the session_type param yet)
         if kwargs.get("session_type") in ("planner", "title"):

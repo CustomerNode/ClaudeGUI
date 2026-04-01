@@ -39,7 +39,10 @@ _STRIP_ACTION_FLUFF = re.compile(
     r"take a look at |take a look |look at |look into |"
     r"check out |check on |check |have a look at |have a look |"
     r"figure out |work on |deal with |sort out |dig into |dive into |get into |"
-    r"see if you can |see if |see about |see )",
+    r"see if you can |see if |see about |see |"
+    r"make sure (that )?(the |that |it |we |they |I )?"
+    r"|ensure (that )?(the |that |it |we |they )?"
+    r"|confirm (that )?(the |that |it |we |they )?)",
     re.IGNORECASE
 )
 
@@ -54,8 +57,8 @@ _URL_OR_PATH = re.compile(
 
 # Leading filler words to strip after prefix removal
 _LEADING_FILLER = re.compile(
-    r"^(the|my|a|an|our|this|that|some|and|or|but|so|into|every time|"
-    r"i see|i\'?m|i am|i)\s+",
+    r"^(the|my|a|an|our|this|that|some|and|or|but|so|into|on|for|"
+    r"every time|i see|i\'?m|i am|i)\s+",
     re.IGNORECASE
 )
 
@@ -226,7 +229,13 @@ def _llm_title(messages: list) -> str | None:
 # ---------------------------------------------------------------------------
 
 def _daemon_title(messages: list) -> str | None:
-    """Generate a title via the session daemon (uses the web server's existing connection)."""
+    """Generate a title via the session daemon (uses the web server's existing connection).
+
+    IMPORTANT: We pass effort="low" to disable extended thinking. Without this,
+    the CLI enables thinking by default, which causes the API to silently upgrade
+    from Haiku to Sonnet (Haiku doesn't support extended thinking). The result is
+    a slow, expensive, verbose response that fails title validation.
+    """
     import time
     import uuid
 
@@ -263,13 +272,15 @@ def _daemon_title(messages: list) -> str | None:
         allowed_tools=[],
         permission_mode="plan",
         session_type="title",
+        extra_args={"effort": "low"},
     )
     log.debug("_daemon_title: start_session result: %s", result)
     if not result or not result.get("ok"):
         return None
 
-    # Poll for completion (max ~8s — Haiku titles finish in 2-3s)
-    for _ in range(40):
+    # Poll for completion (max ~12s — Haiku with effort=low finishes in 2-4s,
+    # but CLI startup on Windows can add latency)
+    for _ in range(60):
         time.sleep(0.2)
         # Check state first — faster than fetching entries
         state = sm.get_session_state(sid)
@@ -357,14 +368,17 @@ def _extract_title_from_entries(entries, texts):
 
 
 # ---------------------------------------------------------------------------
-# CLI title generation (fallback when no API key — uses Claude CLI auth)
-# NOTE: Not called by smart_title() — kept for reference. Spawning `claude -p`
-# connects to the daemon on port 5051, replacing the web server's TCP socket
-# and breaking all real-time session state updates.
+# CLI title generation — uses `claude -p` with --no-session-persistence
+# to avoid writing JSONL files, and --effort low to disable extended thinking
+# so the API actually uses Haiku instead of silently upgrading to Sonnet.
 # ---------------------------------------------------------------------------
 
 def _cli_title(messages: list) -> str | None:
     """Use the Claude CLI to generate a title. Works with OAuth/CLI auth.
+
+    Uses --no-session-persistence to prevent phantom JSONL files, and
+    --effort low to disable extended thinking (which would cause Haiku
+    to be silently upgraded to Sonnet by the API).
 
     Falls back to None if the CLI is unavailable or fails.
     """
@@ -386,7 +400,8 @@ def _cli_title(messages: list) -> str | None:
         creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         r = subprocess.run(
             ["claude", "-p", prompt, "--output-format", "text",
-             "--max-turns", "1", "--model", "haiku"],
+             "--max-turns", "1", "--model", "haiku",
+             "--effort", "low", "--no-session-persistence"],
             capture_output=True, text=True, timeout=20,
             creationflags=creationflags
         )
@@ -494,13 +509,10 @@ def smart_title(messages: list) -> str:
     """Generate a session title.
 
     Tries strategies in order:
-      1. Session daemon          (uses existing daemon connection, isolated cwd)
+      1. Session daemon          (uses existing daemon connection, effort=low)
       2. Direct Anthropic API    (needs ANTHROPIC_API_KEY)
-      3. Local heuristic         (instant, no API)
-
-    NOTE: _cli_title is intentionally excluded — spawning `claude -p` writes
-    a JSONL into the user's project directory with no way to control the path,
-    causing phantom sessions to appear on page refresh.
+      3. Claude CLI              (uses CLI auth, --no-session-persistence)
+      4. Local heuristic         (instant, no API)
     """
     title = _daemon_title(messages)
     if title:
@@ -509,6 +521,10 @@ def smart_title(messages: list) -> str:
     title = _llm_title(messages)
     if title:
         log.debug("Title from API: %r", title)
+        return title
+    title = _cli_title(messages)
+    if title:
+        log.debug("Title from CLI: %r", title)
         return title
     title = _heuristic_title(messages)
     log.debug("Title from heuristic: %r", title)

@@ -21,6 +21,7 @@ from ..config import (
     _mark_deleted,
     _mark_deleted_bulk,
     _get_utility_ids,
+    _resolve_remapped_id,
 )
 from ..sessions import load_session, load_session_timeline, all_sessions
 from ..titling import smart_title
@@ -97,15 +98,28 @@ def api_resolve_session(session_id):
 
     Returns the canonical session ID. Used on page load to recover from
     ID remaps that happened before the browser refreshed.
+    Checks in-memory aliases first, then falls back to the persisted
+    remap file so resolution works even before aliases are synced.
     """
     sm = current_app.session_manager
     resolved = sm._resolve_id(session_id) if hasattr(sm, '_resolve_id') else session_id
+    if resolved == session_id:
+        # In-memory alias not found — check disk-persisted remaps
+        disk_resolved = _resolve_remapped_id(session_id)
+        if disk_resolved:
+            resolved = disk_resolved
     return jsonify({"id": resolved, "remapped": resolved != session_id})
 
 
 @bp.route("/api/session/<session_id>")
 def api_session(session_id):
     meta_only = request.args.get("meta_only") == "1"
+
+    # If this ID was remapped (old temp UUID -> real SDK UUID), redirect to
+    # the canonical ID so stale cached references never serve a ghost session.
+    canonical = _resolve_remapped_id(session_id)
+    if canonical:
+        session_id = canonical
 
     path = _sessions_dir() / f"{session_id}.jsonl"
     if not path.exists():
@@ -602,6 +616,9 @@ def api_continue(session_id):
 @bp.route("/api/session-timeline/<session_id>")
 def api_session_timeline(session_id):
     """Return lightweight message list for the fork/rewind timeline picker."""
+    canonical = _resolve_remapped_id(session_id)
+    if canonical:
+        session_id = canonical
     path = _sessions_dir() / f"{session_id}.jsonl"
     if not path.exists():
         # Check SDK-managed sessions with no .jsonl yet

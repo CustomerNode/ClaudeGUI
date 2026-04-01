@@ -1203,6 +1203,21 @@ class SessionManager:
                         del self._sessions[session_id]
                     self._id_aliases[session_id] = result_session_id
 
+                # Tombstone the old temp ID so all_sessions() never serves
+                # the stale .jsonl on refresh (persisted to disk, survives restart).
+                try:
+                    from .config import _mark_remapped
+                    _mark_remapped(session_id, result_session_id)
+                except Exception:
+                    pass
+
+                # Remap user-set name to the new ID
+                try:
+                    from .config import _remap_name
+                    _remap_name(session_id, result_session_id)
+                except Exception:
+                    pass
+
                 # If this was a utility session, track the new ID too
                 if info.session_type in ("planner", "title"):
                     from .config import _mark_utility

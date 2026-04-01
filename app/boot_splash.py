@@ -347,10 +347,13 @@ class BootSplash:
             cx, 138, text="0%",
             font=(self._ff, 18, "bold"), fill=C["blue"])
 
-        # Time / ETA — subtle secondary info below percentage
-        self._time = self.cv.create_text(
-            cx, 156, text="",
-            font=(self._ff, 8), fill=C["surface2"])
+        # Elapsed (left) / Remaining (right) — ultra-subtle, flanking bar
+        self._time_elapsed = self.cv.create_text(
+            self._bx, self._by + self._bh + 10, text="",
+            font=(self._ff, 7), fill=C["surface1"], anchor="w")
+        self._time_remaining = self.cv.create_text(
+            self._bx + self._bw, self._by + self._bh + 10, text="",
+            font=(self._ff, 7), fill=C["surface1"], anchor="e")
 
     # ── Steps — 3D cylinder carousel (shows ~3 at a time) ────────────
     def _create_steps(self):
@@ -605,17 +608,19 @@ class BootSplash:
 
         if self.done:
             self.cv.itemconfigure(
-                self._time,
-                text=f"{elapsed:.1f}s", fill=C["green"])
+                self._time_elapsed,
+                text=f"{elapsed:.1f}s", fill=C["surface2"])
+            self.cv.itemconfigure(self._time_remaining, text="")
             return
 
         es = int(elapsed)
+        self.cv.itemconfigure(self._time_elapsed, text=f"{es}s")
         remaining = max(0, self._eta_total - elapsed)
         if remaining > 0:
             rem = max(1, int(remaining))
-            self.cv.itemconfigure(self._time, text=f"{es}s \u2022 ~{rem}s left")
+            self.cv.itemconfigure(self._time_remaining, text=f"~{rem}s left")
         else:
-            self.cv.itemconfigure(self._time, text=f"{es}s")
+            self.cv.itemconfigure(self._time_remaining, text="")
 
     # ── Animated gradient border sweep ────────────────────────────────
     def _r_border(self):

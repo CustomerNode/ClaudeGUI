@@ -351,23 +351,25 @@ def get_task(task_id):
         if task is None:
             return jsonify({"error": "Task not found"}), 404
 
-        # Fetch all project tasks in ONE query, compute counts in Python.
-        # This replaces N+1 get_children + recursive _count_descendant_sessions
-        # calls that were causing 8s+ response times on Supabase.
-        project_id = _get_project_id()
-        board = repo.get_board(project_id)
-        all_tasks_flat = []
-        for v in board.get("tasks", {}).values():
-            all_tasks_flat.extend(v)
-        child_counts, session_counts = _build_recursive_counts(all_tasks_flat, repo)
-
-        # Build parent->children index from flat list
+        # Try fast path: batch-fetch all project tasks, compute counts in Python.
+        # Falls back to per-task queries if anything goes wrong.
+        child_counts = {}
+        session_counts = {}
         children_by_parent = {}
-        for t in all_tasks_flat:
-            if t.parent_id:
-                children_by_parent.setdefault(t.parent_id, []).append(t)
+        try:
+            project_id = _get_project_id()
+            board = repo.get_board(project_id)
+            all_tasks_flat = []
+            for v in board.get("tasks", {}).values():
+                all_tasks_flat.extend(v)
+            child_counts, session_counts = _build_recursive_counts(all_tasks_flat, repo)
+            for t in all_tasks_flat:
+                if t.parent_id:
+                    children_by_parent.setdefault(t.parent_id, []).append(t)
+        except Exception:
+            pass  # fall through — children will be fetched individually below
 
-        children = children_by_parent.get(task_id, [])
+        children = children_by_parent.get(task_id) or repo.get_children(task_id)
         sessions = repo.get_task_sessions(task_id)
         issues = repo.get_open_issues(task_id)
         result = _task_response(task)
@@ -653,7 +655,8 @@ def get_columns():
     try:
         repo = _get_repo()
         project_id = _get_project_id()
-        columns = ensure_project_columns(repo, project_id)
+        ensure_project_columns(repo, project_id)
+        columns = repo.get_columns(project_id)
         return jsonify([c.to_dict() if hasattr(c, 'to_dict') else c for c in columns])
     except Exception as e:
         return jsonify({"error": str(e)}), 500

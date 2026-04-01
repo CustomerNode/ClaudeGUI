@@ -405,6 +405,73 @@ def _get_utility_ids() -> set:
 
 
 # ---------------------------------------------------------------------------
+# Remapped session tracking -- hide stale temp-ID JSONL files
+# ---------------------------------------------------------------------------
+# When the SDK remaps a temp client UUID to its real server-assigned ID,
+# the old temp-ID .jsonl file stays on disk.  We record the old ID here
+# so all_sessions() filters it out, preventing a stale "sleeping" duplicate
+# from appearing on page refresh — even if in-memory aliases haven't synced.
+
+_REMAP_MAX_AGE = 86400  # 24 hours — old temp IDs are pruned after this
+_remap_lock = _threading.Lock()
+
+
+def _remap_file() -> Path:
+    return _sessions_dir() / "_remapped_sessions.json"
+
+
+def _load_remaps() -> dict:
+    """Return {old_session_id: {"new_id": str, "ts": float}} of remapped sessions."""
+    rf = _remap_file()
+    try:
+        data = json.loads(rf.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_remaps(data: dict) -> None:
+    _remap_file().write_text(
+        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def _mark_remapped(old_session_id: str, new_session_id: str = "") -> None:
+    """Record an old (pre-remap) session ID so its JSONL is hidden."""
+    with _remap_lock:
+        data = _load_remaps()
+        data[old_session_id] = {"new_id": new_session_id, "ts": time.time()}
+        # Lazy prune — drop entries older than 24 h whose .jsonl is gone
+        now = time.time()
+        sd = _sessions_dir()
+        data = {
+            sid: entry for sid, entry in data.items()
+            if now - entry.get("ts", 0) < _REMAP_MAX_AGE
+            or (sd / f"{sid}.jsonl").exists()
+        }
+        _save_remaps(data)
+
+
+def _get_remapped_ids() -> set:
+    """Return the set of old session IDs that were remapped (should be hidden)."""
+    data = _load_remaps()
+    now = time.time()
+    return {sid for sid, entry in data.items()
+            if now - entry.get("ts", 0) < _REMAP_MAX_AGE}
+
+
+def _resolve_remapped_id(old_session_id: str) -> str | None:
+    """Look up the new (canonical) ID for a remapped session, or None."""
+    data = _load_remaps()
+    entry = data.get(old_session_id)
+    if entry and entry.get("new_id"):
+        return entry["new_id"]
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Project display-name store (separate from session names)
 # ---------------------------------------------------------------------------
 
