@@ -6,47 +6,21 @@ let _wsConnected = false;
 /**
  * Returns true if a session ID belongs to a hidden utility session
  * (planner, auto-title, etc.) that must NEVER appear in the workspace.
- * Also filters out sessions from OTHER projects (project isolation).
  * Called at every entry point where a session can enter the UI.
+ *
+ * Cross-project isolation is handled at the DISPLAY level (filterSessions,
+ * server-side snapshot filtering) — NOT here. Filtering events at this level
+ * blocks streaming for newly started sessions.
  */
 // Persistent set of session IDs known to be hidden utilities.
 // Populated when _isHiddenSession detects one, so subsequent events
 // (e.g. session_entry which lacks session_type) can still filter them.
 const _hiddenSessionIds = new Set();
 
-// Separate set for sessions hidden due to cross-project isolation.
-// Cleared on project switch so sessions become visible again if you
-// switch back to their project.
-const _crossProjectIds = new Set();
-
-// Map session_id → cwd, populated from session_state events (which carry cwd).
-// Used by session_entry (which lacks cwd) to do cross-project filtering.
-const _sessionCwdMap = {};
-
-/**
- * Encode a filesystem path into the Claude project directory name format.
- * E.g. "C:\Users\foo\Bar" → "C--Users-foo-Bar"
- */
-function _encodeCwd(cwd) {
-    return cwd.replace(/\\/g, '-').replace(/\//g, '-').replace(/:/g, '-');
-}
-
-/**
- * Check whether a session's cwd belongs to a DIFFERENT project than the
- * currently active one. Returns true (= hide) if cross-project.
- */
-function _isOtherProject(data) {
-    if (!data || !data.cwd) return false;  // no cwd info → don't filter
-    const active = localStorage.getItem('activeProject');
-    if (!active) return false;  // no active project → don't filter
-    return _encodeCwd(data.cwd).toLowerCase() !== active.toLowerCase();
-}
-
 function _isHiddenSession(id, data) {
     if (!id) return false;
-    // Fast path: already known hidden (utility or cross-project)
+    // Fast path: already known hidden utility
     if (_hiddenSessionIds.has(id)) return true;
-    if (_crossProjectIds.has(id)) return true;
     // Convention: any session ID starting with "_" is a system/utility session
     // (_title_*, _planner_*, and any future utility sessions).
     if (id.startsWith('_')) { _hiddenSessionIds.add(id); return true; }
@@ -54,21 +28,27 @@ function _isHiddenSession(id, data) {
         _hiddenSessionIds.add(id);
         return true;
     }
-    // ── Project isolation: hide sessions belonging to other projects ──
-    // Cache in _crossProjectIds so session_entry (which lacks cwd) can filter too.
-    if (_isOtherProject(data)) {
-        _crossProjectIds.add(id);
-        return true;
-    }
+    // NOTE: Cross-project filtering is NOT done here. Blocking events at this
+    // level breaks streaming for new sessions. Instead, cross-project sessions
+    // are filtered at the DISPLAY level in filterSessions() and state_snapshot.
     return false;
 }
 
+// No-op — cross-project filtering is now done at the display level,
+// not the event level. Kept for backwards compat with app.js call.
+function _clearCrossProjectCache() {}
+
 /**
- * Called on project switch — clears the cross-project cache so sessions
- * from the newly-selected project aren't incorrectly hidden.
+ * Check if a session's cwd belongs to the currently active project.
+ * Used at the DISPLAY level to prevent cross-project sessions from
+ * bleeding into the sidebar/allSessions. NOT used to block events.
  */
-function _clearCrossProjectCache() {
-    _crossProjectIds.clear();
+function _sessionBelongsToActiveProject(cwd) {
+    if (!cwd) return true;  // no cwd → don't filter
+    const active = localStorage.getItem('activeProject');
+    if (!active) return true;  // no active project → don't filter
+    const encoded = cwd.replace(/\\/g, '-').replace(/\//g, '-').replace(/:/g, '-');
+    return encoded.toLowerCase() === active.toLowerCase();
 }
 
 socket.on('connect', () => {
@@ -179,8 +159,6 @@ socket.on('state_snapshot', (data) => {
 
     (data.sessions || []).forEach(s => {
         const id = s.session_id;
-        // Always track cwd so session_entry can do cross-project filtering
-        if (s.cwd) _sessionCwdMap[id] = s.cwd;
         if (_isHiddenSession(id, s)) return;
         // Skip this session if we got a fresher incremental update
         // in the last 5 seconds (avoids heartbeat snapshot reverting
@@ -252,14 +230,7 @@ socket.on('state_snapshot', (data) => {
     // was built — common during project switch).
     for (const id in sessionKinds) {
         if (sessionKinds[id] === 'working' && !newKinds[id]) {
-            // Don't preserve cross-project sessions or hidden utilities
-            if (_hiddenSessionIds.has(id) || _crossProjectIds.has(id)) continue;
-            // Check cached cwd — if it belongs to another project, skip
-            const _cachedCwd = _sessionCwdMap[id];
-            if (_cachedCwd) {
-                const _ap = localStorage.getItem('activeProject');
-                if (_ap && _encodeCwd(_cachedCwd).toLowerCase() !== _ap.toLowerCase()) continue;
-            }
+            if (_hiddenSessionIds.has(id)) continue;
             newKinds[id] = 'working';
             newRunning.add(id);
         }
@@ -403,8 +374,6 @@ socket.on('state_snapshot', (data) => {
 // Incremental state updates
 socket.on('session_state', (data) => {
     const {session_id, state, cost_usd, error, name, model, working_since} = data;
-    // Always track cwd so session_entry can do cross-project filtering
-    if (data.cwd) _sessionCwdMap[session_id] = data.cwd;
     if (_isHiddenSession(session_id, data)) return;
     const substatus = data.substatus || '';
     const usage = data.usage || null;
@@ -597,7 +566,6 @@ socket.on('message_ack', (data) => {
 socket.on('session_usage', (data) => {
     if (!data || !data.session_id || !data.usage) return;
     if (_hiddenSessionIds.has(data.session_id)) return;
-    if (_crossProjectIds.has(data.session_id)) return;
     // Reset (not cancel) watchdog — usage data means response is flowing
     // but session hasn't completed yet.  Keep monitoring for IDLE.
     if (typeof _resetMessageWatchdog === 'function') _resetMessageWatchdog(data.session_id);
@@ -613,20 +581,13 @@ socket.on('session_usage', (data) => {
 // Live log entries pushed in real-time
 socket.on('session_entry', (data) => {
     // Never process entries for hidden utility sessions (planner, title).
-    // session_entry payloads lack session_type, so check the tracked Sets.
     if (_hiddenSessionIds.has(data.session_id)) return;
-    if (_crossProjectIds.has(data.session_id)) return;
 
-    // Cross-project filter: session_entry lacks cwd, so use cached map.
-    // If we know this session's cwd and it doesn't match active project, drop it.
-    const _entryCwd = _sessionCwdMap[data.session_id];
-    if (_entryCwd) {
-        const _activeProj = localStorage.getItem('activeProject');
-        if (_activeProj && _encodeCwd(_entryCwd).toLowerCase() !== _activeProj.toLowerCase()) {
-            _crossProjectIds.add(data.session_id);
-            return;
-        }
-    }
+    // Skip entries for sessions not in the current project.
+    // session_entry lacks cwd, but if this session_id isn't the live session
+    // and isn't in allSessions, it's cross-project — drop it entirely so the
+    // consistency check below doesn't inject it into the sidebar.
+    if (data.session_id !== liveSessionId && !allSessions.find(x => x.id === data.session_id)) return;
 
     // Reset (not cancel) watchdog — data is flowing but session hasn't
     // completed yet.  Keep the watchdog alive so a lost IDLE event triggers
@@ -701,7 +662,6 @@ socket.on('session_entry', (data) => {
 // Permission requests
 socket.on('session_permission', (data) => {
     if (_hiddenSessionIds.has(data.session_id)) return;
-    if (_crossProjectIds.has(data.session_id)) return;
     waitingData[data.session_id] = {
         question: _formatPermissionQuestion(data.tool_name, data.tool_input),
         options: ['y', 'n', 'a'],
@@ -768,9 +728,10 @@ socket.on('session_started', (data) => {
         if (sessionKinds[data.session_id] !== 'working') {
             sessionKinds[data.session_id] = 'idle';
         }
-        // Ensure session exists in allSessions (may be missing after page refresh
-        // if .jsonl hasn't been written yet)
-        if (!allSessions.find(x => x.id === data.session_id)) {
+        // Only inject stub into allSessions if this session belongs to the
+        // current project. Otherwise it bleeds into the sidebar.
+        const _isSameProject = !data.cwd || _sessionBelongsToActiveProject(data.cwd);
+        if (_isSameProject && !allSessions.find(x => x.id === data.session_id)) {
             allSessions.unshift({
                 id: data.session_id,
                 display_title: data.name || 'New Session',
@@ -785,7 +746,7 @@ socket.on('session_started', (data) => {
             });
             filterSessions();
         }
-        _updateRowState(data.session_id, sessionKinds[data.session_id] || 'idle');
+        if (_isSameProject) _updateRowState(data.session_id, sessionKinds[data.session_id] || 'idle');
     }
 });
 

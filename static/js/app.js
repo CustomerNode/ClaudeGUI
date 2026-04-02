@@ -106,6 +106,12 @@ async function setProject(encoded, reload = true) {
   // _isOtherProject on their next event. Sessions from the old project will be
   // re-detected and re-cached on their next event.
   if (typeof _clearCrossProjectCache === 'function') _clearCrossProjectCache();
+  // Clear session state from the old project so cross-project sessions
+  // don't bleed into the sidebar. The upcoming state_snapshot will
+  // repopulate with current-project sessions only.
+  sessionKinds = {};
+  runningIds = new Set();
+  waitingData = {};
   // Show skeleton immediately
   if (reload) showSkeletonLoader();
   await fetch('/api/set-project', {
@@ -1071,7 +1077,16 @@ async function loadSessions() {
     fetch('/api/sessions'),
     (typeof initFolderTree === 'function') ? initFolderTree().catch(function(){}) : Promise.resolve(),
   ]);
-  allSessions = await resp.json();
+  const _freshSessions = await resp.json();
+  // Preserve optimistic entries for sessions the user is actively working in
+  // (e.g. just-started session whose JSONL hasn't been created yet).
+  // Without this, a concurrent loadSessions() from setProject() wipes the
+  // optimistic entry and destroys the live panel.
+  const _freshIds = new Set(_freshSessions.map(s => s.id));
+  const _preserved = allSessions.filter(s =>
+      !_freshIds.has(s.id) && s.id === liveSessionId
+  );
+  allSessions = _preserved.concat(_freshSessions);
   // Deduplicate by ID — race between remap events and session list fetch
   // can produce two entries with the same ID
   {
@@ -1120,6 +1135,14 @@ async function loadSessions() {
     }
     return;
   }
+  // If the user already has an active live panel (e.g. they started a new
+  // session while this async loadSessions was still in flight), don't clobber
+  // it with session restoration or the dashboard.
+  if (liveSessionId && document.getElementById('live-panel')) {
+    filterSessions();
+    return;
+  }
+
   // Restore session from URL, then localStorage, then per-project memory, or show dashboard.
   const _activeProj = localStorage.getItem('activeProject');
   let _restoreId = _urlChatId || localStorage.getItem('activeSessionId')
