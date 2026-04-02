@@ -27,6 +27,9 @@ def api_git_status():
 def api_git_sync():
     action = (request.get_json() or {}).get("action", "both")
     result = do_git_sync(action)
+    # Include the freshly-updated git status so the frontend can use it
+    # directly instead of making a separate poll that might race.
+    result["git_status"] = get_git_cache()
     return jsonify(result)
 
 

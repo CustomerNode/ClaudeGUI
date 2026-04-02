@@ -687,26 +687,26 @@ dependencies: [bun, playwright]     # External runtime dependencies
 
   <!-- PHASE 2.5 -->
   <div class="phase">
-    <div class="phase-header"><div class="phase-num">2.5</div><h3>Opinionated Positioning — Departments as the Organizing Unit</h3><span class="phase-status status-pending">Pending</span></div>
+    <div class="phase-header"><div class="phase-num">2.5</div><h3>Opinionated Positioning — Departments as the Organizing Unit</h3><span class="phase-status status-done">Done</span></div>
     <p class="scope">README language, UI copy, and import strategy. Establishes the vocabulary and mental model before building the file system.</p>
     <div class="cl-label">Implementation</div>
     <ul class="cl">
-      <li>Update README Workforce section with explicitly <strong>opinionated</strong> framing: VibeNode calls these <strong>departments</strong>, not "skills" or "agents" — a department is a named collection of knowledge assets that can be invoked as either a skill or an agent in Claude Code's paradigm</li>
-      <li>Add a "Why departments" subsection or callout in the README — we're not claiming this is objectively the right abstraction, we're being opinionated in our context. Claude Code has skills and agents; we organize them into departments and handle both invocation paths transparently</li>
-      <li>Add "opinionated" language to the Workforce UI — a brief info tooltip or onboarding callout explaining the department model (e.g., "VibeNode organizes your knowledge assets into departments. Each asset can be invoked as a skill or spawned as an agent — we handle both.")</li>
-      <li>Define import strategy for external .md files into departments: importing a Claude Code agent (.md from <code>.claude/agents/</code>) places it into a department; importing a skill (SKILL.md from <code>.claude/skills/</code>) does the same. The department is the container, the invocation mode is separate</li>
-      <li>Define import strategy for gstack specifically: each gstack skill becomes an asset in a "gstack" department (or user-chosen department). Sub-departments allowed (e.g., gstack > Review, gstack > QA, gstack > Security)</li>
-      <li>Plan the UI flow for importing: user browses to Workforce, clicks Import, sees discovered agents/skills/packs, picks which department to place them in, confirms. Assets land in the hierarchy and are immediately available for both agent catalog injection and on-demand skill invocation</li>
-      <li>Reconcile existing built-in library (72 role agents across Engineering, QA, Product, etc.) with imported skill packs — both coexist in the same department tree, distinguished by source badges</li>
+      <li class="done">Update README Workforce section with explicitly <strong>opinionated</strong> framing: VibeNode calls these <strong>departments</strong>, not "skills" or "agents" — a department is a named collection of knowledge assets that can be invoked as either a skill or an agent in Claude Code's paradigm</li>
+      <li class="done">Add a "Why departments" subsection or callout in the README — we're not claiming this is objectively the right abstraction, we're being opinionated in our context. Claude Code has skills and agents; we organize them into departments and handle both invocation paths transparently</li>
+      <li class="done">Add "opinionated" language to the Workforce UI — a brief info tooltip or onboarding callout explaining the department model (e.g., "VibeNode organizes your knowledge assets into departments. Each asset can be invoked as a skill or spawned as an agent — we handle both.")</li>
+      <li class="done">Define import strategy for external .md files into departments: importing a Claude Code agent (.md from <code>.claude/agents/</code>) places it into a department; importing a skill (SKILL.md from <code>.claude/skills/</code>) does the same. The department is the container, the invocation mode is separate</li>
+      <li class="done">Define import strategy for gstack specifically: each gstack skill becomes an asset in a "gstack" department (or user-chosen department). Sub-departments allowed (e.g., gstack > Review, gstack > QA, gstack > Security)</li>
+      <li class="done">Plan the UI flow for importing: user browses to Workforce, clicks Import, sees discovered agents/skills/packs, picks which department to place them in, confirms. Assets land in the hierarchy and are immediately available for both agent catalog injection and on-demand skill invocation</li>
+      <li class="done">Reconcile existing built-in library (72 role agents across Engineering, QA, Product, etc.) with imported skill packs — both coexist in the same department tree, distinguished by source badges</li>
     </ul>
     <div class="cl-label cl-validate">Validation</div>
     <ul class="cl">
-      <li>README explicitly uses the word "opinionated" and explains the department model</li>
-      <li>README does NOT claim departments are objectively better — frames it as "in our context, this is how we think about it"</li>
-      <li>Workforce UI has visible copy explaining the department model (tooltip, callout, or onboarding)</li>
-      <li>Import flow is documented: agent files and skill files both land in departments</li>
-      <li>gstack import strategy is clear: one department, sub-departments for categories</li>
-      <li>Built-in agents and imported skills coexist visually in the same tree without confusion</li>
+      <li class="done">README explicitly uses the word "opinionated" and explains the department model</li>
+      <li class="done">README does NOT claim departments are objectively better — frames it as "in our context, this is how we think about it"</li>
+      <li class="done">Workforce UI has visible copy explaining the department model (tooltip, callout, or onboarding)</li>
+      <li class="done">Import flow is documented: agent files and skill files both land in departments</li>
+      <li class="done">gstack import strategy is clear: one department, sub-departments for categories</li>
+      <li class="done">Built-in agents and imported skills coexist visually in the same tree without confusion</li>
     </ul>
   </div>
 

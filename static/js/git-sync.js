@@ -2,37 +2,41 @@
 
 let _gitStatus = {};
 
+function _applyGitStatus(s) {
+  _gitStatus = s;
+  const hasPush = s.ahead > 0 || s.uncommitted;
+  const hasPull = s.behind > 0;
+  const btnUpdate  = document.getElementById('btn-git-update');
+  const btnPublish = document.getElementById('btn-git-publish');
+  const btnSync    = document.getElementById('btn-git-sync');
+  if (hasPull && hasPush) {
+    // Both directions — show single Sync button
+    btnUpdate.style.display = 'none';
+    btnPublish.style.display = 'none';
+    document.getElementById('git-badge-sync').textContent = '\u2193\u2191';
+    btnSync.style.display = 'inline-flex';
+  } else {
+    btnSync.style.display = 'none';
+    if (hasPull) {
+      document.getElementById('git-badge-pull').textContent = '\u2193';
+      btnUpdate.style.display = 'inline-flex';
+    } else {
+      btnUpdate.style.display = 'none';
+    }
+    if (hasPush) {
+      document.getElementById('git-badge-push').textContent = '\u2191';
+      btnPublish.style.display = 'inline-flex';
+    } else {
+      btnPublish.style.display = 'none';
+    }
+  }
+}
+
 async function pollGitStatus() {
   try {
     const res = await fetch('/api/git-status');
     const s = await res.json();
-    _gitStatus = s;
-    const hasPush = s.ahead > 0 || s.uncommitted;
-    const hasPull = s.behind > 0;
-    const btnUpdate  = document.getElementById('btn-git-update');
-    const btnPublish = document.getElementById('btn-git-publish');
-    const btnSync    = document.getElementById('btn-git-sync');
-    if (hasPull && hasPush) {
-      // Both directions — show single Sync button
-      btnUpdate.style.display = 'none';
-      btnPublish.style.display = 'none';
-      document.getElementById('git-badge-sync').textContent = '\u2193\u2191';
-      btnSync.style.display = 'inline-flex';
-    } else {
-      btnSync.style.display = 'none';
-      if (hasPull) {
-        document.getElementById('git-badge-pull').textContent = '\u2193';
-        btnUpdate.style.display = 'inline-flex';
-      } else {
-        btnUpdate.style.display = 'none';
-      }
-      if (hasPush) {
-        document.getElementById('git-badge-push').textContent = '\u2191';
-        btnPublish.style.display = 'inline-flex';
-      } else {
-        btnPublish.style.display = 'none';
-      }
-    }
+    _applyGitStatus(s);
   } catch(e) {}
 }
 
@@ -114,7 +118,13 @@ async function executeGitAction(action, btnId, btnLabel) {
       + r.messages.map(m => '<li>' + escHtml(m) + '</li>').join('') + '</ul>';
     showGitSyncModal(r.ok ? btnLabel + ' \u2713' : 'Problem', body,
       [{label:'OK', primary:true, onclick: closeGitSyncModal}]);
-    await pollGitStatus();
+    // Use the git status returned directly from the sync response.
+    // This avoids a separate poll that could race with background refreshes.
+    if (r.git_status) {
+      _applyGitStatus(r.git_status);
+    } else {
+      await pollGitStatus();
+    }
   } catch(e) {
     showGitSyncModal('Error', '<p style="color:var(--result-err)">Could not complete. Try again.</p>',
       [{label:'OK', onclick: closeGitSyncModal}]);

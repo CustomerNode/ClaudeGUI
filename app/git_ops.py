@@ -5,6 +5,7 @@ Git operations — background fetch, status cache, and sync logic.
 import subprocess
 import sys
 import threading
+import time
 
 from .config import _VIBENODE_DIR
 
@@ -17,6 +18,7 @@ _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 _git_cache = {"ahead": 0, "behind": 0, "uncommitted": False, "has_git": False, "ready": False}
 _git_fetch_lock = threading.Lock()
+_sync_cooldown_until = 0.0  # epoch; bg refresh is suppressed until this time
 
 
 # ---------------------------------------------------------------------------
@@ -62,10 +64,15 @@ def start_bg_fetch():
 
 
 def refresh_if_idle():
-    """Trigger a background refresh if no fetch is currently in progress."""
+    """Trigger a background refresh if no fetch is currently in progress
+    and we're not in the post-sync cooldown window."""
+    if time.time() < _sync_cooldown_until:
+        return  # a sync just finished; trust its cache for a few seconds
     if not _git_fetch_lock.locked():
         def _refresh():
             with _git_fetch_lock:
+                if time.time() < _sync_cooldown_until:
+                    return  # re-check inside the lock
                 _bg_git_fetch()
         threading.Thread(target=_refresh, daemon=True).start()
 
@@ -138,21 +145,26 @@ def do_git_sync(action: str) -> dict:
         else:
             messages.append("Your VibeNode changes have been pushed to remote.")
 
-    # Update git cache immediately so the next pollGitStatus gets fresh data
-    try:
-        r = subprocess.run(
-            ["git", "-C", str(proj), "rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
-            capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW)
-        a = b = 0
-        if r.returncode == 0:
-            parts = r.stdout.strip().split()
-            if len(parts) == 2:
-                a, b = int(parts[0]), int(parts[1])
-        d = subprocess.run(["git", "-C", str(proj), "status", "--porcelain"],
-                           capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW)
-        _git_cache.update({"has_git": True, "ahead": a, "behind": b,
-                           "uncommitted": bool(d.stdout.strip()), "ready": True})
-    except Exception:
-        pass
+    # Update git cache immediately so the next pollGitStatus gets fresh data.
+    # Acquire the fetch lock so a concurrent _bg_git_fetch can't overwrite us,
+    # and set a cooldown so refresh_if_idle() won't start a new one right away.
+    global _sync_cooldown_until
+    with _git_fetch_lock:
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(proj), "rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+                capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW)
+            a = b = 0
+            if r.returncode == 0:
+                parts = r.stdout.strip().split()
+                if len(parts) == 2:
+                    a, b = int(parts[0]), int(parts[1])
+            d = subprocess.run(["git", "-C", str(proj), "status", "--porcelain"],
+                               capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW)
+            _git_cache.update({"has_git": True, "ahead": a, "behind": b,
+                               "uncommitted": bool(d.stdout.strip()), "ready": True})
+        except Exception:
+            pass
+        _sync_cooldown_until = time.time() + 10  # suppress bg refresh for 10s
 
     return {"ok": ok, "messages": messages}

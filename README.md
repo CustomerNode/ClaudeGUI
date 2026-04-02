@@ -6,15 +6,13 @@ A local development environment for Claude Code — interactive session manageme
 
 ## Why we built this
 
-Four problems:
+Three problems:
 
 1. **Session sprawl.** Running 8+ Claude Code sessions across terminal windows gets unwieldy fast — especially permission management. Even a three-monitor setup runs out of space. We needed a way to graphically manage sessions without sprawling terminals everywhere.
 
 2. **Velocity without direction.** Claude Code is powerful, but we noticed our roadmap wasn't actually moving faster. Sessions would drift, work would get duplicated, and there was no connection between what Claude was doing and what we needed delivered. We needed sessions tightly coupled to a task plan so every session is working toward a specific deliverable.
 
-3. **Skills vs. agents confusion.** Claude Code has skills and agents — two nearly identical concepts (markdown files with instructions) that differ only in invocation method. For most people, the distinction is confusing and the CLI-only management makes them hard to discover, organize, or use consistently. We needed a visual library that treats them as one thing — knowledge assets — so you can build, browse, and invoke them without caring whether they run inline or as a subprocess.
-
-4. **Knowledge assets are invisible.** Even once you understand skills and agents, they live as scattered markdown files across `.claude/` directories with no discoverability. There's no way to browse what's available, see how they're organized, or invoke them without memorizing names. Integrating them into a GUI with a department hierarchy, search, and one-click invocation makes the whole system more approachable — and standardizes knowledge assets across both skill and sub-agent use cases.
+3. **Scattered, invisible knowledge assets.** Claude Code has skills and agents — two nearly identical concepts (markdown files with instructions) that differ only in invocation method. The distinction is confusing, and they live as scattered files across `.claude/` directories with no discoverability. There's no way to browse what's available, see how they're organized, or invoke them without memorizing names. We needed a visual library that treats them as one thing, organizes them into departments, and lets you build, browse, import, and invoke them without caring whether they run inline or as a subprocess.
 
 VibeNode is the result: a development system where the human is responsible for planning, oversight, and validating outputs, while Claude handles execution — scoped to tasks, not left to wander. The session manager makes pure vibe coding better on its own, but the workflow board is where it becomes vibe *engineering* — structured planning and validation with a human in the loop.
 
@@ -78,15 +76,15 @@ Open a session from the board and the full breadcrumb path stays visible, keepin
 
 Claude Code has two similar concepts — skills and agents — that are really the same thing: a markdown file with instructions. The only difference is how they're invoked: skills inject into your current session, agents spawn a subprocess. Multiple voices in the community have been [arguing for convergence](https://vivekhaldar.com/articles/claude-code-subagents-commands-skills-converging/) — and [Vercel's research](https://vercel.com/blog/agents-md-outperforms-skills-in-our-agent-evals) showed that both are ultimately context delivery mechanisms that differ only in push vs. pull.
 
-Workforce is where you manage them — as a single, unified library.
+**We're opinionated about this.** VibeNode doesn't ask you to think in terms of skills vs. agents. We call them **departments** — named collections of knowledge assets organized by function. Drop any `.md` file into a department — a one-line persona, a Claude Code agent definition, a gstack review pipeline — and VibeNode handles both invocation paths transparently. You click a department to browse it, click an asset to invoke it, and never choose between "run as skill" or "spawn as agent." We're not claiming this is the objectively correct abstraction. It's how we think about it, and it works.
 
-![Workforce agent library organized by department](docs/screenshots/workforce.png)
+![Workforce organized by department](docs/screenshots/workforce.png)
 
-- **One library for everything** — Build your own role definitions, import full execution pipelines like [gstack](https://github.com/garrytan/gstack), organize everything into a department hierarchy, and VibeNode handles the rest. From a one-line persona to a 1000-line review pipeline, it's all the same library.
-- **Dual invocation** — Every asset can be used two ways from the same definition. As an **agent**: the full catalog is injected into every session's system prompt so Claude can spawn specialists autonomously. As a **skill**: you invoke on demand via the UI or slash commands, and the asset's instructions are injected into your current session.
-- **Three complexity tiers** — Simple role prompts (one paragraph persona), structured skills (step-by-step workflows with tool permissions), and full pipelines (multi-phase execution with shell blocks, specialist dispatch, and external dependencies). All three tiers live in the same library and use the same invocation paths.
-- **Auto-discovery** — VibeNode scans your `.claude/agents/`, `.claude/skills/` (including installed skill packs like gstack), and its own workforce directories. Everything appears in one unified view with source badges and tier indicators. Install a skill pack and it shows up in your Workforce automatically.
-- **Hierarchical organization** — Organize assets into departments (Engineering, QA, Product, Security, etc.). The same hierarchy appears everywhere — in the Workforce view, in the mid-session picker, and in the new session quick-pick. One tree, one source of truth.
+- **Departments, not file types** — The organizing unit is the department (Engineering, QA, Security, gstack, etc.), not whether something is a "skill" or an "agent." Import a skill file, an agent file, or a full pipeline into any department. VibeNode treats them all the same.
+- **Dual invocation** — Every asset can be used two ways from the same definition. As an **agent**: the full catalog is injected into every session's system prompt so Claude can spawn specialists autonomously. As a **skill**: you invoke on demand via the UI or slash commands, and the asset's instructions are injected into your current session. You don't pick — VibeNode decides based on context.
+- **Import anything** — Drop in Claude Code agent files (from `.claude/agents/`), skill packs (from `.claude/skills/`), or full execution pipelines like [gstack](https://github.com/garrytan/gstack). They all land in departments. gstack's 23+ skills become a "gstack" department with sub-departments for review, QA, security, shipping, and more.
+- **Auto-discovery** — VibeNode scans your `.claude/agents/`, `.claude/skills/` (including installed skill packs), and its own workforce directories on startup. Everything appears in one unified view with source badges and tier indicators. Install a skill pack and it shows up in your departments automatically.
+- **Three complexity tiers** — Simple role prompts (one paragraph persona), structured skills (step-by-step workflows with tool permissions), and full pipelines (multi-phase execution with shell blocks, specialist dispatch, and external dependencies). All three tiers live in the same department tree and use the same invocation paths.
 - **Portable .md format** — Every asset is a markdown file with optional YAML frontmatter. Download them, share them, upload them, edit them in any text editor. The file format is a superset that accommodates everything from Claude Code's native agent format to gstack's SKILL.md pipeline format.
 
 ## Requirements

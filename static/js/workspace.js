@@ -180,6 +180,11 @@ function _renderHierarchicalWorkspace(mainBody, sessions, tree) {
     const _countSubs = (fids) => { for (const fid of fids) { const f = tree.folders[typeof fid === 'string' ? fid : fid.id]; if (f) { totalSubDepts += (f.children || []).length; _countSubs(f.children || []); } } };
     _countSubs(tree.rootChildren || []);
     html += '<div class="wf-cc-subtitle">' + totalDepts + ' department' + (totalDepts !== 1 ? 's' : '') + (totalSubDepts ? ' &middot; ' + totalSubDepts + ' sub-department' + (totalSubDepts !== 1 ? 's' : '') : '') + ' &middot; ' + totalSessions + ' session' + (totalSessions !== 1 ? 's' : '') + '</div>';
+    html += '<div class="wf-cc-opinionated">'
+      + '<span class="wf-cc-opinionated-icon" title="VibeNode is opinionated about how knowledge assets are organized.">&#9432;</span> '
+      + 'VibeNode organizes your knowledge assets into <strong>departments</strong> &mdash; not skills, not agents. '
+      + 'Drop any .md file into a department and invoke it as either. We handle both.'
+      + '</div>';
     html += '</div>';
 
     // Stat cards with icons

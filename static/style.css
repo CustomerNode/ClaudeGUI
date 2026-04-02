@@ -3776,6 +3776,22 @@ mark.find-match.current { background: var(--accent); color:#fff; }
   margin-top: 4px;
   letter-spacing: 0.02em;
 }
+.wf-cc-opinionated {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: rgba(124, 124, 255, 0.06);
+  border-left: 2px solid rgba(124, 124, 255, 0.3);
+  border-radius: 0 6px 6px 0;
+  line-height: 1.5;
+}
+.wf-cc-opinionated strong { color: var(--text-primary); }
+.wf-cc-opinionated-icon {
+  cursor: help;
+  opacity: 0.6;
+  font-style: normal;
+}
 .wf-cc-stats {
   display: flex;
   gap: 10px;
