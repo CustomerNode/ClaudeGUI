@@ -146,6 +146,25 @@ def _parse_jsonl_entries(app, session_id: str, since: int = 0) -> list:
 def register_ws_events(socketio, app):
     """Register all WebSocket event handlers with the SocketIO instance."""
 
+    def _sync_project_from_client(data):
+        """If the client sent a project name, sync the server's active project.
+
+        The server's _active_project is a Python global that resets to ""
+        on every web server restart and auto-detects as VibeNode (the server's
+        own repo).  The client persists its active project in localStorage,
+        so it's the authoritative source after a restart.
+        """
+        if not isinstance(data, dict):
+            return
+        project = (data.get("project") or "").strip()
+        if project:
+            from ..config import set_active_project, get_active_project, _CLAUDE_PROJECTS
+            if get_active_project() != project:
+                # Validate the project directory exists before accepting
+                if (_CLAUDE_PROJECTS / project).is_dir():
+                    set_active_project(project)
+                    logger.info("Synced active project from client: %s", project)
+
     def _filter_sessions_for_project(sessions: list) -> list:
         """Return only sessions whose cwd matches the active project."""
         from ..config import cwd_matches_active_project
@@ -174,8 +193,17 @@ def register_ws_events(socketio, app):
         logger.debug("WebSocket client disconnected")
 
     @socketio.on('request_state_snapshot')
-    def handle_request_state_snapshot():
-        """Re-send full state snapshot on demand (e.g. after workspace switch)."""
+    def handle_request_state_snapshot(data=None):
+        """Re-send full state snapshot on demand (e.g. after workspace switch).
+
+        Accepts optional ``{project: "encoded-name"}`` so the client can
+        sync the server's active project before the snapshot is built.
+        This covers the case where the web server restarted (resetting
+        _active_project to VibeNode) but the client still has the real
+        project in localStorage.
+        """
+        if data:
+            _sync_project_from_client(data)
         sm = app.session_manager
         if hasattr(sm, "is_connected") and not sm.is_connected:
             emit("state_snapshot", {"sessions": [], "queues": {}, "aliases": {}})

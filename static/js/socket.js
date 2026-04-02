@@ -65,12 +65,15 @@ socket.on('connect', () => {
     if (typeof loadSessions === 'function') {
         loadSessions();
     }
-    // Request full state snapshot to resync indicators
-    socket.emit('request_state_snapshot');
+    // Request full state snapshot to resync indicators.
+    // Include activeProject so the server syncs its _active_project
+    // (which resets to VibeNode on web restart) before filtering.
+    const _ap = localStorage.getItem('activeProject') || '';
+    socket.emit('request_state_snapshot', {project: _ap});
     // Retry after 3s in case the first snapshot was silently dropped
     // (e.g. DaemonClient not yet reconnected when server just restarted)
     setTimeout(() => {
-        if (socket.connected) socket.emit('request_state_snapshot');
+        if (socket.connected) socket.emit('request_state_snapshot', {project: _ap});
     }, 3000);
 });
 
@@ -324,6 +327,15 @@ socket.on('state_snapshot', (data) => {
 
     // Re-render views
     filterSessions();
+
+    // Re-apply row state CSS classes AFTER filterSessions() re-creates the DOM.
+    // The earlier class update (lines above) targeted rows that filterSessions()
+    // just destroyed and rebuilt, so those classes were lost.
+    for (const id in sessionKinds) {
+        const kind = sessionKinds[id];
+        const state = kind === 'question' ? 'waiting' : kind;
+        _updateRowState(id, state);
+    }
 
     // Session restoration is handled by loadSessions() + /api/resolve-session.
     // Do NOT call openInGUI here — it races with loadSessions and causes

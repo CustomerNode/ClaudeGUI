@@ -130,7 +130,11 @@ function pokeWaiting() {
 }
 
 // ---- Startup ----
-pollWaiting(); // self-rescheduling every 2s via finally block
+// pollWaiting() — disabled: /api/waiting was removed when we moved to the
+// SDK/WebSocket approach.  State tracking is now handled by session_state
+// and state_snapshot WebSocket events.  The poll was silently 404-ing every
+// 2s and all its side effects (auto-naming, filterSessions, updateLiveInputBar)
+// were never executing.
 loadProjects();
 pollGitStatus();
 setInterval(pollGitStatus, 60000);

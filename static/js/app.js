@@ -96,7 +96,34 @@ async function setProject(encoded, reload = true) {
   if (prevProject && activeId) {
     localStorage.setItem('projectSession_' + prevProject, activeId);
   }
-  if (activeId) { _skipChatHistory = true; deselectSession(); _skipChatHistory = false; }
+  // Tear down any active session/live-panel from the old project.
+  // Use _skipChatHistory so deselectSession() doesn't push a history entry,
+  // but then explicitly scrub the ?chat param so loadSessions() doesn't try
+  // to restore a session ID that belongs to the old project.
+  _skipChatHistory = true;
+  if (activeId) {
+    deselectSession();
+  } else if (liveSessionId) {
+    // Live panel open without activeId (e.g. brand-new session) — tear it down
+    _autoSendPendingInput();
+    stopLivePanel();
+  }
+  _skipChatHistory = false;
+  // Always clear stale session state from URL + localStorage
+  activeId = null;
+  liveSessionId = null;
+  localStorage.removeItem('activeSessionId');
+  const _cleanUrl = new URL(window.location);
+  if (_cleanUrl.searchParams.has('chat')) {
+    _cleanUrl.searchParams.delete('chat');
+    history.replaceState({ folder: null, chat: null }, '', _cleanUrl);
+  }
+  // Reset main body to dashboard so the old chat isn't visible while new
+  // project loads.
+  const _mb = document.getElementById('main-body');
+  if (_mb) _mb.innerHTML = _buildDashboard();
+  setToolbarSession(null, 'No session selected', true, '');
+
   const p = _allProjects.find(x => x.encoded === encoded);
   _updateProjectLabel(p);
   localStorage.setItem('activeProject', encoded);
@@ -123,7 +150,7 @@ async function setProject(encoded, reload = true) {
   _agentCatalogPromise = null;
   // Re-sync live session states from daemon (working_since, sessionKinds, etc.)
   if (typeof socket !== 'undefined' && socket.connected) {
-    socket.emit('request_state_snapshot');
+    socket.emit('request_state_snapshot', {project: encoded});
   }
   if (reload) loadSessions();
 }
@@ -1116,6 +1143,19 @@ async function loadSessions() {
   document.getElementById('search').placeholder = 'Search ' + allSessions.length + ' sessions\u2026';
   setViewMode(viewMode);
   // Template selector is handled by initFolderTree() — no duplicate call here
+
+  // Re-apply session state CSS classes to the freshly rendered DOM rows.
+  // setViewMode() just rebuilt the sidebar/grid from allSessions, but the
+  // state_snapshot may have already populated sessionKinds before this
+  // render.  Without this, sessions show as "sleeping" until the next
+  // individual session_state event arrives.
+  if (typeof _updateRowState === 'function') {
+    for (const id in sessionKinds) {
+      const kind = sessionKinds[id];
+      const state = kind === 'question' ? 'waiting' : kind;
+      _updateRowState(id, state);
+    }
+  }
 
   // Homepage: no session restoration needed, homepage is fully rendered by setViewMode
   if (viewMode === 'homepage') return;
