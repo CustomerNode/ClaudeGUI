@@ -760,6 +760,113 @@ header h1 { font-family: 'Space Grotesk', sans-serif; font-size: 21px; font-weig
   opacity: 0.6;
 }
 
+/* ===== Homepage ===== */
+#homepage-container {
+  flex: 1;
+  display: flex;
+  overflow: auto;
+  background: radial-gradient(ellipse at 20% 0%, rgba(124, 124, 255, 0.04) 0%, transparent 50%),
+              radial-gradient(ellipse at 80% 100%, rgba(154, 106, 255, 0.03) 0%, transparent 50%);
+}
+[data-theme="light"] #homepage-container {
+  background: radial-gradient(ellipse at 20% 0%, rgba(100, 100, 220, 0.06) 0%, transparent 50%),
+              radial-gradient(ellipse at 80% 100%, rgba(140, 90, 220, 0.04) 0%, transparent 50%);
+}
+.homepage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  width: 100%;
+}
+.homepage-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  width: 100%;
+  max-width: 1200px;
+}
+.homepage-card {
+  position: relative;
+  background: linear-gradient(160deg, var(--bg-card) 0%, var(--bg) 100%);
+  border: 1px solid var(--border-light);
+  border-radius: 20px;
+  padding: 44px 36px 36px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.25s, transform 0.2s, box-shadow 0.25s;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.homepage-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent);
+}
+.homepage-card:hover { transform: translateY(-4px); }
+.hp-sessions:hover { border-color: var(--accent); box-shadow: 0 12px 40px rgba(88,166,255,0.12), 0 0 0 1px rgba(88,166,255,0.15); }
+.hp-workflow:hover { border-color: #d29922; box-shadow: 0 12px 40px rgba(210,153,34,0.12), 0 0 0 1px rgba(210,153,34,0.15); }
+.hp-workforce:hover { border-color: #bc8cff; box-shadow: 0 12px 40px rgba(188,140,255,0.12), 0 0 0 1px rgba(188,140,255,0.15); }
+.hp-icon-wrap {
+  width: 52px; height: 52px; border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  margin-bottom: 28px;
+}
+.hp-sessions .hp-icon-wrap { background: rgba(88,166,255,0.1); color: var(--accent); }
+.hp-workflow .hp-icon-wrap { background: rgba(210,153,34,0.1); color: #d29922; }
+.hp-workforce .hp-icon-wrap { background: rgba(188,140,255,0.1); color: #bc8cff; }
+.homepage-card h3 {
+  font-size: 24px; font-weight: 700; color: var(--text-heading);
+  margin-bottom: 10px; letter-spacing: -0.3px;
+}
+.hp-desc {
+  font-size: 14px; color: var(--text-muted); line-height: 1.65;
+  margin-bottom: 28px; flex: 1;
+}
+.hp-viz { margin-bottom: 20px; width: 100%; }
+.hp-bar {
+  height: 6px; display: flex; gap: 3px;
+  border-radius: 4px; overflow: hidden; width: 100%;
+}
+.hp-columns {
+  display: flex; align-items: flex-end; gap: 6px; height: 48px;
+}
+.hp-col { flex: 1; border-radius: 4px 4px 0 0; }
+.hp-dots { display: flex; flex-wrap: wrap; gap: 5px; }
+.hp-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  animation: hp-dot-in 0.4s ease both;
+}
+@keyframes hp-dot-in {
+  from { opacity: 0; transform: scale(0); }
+  to { opacity: 1; transform: scale(1); }
+}
+.hp-stat {
+  font-size: 12px; color: var(--text-faint);
+  margin-bottom: 20px; letter-spacing: 0.2px;
+}
+.hp-cta {
+  font-size: 13px; font-weight: 600;
+  display: flex; align-items: center; gap: 6px;
+  transition: gap 0.2s;
+}
+.hp-sessions .hp-cta { color: var(--accent); }
+.hp-workflow .hp-cta { color: #d29922; }
+.hp-workforce .hp-cta { color: #bc8cff; }
+.homepage-card:hover .hp-cta { gap: 10px; }
+/* Logo hover */
+.app-logo { transition: transform 0.15s; }
+.app-logo:hover { transform: scale(1.12); }
+header h1 { transition: opacity 0.15s; }
+header h1:hover { opacity: 0.7; }
+@media (max-width: 700px) {
+  .homepage-cards { grid-template-columns: 1fr; max-width: 400px; }
+}
+
 /* ===== Session table ===== */
 .session-list {
   flex: 1;
@@ -852,6 +959,8 @@ header h1 { font-family: 'Space Grotesk', sans-serif; font-size: 21px; font-weig
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  background: radial-gradient(ellipse at 20% 0%, rgba(124,124,255,0.04) 0%, transparent 50%),
+              radial-gradient(ellipse at 80% 100%, rgba(154,106,255,0.03) 0%, transparent 50%);
 }
 
 .main-toolbar {
@@ -1718,7 +1827,7 @@ mark.find-match.current { background: var(--accent); color:#fff; }
 /* ===== Live terminal panel ===== */
 .live-panel {
   display:flex; flex-direction:column; flex:1; overflow:hidden;
-  background: var(--bg-panel); min-height:0;
+  background: transparent; min-height:0;
 }
 .live-log {
   flex:1; overflow-y:auto; padding:10px 14px;
@@ -4211,6 +4320,12 @@ mark.find-match.current { background: var(--accent); color:#fff; }
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  background: radial-gradient(ellipse at 20% 0%, rgba(124, 124, 255, 0.04) 0%, transparent 50%),
+              radial-gradient(ellipse at 80% 100%, rgba(154, 106, 255, 0.03) 0%, transparent 50%);
+}
+[data-theme="light"] #kanban-board {
+  background: radial-gradient(ellipse at 20% 0%, rgba(100, 100, 220, 0.06) 0%, transparent 50%),
+              radial-gradient(ellipse at 80% 100%, rgba(140, 90, 220, 0.04) 0%, transparent 50%);
 }
 .kanban-board {
   display: flex;
@@ -7025,17 +7140,90 @@ body:has(.kanban-planner-panel.open:not(.minimized)) #live-input-bar { display: 
   background: var(--bg-hover);
 }
 
-/* Highlight animation for newly created tasks */
-@keyframes kanban-highlight-pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(var(--accent-rgb, 130,80,223), 0.5); }
-  50%  { box-shadow: 0 0 0 6px rgba(var(--accent-rgb, 130,80,223), 0.15); }
-  100% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb, 130,80,223), 0); }
-}
+/* Highlight animation for newly created tasks — sparkle particle effect */
 .kanban-task-highlight {
-  animation: kanban-highlight-pulse 0.8s ease 3;
+  position: relative;
+  overflow: visible;
+  animation: kanban-highlight-entrance 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
   outline: 2px solid var(--purple);
   outline-offset: -1px;
   border-radius: 8px;
+}
+@keyframes kanban-highlight-entrance {
+  0%   { opacity: 0; transform: scale(0.92) translateY(8px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+.kanban-task-highlight::before,
+.kanban-task-highlight::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  border-radius: 50%;
+  animation: kanban-sparkle-burst 1.8s ease-out forwards;
+}
+.kanban-task-highlight::before {
+  width: 6px; height: 6px;
+  background: var(--purple);
+  top: -4px; right: 12px;
+  box-shadow:
+    -18px 6px 0 0 var(--purple),
+    8px 14px 0 -1px rgba(var(--accent-rgb, 130,80,223), 0.7),
+    -30px 20px 0 -1px rgba(var(--accent-rgb, 130,80,223), 0.5),
+    20px -2px 0 0 rgba(var(--accent-rgb, 130,80,223), 0.6),
+    -8px -8px 0 -1px var(--purple);
+}
+.kanban-task-highlight::after {
+  width: 4px; height: 4px;
+  background: rgba(var(--accent-rgb, 130,80,223), 0.8);
+  bottom: -3px; left: 20px;
+  box-shadow:
+    16px -8px 0 0 var(--purple),
+    -12px -14px 0 -1px rgba(var(--accent-rgb, 130,80,223), 0.6),
+    30px 4px 0 -1px rgba(var(--accent-rgb, 130,80,223), 0.4),
+    -24px 2px 0 0 rgba(var(--accent-rgb, 130,80,223), 0.5);
+}
+@keyframes kanban-sparkle-burst {
+  0%   { opacity: 1; transform: scale(0.5); }
+  30%  { opacity: 1; transform: scale(1.2); }
+  100% { opacity: 0; transform: scale(2.5) translateY(-10px); }
+}
+/* Shimmer gradient sweep across the card */
+.kanban-task-highlight .kanban-card-header::after {
+  content: '';
+  position: absolute;
+  top: 0; left: -100%; width: 60%; height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(var(--accent-rgb, 130,80,223), 0.12), transparent);
+  animation: kanban-shimmer 1.2s ease 0.3s forwards;
+  pointer-events: none;
+}
+@keyframes kanban-shimmer {
+  0%   { left: -60%; }
+  100% { left: 120%; }
+}
+/* AI badge — small pill, not an emoji */
+.kanban-ai-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--purple);
+  background: rgba(var(--accent-rgb, 130,80,223), 0.12);
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-right: 4px;
+  animation: kanban-badge-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards,
+             kanban-badge-fade 4s ease 2s forwards;
+}
+@keyframes kanban-badge-pop {
+  0%   { opacity: 0; transform: scale(0.3); }
+  100% { opacity: 1; transform: scale(1); }
+}
+@keyframes kanban-badge-fade {
+  0%   { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 /* Minimal AI plan button below subtask list (right column) */

@@ -17,6 +17,7 @@ from ..config import (
     _remap_name,
     _decode_project,
     get_active_project,
+    cwd_matches_active_project,
     _summary_cache,
     _mark_deleted,
     _mark_deleted_bulk,
@@ -70,6 +71,10 @@ def api_sessions():
         if state.get("session_type") in ("planner", "title"):
             continue
         if sid.startswith("_"):
+            continue
+        # ── Project isolation: skip sessions belonging to other projects ──
+        state_cwd = state.get("cwd", "")
+        if state_cwd and not cwd_matches_active_project(state_cwd):
             continue
         if sid and sid not in existing_ids and state.get("state") != "stopped":
             saved_name = names.get(sid, "")

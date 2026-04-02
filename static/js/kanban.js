@@ -523,7 +523,8 @@ function renderTaskCard(task, depth) {
 
   const depthStyle = depth > 0 ? ` style="margin-left:${depth * 12}px;"` : '';
 
-  return `<div class="kanban-card" data-task-id="${task.id}" data-status="${task.status}"
+  const _isNew = window._kanbanHighlightIds && window._kanbanHighlightIds.has(task.id);
+  return `<div class="kanban-card${_isNew ? ' kanban-task-highlight' : ''}" data-task-id="${task.id}" data-status="${task.status}"
                draggable="true"
                onclick="navigateToTask('${task.id}')"
                oncontextmenu="event.preventDefault();event.stopPropagation();showCardContextMenu('${task.id}', event)"
@@ -739,7 +740,8 @@ const _PLANNER_SYSTEM = [
   'NEVER refuse. NEVER explain. NEVER output anything except the JSON object.',
   'Format: {"tasks":[{"title":"...","description":"...","subtasks":[]}]}',
   'To edit existing tasks include "id": {"tasks":[{"id":"existing-id","title":"New Title"}]}. Tasks without "id" are new.',
-  'Rules: concrete actionable tasks, 2-4 nesting levels, descriptions only when title is not enough.',
+  'Prefer breaking work into subtasks over writing long descriptions. Descriptions should be brief (1-2 sentences max). Use subtasks to express detail.',
+  'Rules: concrete actionable tasks, 2-4 nesting levels.',
 ].join(' ');
 let _plannerTimeout = null;
 
@@ -818,6 +820,9 @@ function _attachPlannerListeners() {
     if (data.session_id !== _plannerSessionId) return;
     if (data.state === 'idle' || data.state === 'stopped') {
       _stopPlannerTimer();
+      // Skip if we already have a valid proposal (daemon sends deferred
+      // idle re-emit after 3s which would overwrite the result with empty text)
+      if (_plannerProposal) return;
       _showPlanResult(_plannerAccumText);
       _plannerAccumText = '';
     }
@@ -926,11 +931,16 @@ function _openPlannerSlideout(prompt) {
   _earlyParseAttempted = false;
   runningIds.add(newId);
   sessionKinds[newId] = 'working';
+  // For scoped plans (subtree editing), add explicit instruction to NOT include the parent
+  let sysPrompt = _PLANNER_SYSTEM;
+  if (_plannerScopeParentId) {
+    sysPrompt += ' IMPORTANT: You are editing an EXISTING task and its subtree. Return EXACTLY ONE top-level task in your "tasks" array — this is the parent task being edited. Include its updated title, description, and subtasks. The parent will be updated in place and its old subtree will be replaced.';
+  }
   socket.emit('start_session', {
     session_id: newId,
     prompt: prompt,
     cwd: typeof _currentProjectDir === 'function' ? _currentProjectDir() : '',
-    system_prompt: _PLANNER_SYSTEM,
+    system_prompt: sysPrompt,
     max_turns: 1,
     session_type: 'planner',
   });
@@ -940,13 +950,24 @@ function _openPlannerSlideout(prompt) {
 function _showPlanResult(rawText) {
   const body = document.getElementById('planner-body');
   if (!body) return;
-
+  // If the plan was already accepted, don't overwrite the UI with stale results
+  if (!_plannerSessionId && !rawText) return;
+  console.log('[planner] rawText (' + rawText.length + '):', rawText.slice(0, 500));
   let parsed = null;
+  // Try 1: ```json ... ```
   const m1 = rawText.match(/```json\s*([\s\S]*?)```/);
   if (m1) { try { parsed = JSON.parse(m1[1]); } catch (_) {} }
+  // Try 2: raw JSON with "tasks" array
   if (!parsed) {
     const m2 = rawText.match(/\{[\s\S]*"tasks"\s*:\s*\[[\s\S]*\]\s*\}/);
     if (m2) { try { parsed = JSON.parse(m2[0]); } catch (_) {} }
+  }
+  // Try 3: whole text as JSON
+  if (!parsed) { try { parsed = JSON.parse(rawText.trim()); } catch (_) {} }
+  // Try 4: first { to last }
+  if (!parsed) {
+    const s = rawText.indexOf('{'), e = rawText.lastIndexOf('}');
+    if (s >= 0 && e > s) { try { parsed = JSON.parse(rawText.slice(s, e + 1)); } catch (_) {} }
   }
 
   if (parsed && parsed.tasks && parsed.tasks.length > 0) {
@@ -1015,7 +1036,7 @@ function _renderPlanTree(tasks, depth) {
         <span class="planner-node-title">${escHtml(t.title)}</span>
         ${hasSubs ? '<span class="planner-sub-count">' + totalSubs + '</span>' : ''}
       </div>
-      ${t.description ? '<div class="planner-node-desc">' + escHtml(t.description) + '</div>' : ''}
+      ${t.description ? '<div class="planner-node-desc">' + (typeof mdParse === 'function' ? mdParse(t.description) : escHtml(t.description)) + '</div>' : ''}
       ${hasSubs ? _renderPlanTree(t.subtasks, depth + 1) : ''}
     </div>`;
   }
@@ -1046,19 +1067,25 @@ async function _acceptPlan() {
     const createdIds = data.created_ids || [];
     if (typeof showToast === 'function') showToast('Created ' + count + ' task' + (count !== 1 ? 's' : ''));
     _plannerStashed = null;
+    const _scopedParent = _plannerScopeParentId;  // save before clearing
     _plannerScopeParentId = null;
+    // Detach listeners BEFORE closing so late idle events don't
+    // trigger _showPlanResult('') and flash the parse error.
+    _detachPlannerListeners();
+    _plannerProposal = null;
+    _plannerSessionId = null;
     _closePlannerSlideout();
-    // Re-render board then highlight new tasks
+    // Store IDs globally so renderKanbanBoard can highlight them
+    window._kanbanHighlightIds = new Set(createdIds);
+    // Re-render: if scoped plan, reopen the parent drill-down to show new subtasks
     setTimeout(async () => {
-      if (typeof initKanban === 'function') await initKanban(true);
-      // Brief highlight on newly created root tasks
-      for (const id of createdIds) {
-        const el = document.querySelector('[data-task-id="' + id + '"]');
-        if (el) {
-          el.classList.add('kanban-task-highlight');
-          setTimeout(() => el.classList.remove('kanban-task-highlight'), 2500);
-        }
+      if (_scopedParent && typeof renderTaskDetail === 'function') {
+        await renderTaskDetail(_scopedParent);
+      } else {
+        if (typeof initKanban === 'function') await initKanban(true);
       }
+      // Clear highlight set after animation completes
+      setTimeout(() => { window._kanbanHighlightIds = null; }, 4000);
     }, 350);
   } catch (e) {
     if (typeof showToast === 'function') showToast('Failed: ' + e.message, true);
@@ -1119,9 +1146,11 @@ function _doOpenScopedPlanner(parentId) {
   fetch('/api/kanban/tasks/' + parentId).then(r => r.json()).then(data => {
     const title = data.title || 'this task';
     const desc = data.description || '';
-    _openPlannerPanel('Break down "' + title + '" into subtasks' + (desc ? '.\nContext: ' + desc : ''));
+    // Tell the user (and eventually the AI) that this is a subtree edit.
+    // The prefill is just context for the user to edit before sending.
+    _openPlannerPanel('Redesign the subtree for: "' + title + '"' + (desc ? '\nContext: ' + desc : ''));
   }).catch(() => {
-    _openPlannerPanel('Break down this task into subtasks');
+    _openPlannerPanel('Redesign this task and its subtree');
   });
 }
 
@@ -1690,7 +1719,12 @@ async function renderTaskDetail(taskId) {
 
     // Description (Quill RTE — toolbar hidden until focus)
     html += '<div class="kanban-drill-desc-wrap kanban-drill-desc-collapsed">';
-    html += `<div id="kanban-drill-desc-editor" class="kanban-drill-desc">${task.description || ''}</div>`;
+    // If description looks like Markdown (has bullet points, bold, etc.), render it as HTML.
+    // If it's already HTML (from Quill), pass through as-is.
+    const _rawDesc = task.description || '';
+    const _descIsHtml = _rawDesc.includes('<p>') || _rawDesc.includes('<ul>') || _rawDesc.includes('<li>') || _rawDesc.includes('<strong>');
+    const _descHtml = _descIsHtml ? _rawDesc : (typeof mdParse === 'function' ? mdParse(_rawDesc) : escHtml(_rawDesc));
+    html += `<div id="kanban-drill-desc-editor" class="kanban-drill-desc">${_descHtml}</div>`;
     html += '</div>';
 
     // Tags (with tag icon)
@@ -2505,8 +2539,8 @@ async function openSessionSpawner(taskId) {
     '<div class="live-panel" id="live-panel">' +
     '<div class="conversation live-log" id="live-log">' +
     '<div class="empty-state" style="padding:60px 0;text-align:center;">' +
-    '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-faint)" stroke-width="1.5" stroke-linecap="round" style="margin-bottom:12px;opacity:0.4;"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' +
-    '<div style="color:var(--text-faint);font-size:13px;">What should Claude work on?</div>' +
+    '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-faint)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:12px;opacity:0.4;"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>' +
+    '<div style="color:var(--text-faint);font-size:13px;">What will we VibeNode today?</div>' +
     '</div></div>' +
     '<div class="live-input-bar" id="live-input-bar"></div>' +
     '</div>';
@@ -3339,7 +3373,8 @@ async function openKanbanSettings(initialTab) {
   // ── Footer ──
   html += `</div>
     <div class="pm-actions">
-      <button class="pm-btn pm-btn-secondary" onclick="_closeKanbanSettings()">Close</button>
+      <button class="pm-btn pm-btn-secondary" onclick="_closeKanbanSettings()">Cancel</button>
+      <button class="pm-btn pm-btn-primary" onclick="saveAllKanbanSettings(false);_closeKanbanSettings();">Save</button>
     </div>
   </div>`;
 
@@ -3351,12 +3386,7 @@ async function openKanbanSettings(initialTab) {
   // Store columns reference for column editing functions
   window._kbSettingsColumns = columns;
 
-  // Autosave: any toggle/input change fires a debounced save
-  let _kbSaveTimer = null;
-  const _kbAutoSave = () => { clearTimeout(_kbSaveTimer); _kbSaveTimer = setTimeout(() => saveAllKanbanSettings(true), 400); };
-  overlay.querySelectorAll('input[type="checkbox"], input[type="number"]').forEach(el => {
-    el.addEventListener('change', _kbAutoSave);
-  });
+  // No autosave — explicit save only via the Save button
 
   // Wire up column editing functions (same as before but using _kbSettingsColumns)
   const render = () => {
@@ -3382,7 +3412,10 @@ async function openKanbanSettings(initialTab) {
       </div>`;
     }
     listEl.innerHTML = listHtml;
-    _kbAutoSave();
+    // Don't auto-save on render — only save on explicit user actions
+    // (toggle change, close button). Render fires on drag/drop/rename
+    // which haven't been confirmed yet, and if the initial fetch failed
+    // this would wipe columns.
   };
 
   // Column editing globals
@@ -3461,9 +3494,10 @@ function selectBackend(backend) {
   if (backend === 'supabase' && typeof loadBackupList === 'function') loadBackupList();
 }
 
-async function _closeKanbanSettings() {
-  await saveAllKanbanSettings(false);
+function _closeKanbanSettings() {
+  // Cancel — discard changes, don't save
   if (typeof _closePm === 'function') _closePm();
+  initKanban(true);
 }
 
 async function testConnection() {

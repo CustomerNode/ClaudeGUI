@@ -159,6 +159,30 @@ def _tombstone_file() -> Path:
     return _sessions_dir() / "_deleted_sessions.json"
 
 
+def _encode_cwd(cwd: str) -> str:
+    """Encode a filesystem path into the Claude project directory name format.
+
+    E.g. ``C:\\Users\\foo\\Bar`` → ``C--Users-foo-Bar``
+    """
+    return cwd.replace("\\", "-").replace("/", "-").replace(":", "-")
+
+
+def cwd_matches_active_project(cwd: str) -> bool:
+    """Return True if *cwd* belongs to the currently active project.
+
+    The active project directory name is the encoded form of the project
+    path.  We encode *cwd* the same way and do a case-insensitive compare.
+    """
+    active = get_active_project()
+    if not active:
+        # Force resolution so _active_project is set
+        _sessions_dir()
+        active = get_active_project()
+    if not active:
+        return True  # no project context → don't filter anything
+    return _encode_cwd(cwd).lower() == active.lower()
+
+
 def _decode_project(encoded: str) -> str:
     """Convert encoded project name back to filesystem path.
     Handles ambiguity where '-' could be '/' or '_' or '-' in the original."""

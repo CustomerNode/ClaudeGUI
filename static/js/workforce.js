@@ -21,36 +21,29 @@ function setViewMode(mode) {
   if (prevMode !== mode) {
     const url = new URL(window.location);
     if (mode !== 'kanban') { url.hash = ''; }
-    if (mode === 'kanban' || mode === 'workplace') { url.searchParams.delete('chat'); }
+    // Always strip ?chat= when going to homepage, kanban, or workplace
+    if (mode === 'homepage' || mode === 'kanban' || mode === 'workplace') { url.searchParams.delete('chat'); }
     history.replaceState({}, '', url.pathname + url.search + url.hash);
   }
   const listEl = document.getElementById('session-list');
   const gridEl = document.getElementById('workforce-grid');
-  const btnList = document.getElementById('btn-view-list');
-  const btnWf   = document.getElementById('btn-view-workforce');
-
   const kanbanEl = document.getElementById('kanban-board');
+  const homepageEl = document.getElementById('homepage-container');
 
   // --- Clean up when LEAVING a mode ---
 
   // Leaving kanban: nuclear cleanup
   if (prevMode === 'kanban' && mode !== 'kanban') {
-    // Stop live session
     if (liveSessionId) { if (typeof stopLivePanel === 'function') stopLivePanel(); }
     activeId = null;
     liveSessionId = null;
     localStorage.removeItem('activeSessionId');
-    // Reset all kanban internal state
     if (typeof resetKanbanState === 'function') resetKanbanState();
-    // Remove session crumb bar
     const sessionBar = document.getElementById('kanban-session-bar');
     if (sessionBar) sessionBar.remove();
-    // Hide kanban elements
     if (kanbanEl) { kanbanEl.style.display = 'none'; kanbanEl.innerHTML = ''; }
-    // Restore main UI — reset main-body to dashboard so stale chat content
-    // from a previous session doesn't linger when returning to grid/list
     document.getElementById('main-body').style.display = '';
-    document.getElementById('main-body').innerHTML = _buildDashboard();
+    if (mode !== 'homepage') document.getElementById('main-body').innerHTML = _buildDashboard();
     document.getElementById('main-toolbar').style.display = 'none';
     const kanbanSidebar = document.getElementById('kanban-sidebar');
     if (kanbanSidebar) { kanbanSidebar.style.display = 'none'; kanbanSidebar.innerHTML = ''; }
@@ -58,14 +51,13 @@ function setViewMode(mode) {
     if (kbPermPanel) { kbPermPanel.style.display = 'none'; kbPermPanel.innerHTML = ''; }
     const btnAdd = document.getElementById('btn-add-agent');
     if (btnAdd) btnAdd.style.display = '';
-    // Clean URL — strip hash and chat param
     const cleanUrl = new URL(window.location);
     cleanUrl.hash = '';
     cleanUrl.searchParams.delete('chat');
     history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search);
   }
 
-  // Leaving workplace: clear workspace state, stop live panel if expanded card was open
+  // Leaving workplace: clear workspace state
   if (prevMode === 'workplace' && mode !== 'workplace') {
     if (_wsExpandedId) {
       _wsExpandedId = null;
@@ -75,19 +67,15 @@ function setViewMode(mode) {
     if (liveSessionId) stopLivePanel();
     activeId = null;
     localStorage.removeItem('activeSessionId');
-    // Restore main-body to dashboard (workplace overwrites it)
     document.getElementById('main-toolbar').style.display = 'none';
-    document.getElementById('main-body').innerHTML = _buildDashboard();
-    // Clear sidebar permission panel
+    if (mode !== 'homepage') document.getElementById('main-body').innerHTML = _buildDashboard();
     const spp = document.getElementById('sidebar-perm-panel');
     if (spp) { spp.innerHTML = ''; spp.style.display = 'none'; }
-    // Restore new session button
     const btnAdd = document.getElementById('btn-add-agent');
     if (btnAdd) btnAdd.style.display = '';
   }
 
-  // Leaving workforce or list into workplace: clear active session so
-  // main-body is fully owned by workspace renderer
+  // Leaving sessions into workplace: clear active session
   if (mode === 'workplace' && prevMode !== 'workplace') {
     if (liveSessionId) stopLivePanel();
     activeId = null;
@@ -95,27 +83,67 @@ function setViewMode(mode) {
     document.getElementById('main-toolbar').style.display = 'none';
   }
 
+  // Leaving homepage: restore sidebar and hide homepage
+  if (prevMode === 'homepage' && mode !== 'homepage') {
+    if (homepageEl) homepageEl.style.display = 'none';
+    document.getElementById('main-body').style.display = '';
+    const sidebar = document.querySelector('.sidebar');
+    if (sidebar) sidebar.style.display = '';
+    const resizeHandle = document.querySelector('.resize-handle');
+    if (resizeHandle) resizeHandle.style.display = '';
+  }
+
   // --- Set new mode state ---
   if (typeof workspaceActive !== 'undefined') workspaceActive = (mode === 'workplace');
 
-  // Sidebar elements to show/hide per mode
   const searchRow = document.querySelector('.sidebar-search-row');
   const menuWrap = document.querySelector('.sidebar-menu-wrap');
   const sidebarPermPanel = document.getElementById('sidebar-perm-panel');
 
-  if (mode === 'workforce') {
+  if (mode === 'homepage') {
+    // Deselect any active session so stale content doesn't linger on return
+    if (liveSessionId) { if (typeof stopLivePanel === 'function') stopLivePanel(); }
+    activeId = null;
+    localStorage.removeItem('activeSessionId');
+    document.getElementById('main-toolbar').style.display = 'none';
+    document.getElementById('main-body').innerHTML = (typeof _buildDashboard === 'function') ? _buildDashboard() : '';
+    // Hide sidebar and all content, show homepage full-width
+    const sidebar = document.querySelector('.sidebar');
+    if (sidebar) sidebar.style.display = 'none';
+    const resizeHandle = document.querySelector('.resize-handle');
+    if (resizeHandle) resizeHandle.style.display = 'none';
+    const expandBtn = document.getElementById('btn-sidebar-expand');
+    if (expandBtn) expandBtn.style.display = 'none';
     listEl.style.display = 'none';
-    gridEl.classList.add('visible');
-    if (btnList) btnList.classList.remove('active');
-    if (btnWf)   btnWf.classList.add('active');
+    gridEl.classList.remove('visible');
+    if (kanbanEl) kanbanEl.style.display = 'none';
+    document.getElementById('main-toolbar').style.display = 'none';
+    document.getElementById('main-body').style.display = 'none';
+    if (homepageEl) {
+      homepageEl.innerHTML = (typeof _buildHomepageContent === 'function') ? _buildHomepageContent() : '';
+      homepageEl.style.display = '';
+    }
+
+  } else if (mode === 'sessions') {
+    // Combined grid + list mode
+    if (sessionDisplayMode === 'grid') {
+      listEl.style.display = 'none';
+      gridEl.classList.add('visible');
+    } else {
+      listEl.style.display = '';
+      gridEl.classList.remove('visible');
+    }
     if (searchRow) searchRow.style.display = '';
     if (menuWrap) menuWrap.style.display = '';
     if (sidebarPermPanel) sidebarPermPanel.style.display = 'none';
+    if (kanbanEl) kanbanEl.style.display = 'none';
     document.getElementById('main-body').style.display = '';
-    // Hide main-toolbar unless a session is actively selected
     if (!activeId) document.getElementById('main-toolbar').style.display = 'none';
+    const btnAdd = document.getElementById('btn-add-agent');
+    if (btnAdd) btnAdd.style.display = '';
+    if (homepageEl) homepageEl.style.display = 'none';
+
   } else if (mode === 'kanban') {
-    // Clean URL — remove ?chat= param, preserve existing kanban hash
     const cleanUrl = new URL(window.location);
     cleanUrl.searchParams.delete('chat');
     if (!cleanUrl.hash || !cleanUrl.hash.startsWith('#kanban')) {
@@ -125,44 +153,47 @@ function setViewMode(mode) {
 
     listEl.style.display = 'none';
     gridEl.classList.remove('visible');
-    if (btnList) btnList.classList.remove('active');
-    if (btnWf)   btnWf.classList.remove('active');
     if (searchRow) searchRow.style.display = 'none';
     if (menuWrap) menuWrap.style.display = 'none';
-    // Hide "New Session" button — kanban has its own session spawner
     const btnAdd = document.getElementById('btn-add-agent');
     if (btnAdd) btnAdd.style.display = 'none';
-    // sidebarPermPanel shown by renderKanbanSidebar
     if (kanbanEl) kanbanEl.style.display = '';
-    // Show kanban-specific sidebar controls
     const kanbanSidebar = document.getElementById('kanban-sidebar');
     if (kanbanSidebar) kanbanSidebar.style.display = '';
-    // Hide main-body and toolbar — kanban uses its own panel
     document.getElementById('main-body').style.display = 'none';
     document.getElementById('main-toolbar').style.display = 'none';
+    if (homepageEl) homepageEl.style.display = 'none';
     if (typeof initKanban === 'function') initKanban();
+
   } else if (mode === 'workplace') {
-    // Don't hide the session list yet — let it show skeleton until
-    // renderWorkspace finishes. renderWorkspace will hide it atomically.
     gridEl.classList.remove('visible');
-    if (btnList) btnList.classList.remove('active');
-    if (btnWf)   btnWf.classList.remove('active');
     if (sidebarPermPanel) { sidebarPermPanel.style.display = 'none'; sidebarPermPanel.innerHTML = ''; }
     const btnAdd = document.getElementById('btn-add-agent');
     if (btnAdd) btnAdd.style.display = 'none';
-  } else {
-    listEl.style.display = '';
-    gridEl.classList.remove('visible');
-    if (btnList) btnList.classList.add('active');
-    if (btnWf)   btnWf.classList.remove('active');
-    if (searchRow) searchRow.style.display = '';
-    if (menuWrap) menuWrap.style.display = '';
-    if (sidebarPermPanel) sidebarPermPanel.style.display = 'none';
-    document.getElementById('main-body').style.display = '';
-    // Hide main-toolbar unless a session is actively selected
-    if (!activeId) document.getElementById('main-toolbar').style.display = 'none';
+    if (homepageEl) homepageEl.style.display = 'none';
   }
   filterSessions();
+}
+
+function setSessionDisplayMode(mode) {
+  sessionDisplayMode = mode;
+  localStorage.setItem('sessionDisplayMode', mode);
+  // Update active state on menu items
+  document.querySelectorAll('[data-display]').forEach(el => {
+    el.classList.toggle('active', el.dataset.display === mode);
+  });
+  if (viewMode === 'sessions') {
+    const listEl = document.getElementById('session-list');
+    const gridEl = document.getElementById('workforce-grid');
+    if (mode === 'grid') {
+      listEl.style.display = 'none';
+      gridEl.classList.add('visible');
+    } else {
+      listEl.style.display = '';
+      gridEl.classList.remove('visible');
+    }
+    filterSessions();
+  }
 }
 
 function setWfSort(sort) {

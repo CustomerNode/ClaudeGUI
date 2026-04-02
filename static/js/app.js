@@ -5,9 +5,16 @@ let activeId = localStorage.getItem('activeSessionId') || null;
 let renameTarget = null;
 let sortMode = localStorage.getItem('sortMode') || 'date';
 let sortAsc  = localStorage.getItem('sortAsc') === 'true';
-let viewMode = localStorage.getItem('viewMode') || 'workforce';
+let viewMode = localStorage.getItem('viewMode') || 'homepage';
+// Migrate old view modes (grid/list collapse into sessions)
+if (viewMode === 'workforce' || viewMode === 'list') viewMode = 'sessions';
 // Guard against invalid view modes persisted in localStorage
-if (!['workforce', 'list', 'workplace', 'kanban'].includes(viewMode)) viewMode = 'workforce';
+if (!['homepage', 'sessions', 'workplace', 'kanban'].includes(viewMode)) viewMode = 'sessions';
+// First-ever load detection — if no viewMode was ever set, force homepage
+if (!localStorage.getItem('viewMode')) viewMode = 'homepage';
+// Session display sub-mode (grid vs list within sessions view)
+let sessionDisplayMode = localStorage.getItem('sessionDisplayMode') || 'grid';
+if (!['grid', 'list'].includes(sessionDisplayMode)) sessionDisplayMode = 'grid';
 let wfSort = localStorage.getItem('wfSort') || 'status';
 let runningIds = new Set();
 let waitingData = {};   // { session_id: {question, options, kind} }
@@ -83,10 +90,22 @@ function _updateProjectLabel(project) {
 }
 
 async function setProject(encoded, reload = true) {
+  // Save the currently active session for the OLD project so we can restore
+  // it when the user switches back later.
+  const prevProject = localStorage.getItem('activeProject');
+  if (prevProject && activeId) {
+    localStorage.setItem('projectSession_' + prevProject, activeId);
+  }
   if (activeId) { _skipChatHistory = true; deselectSession(); _skipChatHistory = false; }
   const p = _allProjects.find(x => x.encoded === encoded);
   _updateProjectLabel(p);
   localStorage.setItem('activeProject', encoded);
+  // Clear cross-project session cache — sessions from the OLD project were
+  // cached as "other project" and must be re-evaluated against the new project.
+  // Sessions from the NEW project that were previously hidden will pass through
+  // _isOtherProject on their next event. Sessions from the old project will be
+  // re-detected and re-cached on their next event.
+  if (typeof _clearCrossProjectCache === 'function') _clearCrossProjectCache();
   // Show skeleton immediately
   if (reload) showSkeletonLoader();
   await fetch('/api/set-project', {
@@ -377,79 +396,39 @@ if (localStorage.getItem('sidebarCollapsed') === '1') {
 
 // --- View mode selector ---
 const _viewModes = {
-  workforce: {
-    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>',
-    label: 'Grid View',
-    title: 'Grid',
-    desc: 'Visual cards showing session status at a glance',
+  homepage: {
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
+    label: 'Home',
+    title: 'Home',
+    desc: 'VibeNode homepage',
   },
-  list: {
-    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>',
-    label: 'List View',
-    title: 'List',
-    desc: 'Compact table with name, date, and size columns',
+  sessions: {
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>',
+    label: 'Sessions View',
+    title: 'Sessions',
+    desc: 'Run and interact with your Claude Code sessions',
   },
   kanban: {
     icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="5" height="18" rx="1"/><rect x="10" y="3" width="5" height="12" rx="1"/><rect x="17" y="3" width="5" height="15" rx="1"/></svg>',
     label: 'Workflow View',
     title: 'Workflow',
     desc: 'Task board with workflow columns and AI session orchestration',
-    badge: 'Professional',
-    badgeStyle: 'background:#7c3aed;color:#fff;',
   },
   workplace: {
     icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><circle cx="7" cy="10" r="1.5"/><circle cx="17" cy="10" r="1.5"/><path d="M10 10h4"/></svg>',
-    label: 'Workforce',
+    label: 'Workforce View',
     title: 'Workforce',
-    desc: 'Organize sessions by department with specialized skills',
-    badge: 'Experimental',
-    badgeStyle: 'background:rgba(255,255,255,0.08);color:var(--text-muted);',
-    dimmed: true,
+    desc: 'Knowledge asset library — manage skills and agent definitions',
   },
 };
 
-async function openViewModeSelector() {
-  const overlay = document.getElementById('pm-overlay');
-  const current = viewMode;
-  let html = '<div class="pm-card pm-enter" style="width:380px;">'
-    + '<h2 class="pm-title">View Mode</h2>'
-    + '<div class="pm-body"><p>Choose how your sessions are displayed.</p></div>'
-    + '<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px;">';
-
-  for (const [key, m] of Object.entries(_viewModes)) {
-    const isActive = key === current;
-    const cardStyle = (m.badge === 'Coming Soon') ? ' style="opacity:0.5;cursor:default;"' : m.dimmed ? ' style="opacity:0.55;"' : '';
-    const badgeCss = m.badgeStyle || 'background:var(--accent);color:#fff;';
-    html += `<div class="add-mode-card${isActive ? ' active' : ''}" data-mode="${key}"${cardStyle}>
-      <div class="add-mode-icon">${m.icon}</div>
-      <div class="add-mode-info">
-        <div class="add-mode-title">${m.title}${m.badge ? ' <span style="font-size:9px;' + badgeCss + 'padding:2px 6px;border-radius:8px;font-weight:700;margin-left:6px;">' + m.badge + '</span>' : ''}</div>
-        <div class="add-mode-desc">${m.desc}</div>
-      </div>
-    </div>`;
-  }
-  html += '</div><div class="pm-actions"><button class="pm-btn pm-btn-secondary" id="pm-vm-close">Close</button></div></div>';
-  overlay.innerHTML = html;
-  overlay.classList.add('show');
-  requestAnimationFrame(() => overlay.querySelector('.pm-card').classList.remove('pm-enter'));
-
-  document.getElementById('pm-vm-close').onclick = () => _closePm();
-  overlay.onclick = e => { if (e.target === overlay) _closePm(); };
-
-  overlay.querySelectorAll('.add-mode-card').forEach(card => {
-    const mode = card.dataset.mode;
-    if (_viewModes[mode].badge === 'Coming Soon') return; // disabled
-    card.onclick = () => {
-      _closePm();
-      setViewMode(mode);
-      _updateViewModeButton(mode);
-      showToast(_viewModes[mode].label);
-    };
-  });
+function openViewModeSelector() {
+  setViewMode('homepage');
 }
 
 function _updateViewModeButton(mode) {
-  const m = _viewModes[mode] || _viewModes.workforce;
+  // Show the current view's icon and label — tells you where you are
+  const m = _viewModes[mode] || _viewModes.sessions;
   const iconEl = document.getElementById('view-mode-icon');
   const labelEl = document.getElementById('view-mode-label');
   if (iconEl) iconEl.outerHTML = m.icon.replace('width="18"', 'width="14" id="view-mode-icon"').replace('height="18"', 'height="14"');
@@ -493,7 +472,7 @@ function pickSort(mode, asc) {
   if (sortLabel) sortLabel.textContent = label;
   // Apply sort
   sortAsc = !!asc;
-  if (viewMode === 'workforce') {
+  if (viewMode === 'sessions' && sessionDisplayMode === 'grid') {
     setWfSort(mode === 'date' ? 'recent' : mode);
   } else {
     setSort(mode);
@@ -680,6 +659,9 @@ async function autoNameAllSessions() {
 
 // --- New Agent ---
 async function addNewAgent() {
+  // If on homepage, switch to sessions mode first
+  if (viewMode === 'homepage') setViewMode('sessions');
+
   const newId = crypto.randomUUID();
 
   // Optimistic UI: add placeholder to sidebar
@@ -729,8 +711,8 @@ async function addNewAgent() {
     '<div class="live-panel" id="live-panel">' +
     '<div class="conversation live-log" id="live-log">' +
     '<div class="empty-state" style="padding:60px 0;text-align:center;">' +
-    '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-faint)" stroke-width="1.5" stroke-linecap="round" style="margin-bottom:12px;opacity:0.4;"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' +
-    '<div style="color:var(--text-faint);font-size:13px;">What should Claude work on?</div>' +
+    '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-faint)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:12px;opacity:0.4;"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>' +
+    '<div style="color:var(--text-faint);font-size:13px;">What will we VibeNode today?</div>' +
     (typeof _renderTemplateGrid === 'function' ? _renderTemplateGrid(newId) : '') +
     '</div></div>' +
     '<div class="live-input-bar" id="live-input-bar"></div></div>';
@@ -1119,6 +1101,10 @@ async function loadSessions() {
   document.getElementById('search').placeholder = 'Search ' + allSessions.length + ' sessions\u2026';
   setViewMode(viewMode);
   // Template selector is handled by initFolderTree() — no duplicate call here
+
+  // Homepage: no session restoration needed, homepage is fully rendered by setViewMode
+  if (viewMode === 'homepage') return;
+
   // Check URL ?chat= param first, then fall back to localStorage
   const _urlChatId = new URL(window.location).searchParams.get('chat');
 
@@ -1134,8 +1120,10 @@ async function loadSessions() {
     }
     return;
   }
-  // Restore session from URL, then localStorage, or show dashboard.
-  let _restoreId = _urlChatId || localStorage.getItem('activeSessionId');
+  // Restore session from URL, then localStorage, then per-project memory, or show dashboard.
+  const _activeProj = localStorage.getItem('activeProject');
+  let _restoreId = _urlChatId || localStorage.getItem('activeSessionId')
+    || (_activeProj && localStorage.getItem('projectSession_' + _activeProj));
 
   // If the stored ID isn't in allSessions, it may have been remapped by the SDK.
   // Ask the server to resolve the alias before giving up.
@@ -1172,11 +1160,15 @@ function filterSessions() {
         (s.preview||'').toLowerCase().includes(q)
       )
     : allSessions;
+  if (viewMode === 'homepage') {
+    if (typeof _updateHomepageStats === 'function') _updateHomepageStats();
+    return;
+  }
   if (viewMode === 'workplace') {
     renderWorkspace(wfSortedSessions(filtered));
-  } else if (viewMode === 'workforce') {
+  } else if (viewMode === 'sessions' && sessionDisplayMode === 'grid') {
     renderWorkforce(wfSortedSessions(filtered));
-  } else {
+  } else if (viewMode === 'sessions') {
     renderList(sortedSessions(filtered));
   }
 }

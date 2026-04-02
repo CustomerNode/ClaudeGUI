@@ -146,11 +146,17 @@ def _parse_jsonl_entries(app, session_id: str, since: int = 0) -> list:
 def register_ws_events(socketio, app):
     """Register all WebSocket event handlers with the SocketIO instance."""
 
+    def _filter_sessions_for_project(sessions: list) -> list:
+        """Return only sessions whose cwd matches the active project."""
+        from ..config import cwd_matches_active_project
+        return [s for s in sessions
+                if not s.get("cwd") or cwd_matches_active_project(s["cwd"])]
+
     @socketio.on('connect')
     def handle_connect():
         """On connect, send current state of all sessions including queue data."""
         sm = app.session_manager
-        sessions = sm.get_all_states()
+        sessions = _filter_sessions_for_project(sm.get_all_states())
         # Build top-level queues dict from per-session data for frontend sync
         queues = {}
         for s in sessions:
@@ -174,7 +180,7 @@ def register_ws_events(socketio, app):
         if hasattr(sm, "is_connected") and not sm.is_connected:
             emit("state_snapshot", {"sessions": [], "queues": {}, "aliases": {}})
             return
-        sessions = sm.get_all_states()
+        sessions = _filter_sessions_for_project(sm.get_all_states())
         queues = {}
         for s in sessions:
             q = s.get('queue')

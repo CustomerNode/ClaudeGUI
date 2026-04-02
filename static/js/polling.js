@@ -98,7 +98,7 @@ async function pollWaiting() {
     }
 
     // Re-render workforce/workspace view if visible (to update status indicators)
-    if (viewMode === 'workforce' || viewMode === 'workplace') filterSessions();
+    if (viewMode === 'sessions' || viewMode === 'workplace' || viewMode === 'homepage') filterSessions();
 
     // Update live panel input bar state
     if (liveSessionId) updateLiveInputBar();

@@ -86,6 +86,84 @@
   <h2>Overview</h2>
   <p class="section-desc">VibeNode currently uses a dropdown/modal to switch between four view modes (Grid, List, Workflow, Workforce). This plan replaces that with a homepage — three premium cards that position VibeNode as a platform with three distinct products rather than a session manager with tabs.</p>
   <div class="callout"><strong>Core insight:</strong> Claude Code's "skills" and "agents" are the same primitive — a markdown file with instructions. The only difference is invocation: skills inject into the current session, agents spawn a subprocess. VibeNode's Workforce view unifies both into a single asset library where the same .md definition can be invoked either way depending on context.</div>
+
+  <div class="card-full">
+    <h3>Why Now — The Convergence Is Happening</h3>
+    <p>The community is already recognizing that agents, skills, and commands are converging toward a single concept. VibeNode's Workforce is the first implementation of what others are only writing about.</p>
+    <table>
+      <tr><th>Who</th><th>What They Said</th><th>Where We Go Further</th></tr>
+      <tr>
+        <td><strong>Anthropic</strong> (Jan 2026)</td>
+        <td>Merged slash commands into skills — <code>.claude/commands/*.md</code> and <code>.claude/skills/*/SKILL.md</code> now both create <code>/slash-commands</code> the same way. Two invocation modes: automatic (Claude decides) and explicit (user calls by name).</td>
+        <td>We complete the convergence by bringing subagents into the same library. Anthropic stopped at commands+skills; we unify all three.</td>
+      </tr>
+      <tr>
+        <td><strong><a href="https://vivekhaldar.com/articles/claude-code-subagents-commands-skills-converging/" style="color:var(--accent)">Vivek Haldar</a></strong></td>
+        <td>"Subagents, Commands and Skills Are Converging" — argues all three should collapse into a single primitive where a YAML frontmatter toggle (<code>context: main</code> vs <code>context: fork</code>) determines behavior.</td>
+        <td>Workforce implements exactly this thesis. One library, invocation mode determined by context, not by which directory the file lives in.</td>
+      </tr>
+      <tr>
+        <td><strong><a href="https://dongliang.medium.com/claude-skills-commands-agents-toward-a-unified-mission-29b87e385729" style="color:var(--accent)">Dong Liang</a></strong></td>
+        <td>"Claude Skills, Commands, Agents: toward a unified mission" — the skill-vs-command distinction "created more confusion than clarity." The real difference is invocation mode, not type.</td>
+        <td>Our dual invocation model (agent by default, skill on demand) makes this concrete — same .md asset, two modes, one library.</td>
+      </tr>
+      <tr>
+        <td><strong><a href="https://vercel.com/blog/agents-md-outperforms-skills-in-our-agent-evals" style="color:var(--accent)">Vercel</a></strong></td>
+        <td>Found that always-loaded AGENTS.md achieved 100% pass rate while on-demand skills maxed at 79% — skills weren't even invoked 56% of the time. Both are just context delivery mechanisms; the difference is push vs pull.</td>
+        <td>Workforce solves this: the agent catalog is push (always injected), while <code>/invoke</code> is pull (on demand). Same asset does both — you get the reliability of push with the flexibility of pull.</td>
+      </tr>
+      <tr>
+        <td><strong><a href="https://agentskills.io" style="color:var(--accent)">Agent Skills Open Standard</a></strong></td>
+        <td>Cross-platform SKILL.md spec adopted by 30+ tools (Codex, Cursor, Gemini CLI, GitHub Copilot, JetBrains). But it only covers skills — not agents.</td>
+        <td>Workforce reads Agent Skills format natively as part of discovery. We extend the ecosystem rather than competing with it.</td>
+      </tr>
+      <tr>
+        <td><strong><a href="https://github.com/disler/the-library" style="color:var(--accent)">disler/the-library</a></strong></td>
+        <td>"A Meta-Skill for Private-First Distribution of Agentics." Single catalog managing skills, agents, and prompts — the closest existing analog.</td>
+        <td>Still keeps agents/skills/prompts as three separate types. Workforce treats them as one type with different invocation modes.</td>
+      </tr>
+    </table>
+    <p style="margin-top:16px;color:var(--text-muted);font-size:14px;">The convergence thesis is in the air. Multiple voices are articulating it. But nobody has shipped a unified library with a GUI that treats agents, skills, and pipelines as interchangeable assets from a single collection with switchable invocation modes. That's what Workforce is.</p>
+  </div>
+
+  <div class="card-full">
+    <h3>The Format Fragmentation Problem</h3>
+    <p>Today's ecosystem has at least 5 incompatible .md formats that all do the same thing — put instructions in a markdown file:</p>
+    <table>
+      <tr><th>Format</th><th>Location</th><th>Required Fields</th><th>Unique Fields</th></tr>
+      <tr>
+        <td>Claude Code Subagents</td>
+        <td><code>.claude/agents/*.md</code></td>
+        <td><code>name</code>, <code>description</code></td>
+        <td><code>tools</code>, <code>model</code>, <code>color</code>, <code>maxTurns</code>, <code>memory</code>, <code>isolation</code>, <code>background</code>, <code>permissionMode</code>, <code>skills</code></td>
+      </tr>
+      <tr>
+        <td>Claude Code Skills</td>
+        <td><code>.claude/skills/*/SKILL.md</code></td>
+        <td><code>name</code>, <code>description</code> (recommended)</td>
+        <td><code>allowed-tools</code>, <code>user-invocable</code>, <code>disable-model-invocation</code>, <code>context</code>, <code>agent</code>, <code>paths</code>, <code>shell</code>, <code>argument-hint</code></td>
+      </tr>
+      <tr>
+        <td>Agent Skills Standard</td>
+        <td><code>.claude/skills/*/SKILL.md</code></td>
+        <td><code>name</code>, <code>description</code></td>
+        <td><code>license</code>, <code>compatibility</code>, <code>metadata</code> (cross-platform subset)</td>
+      </tr>
+      <tr>
+        <td>gstack Skills</td>
+        <td><code>.claude/skills/gstack/*/SKILL.md</code></td>
+        <td><code>name</code>, <code>description</code></td>
+        <td><code>preamble-tier</code> (gstack-only, not recognized by Claude Code)</td>
+      </tr>
+      <tr>
+        <td>Plain .md (no frontmatter)</td>
+        <td><code>.claude/agents/*.md</code> or anywhere</td>
+        <td>Nothing</td>
+        <td>Nothing — entire file is instructions</td>
+      </tr>
+    </table>
+    <p style="margin-top:12px;color:var(--text-muted);font-size:14px;">Workforce's discovery engine reads all of these and normalizes them into a single view. We don't invent a new format — we read what's already there, map the fields we recognize, preserve the rest, and present everything through one UI. The .md file is the universal contract; Workforce is the universal manager.</p>
+  </div>
 </section>
 
 <!-- ═══════════════ THE HOMEPAGE ═══════════════ -->
@@ -512,24 +590,259 @@ dependencies: [bun, playwright]     # External runtime dependencies
       <li><strong>Grid / List</strong> — removed as top-level modes, mentioned as display options within Sessions</li>
     </ul>
   </div>
-  <div class="callout-green callout"><strong>Key messaging:</strong> "Claude Code has two similar concepts — skills and agents — that are really the same thing: a markdown file with instructions. Workforce is where you manage them. Build your own role definitions, import full execution pipelines like gstack, organize everything into a hierarchy, and VibeNode handles the rest — injecting them as agents that Claude can spawn autonomously, or as skills you invoke on demand. From a one-line persona to a 1000-line review pipeline, it's all the same library."</div>
+  <div class="callout-green callout"><strong>Key messaging:</strong> "Claude Code's agent and skill ecosystem is fragmented — at least five different .md formats across different directories, with no unified way to browse, manage, or invoke them. The community has been writing about this convergence (<a href="https://vivekhaldar.com/articles/claude-code-subagents-commands-skills-converging/" style="color:var(--green)">Haldar</a>, <a href="https://dongliang.medium.com/claude-skills-commands-agents-toward-a-unified-mission-29b87e385729" style="color:var(--green)">Liang</a>), <a href="https://vercel.com/blog/agents-md-outperforms-skills-in-our-agent-evals" style="color:var(--green)">Vercel showed</a> that both push and pull delivery matter, and Anthropic already merged commands into skills. Workforce completes the convergence: one library for every .md asset — agents, skills, and full execution pipelines like <a href="https://github.com/garrytan/gstack" style="color:var(--green)">gstack</a> — with a hierarchy you control, auto-discovery of everything already installed, and dual invocation (always-on agent catalog + on-demand skill invocation) from the same definition."</div>
 </section>
 
 <hr>
 
-<!-- ═══════════════ EXECUTION ORDER ═══════════════ -->
+<!-- ═══════════════ IMPLEMENTATION PHASES ═══════════════ -->
+<style>
+  .phase{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:28px;margin-bottom:24px}
+  .phase-header{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+  .phase-header h3{font-size:19px;font-weight:600;margin:0}
+  .phase-num{background:var(--accent-dim);color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;flex-shrink:0}
+  .phase-status{font-size:12px;font-weight:600;padding:3px 10px;border-radius:20px;text-transform:uppercase;letter-spacing:.5px;margin-left:auto}
+  .status-pending{background:rgba(110,118,129,.15);color:var(--text-dim)}
+  .status-active{background:rgba(88,166,255,.15);color:var(--accent)}
+  .status-done{background:rgba(63,185,80,.15);color:var(--green)}
+  .phase .scope{color:var(--text-muted);font-size:13px;margin-bottom:16px;font-style:italic}
+  .cl{list-style:none;padding:0;margin:0 0 16px}
+  .cl li{font-size:14px;color:var(--text-muted);line-height:1.6;padding:6px 0 6px 28px;position:relative;border-bottom:1px solid var(--border-light)}
+  .cl li:last-child{border-bottom:none}
+  .cl li::before{content:'';position:absolute;left:0;top:10px;width:16px;height:16px;border:2px solid var(--border);border-radius:3px}
+  .cl li.done{color:var(--text-dim);text-decoration:line-through}
+  .cl li.done::before{background:var(--green);border-color:var(--green)}
+  .cl-label{font-size:12px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:.5px;margin:16px 0 8px}
+  .cl-validate{color:var(--orange)}
+</style>
+
 <section>
-  <h2>8 — Execution Order</h2>
-  <p class="section-desc">Phased delivery. Each phase is independently shippable.</p>
-  <ol class="steps">
-    <li><strong>Homepage + navigation restructure.</strong> Build three-card homepage. Collapse grid/list into Sessions. Wire view mode button and logo to homepage. Migrate <code>localStorage.viewMode</code>. Update <code>setViewMode()</code> for three modes plus display sub-preference.</li>
-    <li><strong>README rewrite.</strong> Three-pillar structure. Remove experimental badge from Workforce. Keep existing marketing voice.</li>
-    <li><strong>Unified file format spec + on-disk storage.</strong> Define the .md asset format (superset covering all three tiers). Build file reader replacing <code>FOLDER_SUPERSET</code>. Write default library to <code>~/.claude/workforce/</code> on first run.</li>
-    <li><strong>Discovery engine.</strong> Scanner for all known locations: workforce dirs, <code>.claude/agents/</code>, <code>.claude/skills/</code> (including gstack). Parse SKILL.md frontmatter, detect tiers, surface everything in unified catalog. External assets as read-only with source badges.</li>
-    <li><strong>Slash command invocation.</strong> Add <code>/invoke &lt;id&gt;</code> to <code>_slashCommandMap</code>. Mid-session injection for all tiers. Tab-completion for asset IDs.</li>
-    <li><strong>Import + hierarchy management.</strong> Auto-import from <code>.claude/skills/</code> with skill pack grouping. Upload .md manually. Drag-and-drop hierarchy. "Chord your existing setup into VibeNode."</li>
-    <li><strong>Full Workforce UI polish.</strong> Activation toggles, inline editing (local override copies for externals), export/share, tier badges, dependency warnings, source indicators.</li>
-  </ol>
+  <h2>8 — Implementation Phases</h2>
+  <p class="section-desc">Each phase is independently shippable. Complete all tasks and validation steps before moving to the next. Check items off as completed.</p>
+
+  <!-- PHASE 1 -->
+  <div class="phase">
+    <div class="phase-header"><div class="phase-num">1</div><h3>Homepage + Navigation Restructure</h3><span class="phase-status status-done">Done</span></div>
+    <p class="scope">Frontend only. No backend, no database, no daemon. Takes effect on page refresh.</p>
+    <div class="cl-label">Implementation</div>
+    <ul class="cl">
+      <li class="done">Add homepage container to <code>templates/index.html</code></li>
+      <li class="done">Build three-card homepage renderer (Sessions, Workflow, Workforce) with icons, descriptions, live stats, mini visualizations</li>
+      <li class="done">Add VibeNode logo hover feedback (scale up) and click handler (navigate to homepage)</li>
+      <li class="done">Collapse <code>'workforce'</code> (grid) and <code>'list'</code> view modes into single <code>'sessions'</code> mode</li>
+      <li class="done">Add grid/list display sub-toggle to sidebar three-dot menu, persisted to <code>localStorage</code></li>
+      <li class="done">Update <code>setViewMode()</code> in <code>workforce.js</code> — three modes: <code>sessions</code>, <code>workflow</code>, <code>workforce</code></li>
+      <li class="done">Migrate <code>localStorage.viewMode</code> — silently convert <code>'workforce'</code>/<code>'list'</code> to <code>'sessions'</code> on load</li>
+      <li class="done">Wire view mode button to navigate to homepage (instead of opening modal)</li>
+      <li class="done">On startup: if first-ever load, show homepage; otherwise restore last view mode</li>
+      <li class="done">Update <code>_viewModes</code> object in <code>app.js</code></li>
+      <li class="done">Update <code>_buildDashboard()</code> in <code>toolbar.js</code> — integrate with or replace using homepage</li>
+      <li class="done">Add homepage card styles to <code>style.css</code></li>
+      <li class="done">Wire live stats on homepage cards — session status counts, task progress, agent count</li>
+    </ul>
+    <div class="cl-label cl-validate">Validation</div>
+    <ul class="cl">
+      <li class="done">Fresh load (clear localStorage) lands on homepage with three cards</li>
+      <li class="done">Clicking Sessions card enters session view with grid layout (default)</li>
+      <li class="done">Clicking Workflow card enters kanban/workflow view</li>
+      <li class="done">Clicking Workforce card enters workforce/workspace view</li>
+      <li class="done">View mode button takes you back to homepage from any view</li>
+      <li class="done">VibeNode logo click takes you back to homepage from any view</li>
+      <li class="done">VibeNode logo has visible hover feedback (scale)</li>
+      <li class="done">Returning to homepage does NOT reset state — going back shows same sessions</li>
+      <li class="done">Grid/list toggle in three-dot menu works and persists across refresh</li>
+      <li class="done">Existing <code>localStorage.viewMode = 'workforce'</code> migrates to <code>'sessions'</code></li>
+      <li class="done">After selecting a view, page refresh restores that view (not homepage)</li>
+      <li class="done">Live stats on cards show real data</li>
+      <li class="done">No regressions: search, sort, new session, live panel, chat in Sessions</li>
+      <li class="done">No regressions: kanban board, task creation, drag-drop in Workflow</li>
+      <li class="done">No regressions: workspace hierarchy, departments in Workforce</li>
+    </ul>
+  </div>
+
+  <!-- PHASE 2 -->
+  <div class="phase">
+    <div class="phase-header"><div class="phase-num">2</div><h3>README Rewrite</h3><span class="phase-status status-done">Done</span></div>
+    <p class="scope">Documentation only. No code changes.</p>
+    <div class="cl-label">Implementation</div>
+    <ul class="cl">
+      <li class="done">Restructure "What it does" around three pillars: Sessions, Workflow, Workforce</li>
+      <li class="done">Rewrite Sessions — interactive terminal experience, grid/list as display options</li>
+      <li class="done">Keep Workflow section (already strong), remove "view mode" framing</li>
+      <li class="done">Full Workforce rewrite — convergence thesis, dual invocation, tiers, auto-discovery, gstack</li>
+      <li class="done">Remove <code>(experimental)</code> badge from Workforce</li>
+      <li class="done">Remove Grid and List as top-level view modes</li>
+      <li class="done">Reference convergence voices (Haldar, Liang, Vercel research)</li>
+      <li class="done">Maintain existing marketing voice and tone</li>
+    </ul>
+    <div class="cl-label cl-validate">Validation</div>
+    <ul class="cl">
+      <li class="done">README reads as three-product platform, not session manager with tabs</li>
+      <li class="done">Workforce section positions convergence thesis clearly</li>
+      <li class="done">No "experimental" for Workforce</li>
+      <li class="done">Grid/List only as display options under Sessions</li>
+      <li class="done">All existing links, setup instructions, platform support still accurate</li>
+    </ul>
+  </div>
+
+  <!-- PHASE 2.5 -->
+  <div class="phase">
+    <div class="phase-header"><div class="phase-num">2.5</div><h3>Opinionated Positioning — Departments as the Organizing Unit</h3><span class="phase-status status-pending">Pending</span></div>
+    <p class="scope">README language, UI copy, and import strategy. Establishes the vocabulary and mental model before building the file system.</p>
+    <div class="cl-label">Implementation</div>
+    <ul class="cl">
+      <li>Update README Workforce section with explicitly <strong>opinionated</strong> framing: VibeNode calls these <strong>departments</strong>, not "skills" or "agents" — a department is a named collection of knowledge assets that can be invoked as either a skill or an agent in Claude Code's paradigm</li>
+      <li>Add a "Why departments" subsection or callout in the README — we're not claiming this is objectively the right abstraction, we're being opinionated in our context. Claude Code has skills and agents; we organize them into departments and handle both invocation paths transparently</li>
+      <li>Add "opinionated" language to the Workforce UI — a brief info tooltip or onboarding callout explaining the department model (e.g., "VibeNode organizes your knowledge assets into departments. Each asset can be invoked as a skill or spawned as an agent — we handle both.")</li>
+      <li>Define import strategy for external .md files into departments: importing a Claude Code agent (.md from <code>.claude/agents/</code>) places it into a department; importing a skill (SKILL.md from <code>.claude/skills/</code>) does the same. The department is the container, the invocation mode is separate</li>
+      <li>Define import strategy for gstack specifically: each gstack skill becomes an asset in a "gstack" department (or user-chosen department). Sub-departments allowed (e.g., gstack > Review, gstack > QA, gstack > Security)</li>
+      <li>Plan the UI flow for importing: user browses to Workforce, clicks Import, sees discovered agents/skills/packs, picks which department to place them in, confirms. Assets land in the hierarchy and are immediately available for both agent catalog injection and on-demand skill invocation</li>
+      <li>Reconcile existing built-in library (72 role agents across Engineering, QA, Product, etc.) with imported skill packs — both coexist in the same department tree, distinguished by source badges</li>
+    </ul>
+    <div class="cl-label cl-validate">Validation</div>
+    <ul class="cl">
+      <li>README explicitly uses the word "opinionated" and explains the department model</li>
+      <li>README does NOT claim departments are objectively better — frames it as "in our context, this is how we think about it"</li>
+      <li>Workforce UI has visible copy explaining the department model (tooltip, callout, or onboarding)</li>
+      <li>Import flow is documented: agent files and skill files both land in departments</li>
+      <li>gstack import strategy is clear: one department, sub-departments for categories</li>
+      <li>Built-in agents and imported skills coexist visually in the same tree without confusion</li>
+    </ul>
+  </div>
+
+  <!-- PHASE 3 -->
+  <div class="phase">
+    <div class="phase-header"><div class="phase-num">3</div><h3>Unified File Format + On-Disk Storage</h3><span class="phase-status status-pending">Pending</span></div>
+    <p class="scope">Frontend + one backend endpoint. Creates files on disk. No database, no daemon.</p>
+    <div class="cl-label">Implementation</div>
+    <ul class="cl">
+      <li>Define .md asset file format spec (id, name, department required; rest optional)</li>
+      <li>Write 72 built-in agents as individual .md files with frontmatter</li>
+      <li>Write default <code>workforce-map.md</code> hierarchy file</li>
+      <li>Create <code>~/.claude/workforce/</code> and populate with defaults on first run</li>
+      <li>Build file reader (backend endpoint) that parses .md + YAML frontmatter</li>
+      <li>Replace <code>FOLDER_SUPERSET</code> with data from on-disk files (keep as fallback)</li>
+      <li>Update <code>folders.js</code> skill inheritance to use file-backed store</li>
+      <li>Update <code>write-catalog</code> endpoint to read from disk</li>
+    </ul>
+    <div class="cl-label cl-validate">Validation</div>
+    <ul class="cl">
+      <li><code>~/.claude/workforce/</code> created with .md files on first run</li>
+      <li>Workforce view renders correctly from on-disk files</li>
+      <li>Editing .md on disk and refreshing shows the change</li>
+      <li>Agent catalog injection still works in sessions</li>
+      <li>Launching session from Workforce injects correct skill prompt</li>
+      <li>Missing/empty workforce dir falls back to FOLDER_SUPERSET</li>
+    </ul>
+  </div>
+
+  <!-- PHASE 4 -->
+  <div class="phase">
+    <div class="phase-header"><div class="phase-num">4</div><h3>Discovery Engine</h3><span class="phase-status status-pending">Pending</span></div>
+    <p class="scope">Backend endpoint + frontend. Reads multiple directories. Does not modify external files.</p>
+    <div class="cl-label">Implementation</div>
+    <ul class="cl">
+      <li>Build discovery endpoint scanning: workforce dirs, <code>~/.claude/agents/</code>, <code>{project}/.claude/agents/</code>, <code>~/.claude/skills/*/SKILL.md</code></li>
+      <li>Parse frontmatter from all discovered files — handle YAML and no-frontmatter</li>
+      <li>Detect asset tier (Role / Skill / Pipeline) from frontmatter</li>
+      <li>Normalize formats: Claude Code agents, skills, gstack, plain .md</li>
+      <li>Auto-assign department for assets without one</li>
+      <li>Detect skill packs and auto-group under pack branch</li>
+      <li>Build <code>workforce-discovery.js</code> — call endpoint, merge with hierarchy</li>
+      <li>Add source badges (built-in, user, project, gstack, plugin)</li>
+      <li>Add tier badges (Role, Skill, Pipeline)</li>
+      <li>Mark external assets as read-only</li>
+    </ul>
+    <div class="cl-label cl-validate">Validation</div>
+    <ul class="cl">
+      <li>Assets from <code>~/.claude/agents/</code> appear with source badge</li>
+      <li>gstack skills (if installed) appear under "gstack" department</li>
+      <li>Plain .md without frontmatter discovered and displayed</li>
+      <li>Tier badges render correctly</li>
+      <li>Source badges distinguish built-in vs user vs external</li>
+      <li>External assets show as read-only</li>
+      <li>Refresh re-scans and picks up new files</li>
+      <li>Duplicate IDs: project overrides global</li>
+    </ul>
+  </div>
+
+  <!-- PHASE 5 -->
+  <div class="phase">
+    <div class="phase-header"><div class="phase-num">5</div><h3>Slash Command Invocation + Visual Picker</h3><span class="phase-status status-pending">Pending</span></div>
+    <p class="scope">Frontend only. Extends slash command handling in live-panel.js.</p>
+    <div class="cl-label">Implementation</div>
+    <ul class="cl">
+      <li>Add <code>/invoke &lt;id&gt;</code> and <code>/as &lt;id&gt;</code> to <code>_slashCommandMap</code></li>
+      <li>Implement mid-session injection — asset content as framed user message</li>
+      <li>Add <code>/agents</code> — list available assets inline</li>
+      <li>Add <code>/team</code> — open visual hierarchy picker flyout</li>
+      <li>Build hierarchy picker — compact flyout, department tree, breadcrumbs, search</li>
+      <li>Tab-completion on <code>/invoke </code> showing asset IDs</li>
+      <li>New session quick-pick — recently used chips above textarea, browse button</li>
+      <li>Pre-selected asset = system prompt injection (full authority)</li>
+    </ul>
+    <div class="cl-label cl-validate">Validation</div>
+    <ul class="cl">
+      <li><code>/invoke eng-frontend</code> injects Frontend Engineer prompt mid-session</li>
+      <li><code>/invoke gstack-review</code> injects full pipeline (if discovered)</li>
+      <li><code>/agents</code> shows available assets with IDs</li>
+      <li><code>/team</code> opens picker with correct departments</li>
+      <li>Clicking asset in picker invokes it</li>
+      <li>Tab-completion works on <code>/invoke </code></li>
+      <li>Quick-pick shows recently used assets</li>
+      <li>Pre-selected asset = system prompt, not user message</li>
+      <li>Picker hierarchy matches Workforce view exactly</li>
+    </ul>
+  </div>
+
+  <!-- PHASE 6 -->
+  <div class="phase">
+    <div class="phase-header"><div class="phase-num">6</div><h3>Import + Hierarchy Management</h3><span class="phase-status status-pending">Pending</span></div>
+    <p class="scope">Frontend + backend. Writes to workforce dir and map file. No database.</p>
+    <div class="cl-label">Implementation</div>
+    <ul class="cl">
+      <li>Auto-import button — scan <code>.claude/skills/</code> and <code>.claude/agents/</code></li>
+      <li>Upload .md files manually — drag-drop or file picker</li>
+      <li>Skill pack auto-grouping under department branches</li>
+      <li>Drag-and-drop hierarchy rearrangement</li>
+      <li>Create new departments</li>
+      <li>All changes write back to <code>workforce-map.md</code></li>
+    </ul>
+    <div class="cl-label cl-validate">Validation</div>
+    <ul class="cl">
+      <li>Auto-import discovers assets from agents/ and skills/</li>
+      <li>Uploaded .md appears in hierarchy correctly</li>
+      <li>Dragging asset between departments updates map file</li>
+      <li>New department persists across refresh</li>
+      <li>gstack skills auto-grouped under "gstack" department</li>
+    </ul>
+  </div>
+
+  <!-- PHASE 7 -->
+  <div class="phase">
+    <div class="phase-header"><div class="phase-num">7</div><h3>Full Workforce UI Polish</h3><span class="phase-status status-pending">Pending</span></div>
+    <p class="scope">Frontend only. Polish on top of working core.</p>
+    <div class="cl-label">Implementation</div>
+    <ul class="cl">
+      <li>Activation toggles — active/inactive, only active in catalog</li>
+      <li>Inline editing — click to edit, write back to .md</li>
+      <li>Local override copies — editing external creates workforce-local copy</li>
+      <li>Export individual assets as .md</li>
+      <li>Export department bundles</li>
+      <li>Dependency warnings for pipeline-tier assets</li>
+      <li>"Update available" badge for changed externals</li>
+    </ul>
+    <div class="cl-label cl-validate">Validation</div>
+    <ul class="cl">
+      <li>Deactivating agent removes it from catalog injection</li>
+      <li>Reactivating adds it back</li>
+      <li>Editing built-in writes to disk and persists</li>
+      <li>Editing external creates local copy, original unchanged</li>
+      <li>Exported .md re-imports correctly</li>
+      <li>Bundle export contains all department assets</li>
+      <li>Pipeline assets with missing deps show warning</li>
+    </ul>
+  </div>
 </section>
 
 <hr>

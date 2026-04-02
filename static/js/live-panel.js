@@ -385,14 +385,15 @@ async function openInGUI(id) {
   // New session with no .jsonl yet — re-show the new session input
   if (!resp.ok) {
     if (guiOpenSessions.has(id) && !runningIds.has(id)) {
-      // Re-create the new session chat view
-      setToolbarSession(id, 'New Session', true, '');
+      // Re-create the new session chat view — preserve auto-name from sidebar if available
+      const _ct = cached && cached.custom_title ? cached.custom_title : (cached && cached.display_title && cached.display_title !== 'New Session' ? cached.display_title : '');
+      setToolbarSession(id, _ct || 'New Session', !_ct, _ct || '');
       document.getElementById('main-body').innerHTML =
         '<div class="live-panel" id="live-panel">' +
         '<div class="conversation live-log" id="live-log">' +
         '<div class="empty-state" style="padding:60px 0;text-align:center;">' +
-        '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-faint)" stroke-width="1.5" stroke-linecap="round" style="margin-bottom:12px;opacity:0.4;"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' +
-        '<div style="color:var(--text-faint);font-size:13px;">What should Claude work on?</div>' +
+        '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-faint)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:12px;opacity:0.4;"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>' +
+        '<div style="color:var(--text-faint);font-size:13px;">What will we VibeNode today?</div>' +
         (typeof _renderTemplateGrid === 'function' ? _renderTemplateGrid(id) : '') +
         '</div></div>' +
         '<div class="live-output-shelf" id="live-output-shelf"></div>' +
@@ -422,7 +423,12 @@ async function openInGUI(id) {
   }
 
   const s = await resp.json();
-  setToolbarSession(id, s.custom_title || s.display_title, !s.custom_title, s.custom_title || '');
+  // Prefer server title, but fall back to cached sidebar title if server returns empty/generic
+  const _serverTitle = s.custom_title || s.display_title;
+  const _cachedFallback = cached && cached.custom_title ? cached.custom_title : (cached && cached.display_title && cached.display_title !== 'New Session' ? cached.display_title : '');
+  const _finalTitle = (_serverTitle && _serverTitle !== 'New Session') ? _serverTitle : (_cachedFallback || _serverTitle);
+  const _finalCustom = s.custom_title || _cachedFallback || '';
+  setToolbarSession(id, _finalTitle, !_finalCustom, _finalCustom);
 
   startLivePanel(id);
 }
@@ -1033,16 +1039,31 @@ function _liveSubmitDirect(sid, text, opts) {
     // Send message — server will process if idle, or queue if busy
     socket.emit('send_message', {session_id: sid, text: text});
   } else {
-    // Session not in runningIds — resume it so the message isn't silently lost.
-    // This covers race conditions where the frontend thinks it's stopped but
-    // the daemon still has it, or stale state after a missed event.
-    console.warn('[submit] Session', sid, 'not in runningIds — resuming with start_session');
-    socket.emit('start_session', {
-      session_id: sid,
-      prompt: text,
-      cwd: _currentProjectDir(),
-      resume: true,
-    });
+    // Session not in runningIds — try send_message first (it handles
+    // IDLE/WORKING/WAITING gracefully with auto-queue), then fall back to
+    // start_session only if the session truly doesn't exist on the backend.
+    // This prevents the "Session already running" error when the frontend's
+    // runningIds is stale (missed WebSocket event) but the backend still has
+    // the session alive.
+    console.warn('[submit] Session', sid, 'not in runningIds — trying send_message first');
+    // Install a one-shot error listener: if send_message fails because the
+    // session doesn't exist or is stopped, fall back to start_session.
+    const _fallbackHandler = function(err) {
+      if (err && err.session_id === sid && /not found|is stopped/i.test(err.message || '')) {
+        socket.off('error', _fallbackHandler);
+        console.warn('[submit] send_message failed (' + err.message + ') — resuming with start_session');
+        socket.emit('start_session', {
+          session_id: sid,
+          prompt: text,
+          cwd: _currentProjectDir(),
+          resume: true,
+        });
+      }
+    };
+    socket.on('error', _fallbackHandler);
+    // Auto-remove the fallback after 5s to avoid leaking listeners
+    setTimeout(() => socket.off('error', _fallbackHandler), 5000);
+    socket.emit('send_message', {session_id: sid, text: text});
     runningIds.add(sid);
     guiOpenAdd(sid);
   }

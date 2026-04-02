@@ -198,7 +198,14 @@ class SessionDaemon:
             ).start()
             return
 
-        self._dispatch_sync(sock, req_id, method, params)
+        # Run ALL dispatches in threads so one slow/blocked handler can
+        # never stall the entire request pipeline.  The _write_lock in
+        # _dispatch_sync already serialises socket writes, so this is safe.
+        threading.Thread(
+            target=self._dispatch_sync,
+            args=(sock, req_id, method, params),
+            daemon=True,
+        ).start()
 
     def _dispatch_sync(self, sock, req_id, method, params):
         """Synchronous dispatch — returns response immediately."""

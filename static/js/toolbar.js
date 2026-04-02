@@ -1,4 +1,5 @@
 /* toolbar.js — toolbar session management, inline rename, message rendering, session actions */
+let _hpBoardFetching = false;
 
 function setToolbarSession(id, titleText, isUntitled, customTitle) {
   const titleEl = document.getElementById('main-title');
@@ -30,6 +31,7 @@ function setToolbarSession(id, titleText, isUntitled, customTitle) {
 }
 
 function deselectSession() {
+  if (viewMode === 'homepage') return;
   activeId = null;
   localStorage.removeItem('activeSessionId');
   _pushChatUrl(null);
@@ -262,6 +264,155 @@ function _buildDashboard() {
       <span>${total > 0 ? 'Select a session from the sidebar to view its conversation' : 'Select a project to get started'}</span>
     </div>
   </div>`;
+}
+
+function _buildHomepageContent() {
+  const polled = _waitingPolledOnce || false;
+  const total = allSessions.length;
+  const working = polled ? allSessions.filter(s => runningIds.has(s.id) && sessionKinds[s.id] === 'working').length : 0;
+  const idle = polled ? allSessions.filter(s => runningIds.has(s.id) && sessionKinds[s.id] === 'idle').length : 0;
+  const question = polled ? allSessions.filter(s => runningIds.has(s.id) && sessionKinds[s.id] === 'question').length : 0;
+  const active = working + idle + question;
+  const sleeping = total - active;
+
+  // Workflow stats — count tasks per column, use column colors
+  // Kick off async fetch if board data hasn't been loaded yet
+  if (typeof kanbanTasks !== 'undefined' && kanbanTasks.length === 0 && typeof kanbanColumns !== 'undefined' && kanbanColumns.length === 0 && !_hpBoardFetching) {
+    _hpBoardFetching = true;
+    fetch('/api/kanban/board').then(r => r.ok ? r.json() : null).then(data => {
+      _hpBoardFetching = false;
+      if (data) {
+        kanbanColumns = data.columns || [];
+        kanbanTasks = data.tasks || [];
+        if (data.tags && typeof kanbanAllTags !== 'undefined') kanbanAllTags = data.tags;
+        // Re-render homepage if still visible
+        if (typeof _updateHomepageStats === 'function') _updateHomepageStats();
+      }
+    }).catch(() => { _hpBoardFetching = false; });
+  }
+  const cols = (typeof kanbanColumns !== 'undefined') ? kanbanColumns : [];
+  const tasks = (typeof kanbanTasks !== 'undefined') ? kanbanTasks : [];
+  const taskTotal = tasks.length;
+  const colCounts = [];
+  let maxColCount = 0;
+  for (const col of cols) {
+    const count = tasks.filter(t => t.status === col.status_key).length;
+    colCounts.push({ name: col.name, color: col.color || 'var(--border)', count });
+    if (count > maxColCount) maxColCount = count;
+  }
+  // Build column bar viz
+  let colBarsHtml = '';
+  if (colCounts.length && taskTotal > 0) {
+    for (const c of colCounts) {
+      const pct = maxColCount > 0 ? Math.max(8, (c.count / maxColCount) * 100) : 8;
+      colBarsHtml += `<div class="hp-col" style="height:${pct}%;background:${c.color};opacity:0.8;" title="${c.name}: ${c.count}"></div>`;
+    }
+  } else {
+    // Placeholder columns when no data
+    colBarsHtml = '<div class="hp-col" style="height:60%;background:var(--border);opacity:0.3;"></div>'
+      + '<div class="hp-col" style="height:40%;background:var(--border);opacity:0.3;"></div>'
+      + '<div class="hp-col" style="height:20%;background:var(--border);opacity:0.3;"></div>'
+      + '<div class="hp-col" style="height:50%;background:var(--border);opacity:0.3;"></div>';
+  }
+  // Build workflow stat line
+  let wfStatLine = 'No tasks yet';
+  if (taskTotal > 0) {
+    const parts = colCounts.filter(c => c.count > 0).map(c => `${c.count} ${c.name.toLowerCase()}`);
+    wfStatLine = `${taskTotal} task${taskTotal !== 1 ? 's' : ''} &middot; ${parts.join(', ')}`;
+  }
+
+  // Workforce stats
+  const agentCount = (typeof FOLDER_SUPERSET === 'object' && FOLDER_SUPERSET)
+    ? Object.keys(FOLDER_SUPERSET).filter(k => FOLDER_SUPERSET[k].skill).length : 0;
+  const deptCount = (typeof FOLDER_SUPERSET === 'object' && FOLDER_SUPERSET)
+    ? Object.keys(FOLDER_SUPERSET).filter(k => !FOLDER_SUPERSET[k].parentId).length : 0;
+
+  // Session segmented bar
+  const barParts = [];
+  if (working) barParts.push(`<div style="flex:${working};background:var(--accent);height:100%;border-radius:3px;"></div>`);
+  if (question) barParts.push(`<div style="flex:${question};background:#ff9500;height:100%;border-radius:3px;"></div>`);
+  if (idle) barParts.push(`<div style="flex:${idle};background:var(--idle-label);height:100%;border-radius:3px;"></div>`);
+  if (sleeping) barParts.push(`<div style="flex:${sleeping};background:var(--border);height:100%;border-radius:3px;"></div>`);
+  const sessionBar = barParts.length
+    ? barParts.join('')
+    : '<div style="flex:1;background:var(--border);height:100%;border-radius:3px;"></div>';
+
+  // Session stat line
+  const sessionStat = total === 0 ? 'No sessions yet'
+    : active > 0 ? `${working} working &middot; ${question} waiting &middot; ${idle} idle`
+    : `${total} session${total !== 1 ? 's' : ''} &middot; all sleeping`;
+
+  // Workforce dot grid — colored by department
+  const deptColors = ['#58a6ff','#58a6ff','#58a6ff','#58a6ff',
+    '#3fb950','#3fb950','#3fb950',
+    '#d29922','#d29922',
+    '#bc8cff','#bc8cff',
+    '#39d2c0','#f85149','#e3b341'];
+  let dotGridHtml = '';
+  const dotCount = Math.min(agentCount, 36);
+  for (let i = 0; i < dotCount; i++) {
+    const c = deptColors[i % deptColors.length];
+    const delay = (i * 0.02).toFixed(2);
+    dotGridHtml += `<div class="hp-dot" style="background:${c};animation-delay:${delay}s"></div>`;
+  }
+  if (dotCount === 0) {
+    for (let i = 0; i < 12; i++) {
+      dotGridHtml += `<div class="hp-dot" style="background:var(--border);opacity:0.5;"></div>`;
+    }
+  }
+
+  return `
+  <div class="homepage">
+    <div class="homepage-cards">
+
+      <div class="homepage-card hp-sessions" onclick="setViewMode('sessions')">
+        <div class="hp-icon-wrap">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <h3>Sessions</h3>
+        <p class="hp-desc">Interactive Claude Code terminals with live streaming, voice input, and permission management.</p>
+        <div class="hp-viz">
+          <div class="hp-bar">${sessionBar}</div>
+        </div>
+        <div class="hp-stat">${sessionStat}</div>
+        <div class="hp-cta">Open Sessions <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></div>
+      </div>
+
+      <div class="homepage-card hp-workflow" onclick="setViewMode('kanban')">
+        <div class="hp-icon-wrap">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="5" height="18" rx="1"/><rect x="10" y="3" width="5" height="12" rx="1"/><rect x="17" y="3" width="5" height="15" rx="1"/></svg>
+        </div>
+        <h3>Workflow</h3>
+        <p class="hp-desc">Hierarchical task board where your roadmap terminates in working Claude sessions at the leaves.</p>
+        <div class="hp-viz">
+          <div class="hp-columns">${colBarsHtml}</div>
+        </div>
+        <div class="hp-stat">${wfStatLine}</div>
+        <div class="hp-cta">Open Workflow <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></div>
+      </div>
+
+      <div class="homepage-card hp-workforce" onclick="setViewMode('workplace')">
+        <div class="hp-icon-wrap">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 1 0-16 0"/><circle cx="20" cy="7" r="2.5"/><path d="M23 15a5 5 0 0 0-6 0"/><circle cx="4" cy="7" r="2.5"/><path d="M7 15a5 5 0 0 0-6 0"/></svg>
+        </div>
+        <h3>Workforce</h3>
+        <p class="hp-desc">Knowledge asset library — skills and agent definitions organized into a department hierarchy.</p>
+        <div class="hp-viz">
+          <div class="hp-dots">${dotGridHtml}</div>
+        </div>
+        <div class="hp-stat">${agentCount} agent${agentCount !== 1 ? 's' : ''} &middot; ${deptCount} department${deptCount !== 1 ? 's' : ''}</div>
+        <div class="hp-cta">Open Workforce <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></div>
+      </div>
+
+    </div>
+  </div>`;
+}
+
+function _updateHomepageStats() {
+  const el = document.getElementById('homepage-container');
+  if (el && el.style.display !== 'none') {
+    el.innerHTML = _buildHomepageContent();
+  }
 }
 
 function dashStartSession() {

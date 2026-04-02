@@ -1059,6 +1059,22 @@ def planner_accept():
                 except Exception:
                     pass
 
+            # The AI returns the parent task + its subtree as a single top-level
+            # item.  Update the parent in place (title, description) and use its
+            # subtasks as the new children.
+            if len(tasks) == 1 and tasks[0].get("subtasks"):
+                root_item = tasks[0]
+                updates = {}
+                if root_item.get("title"):
+                    updates["title"] = root_item["title"]
+                if root_item.get("description"):
+                    updates["description"] = root_item["description"]
+                if updates:
+                    updates["updated_at"] = now
+                    repo.update_task(scope_parent_id, **updates)
+                root_ids.append(scope_parent_id)
+                tasks = root_item["subtasks"]
+
         # Flatten the tree into creates and updates
         flat_tasks = []
         update_items = []  # (existing_id, {fields}) for edits

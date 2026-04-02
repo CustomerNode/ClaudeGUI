@@ -1,41 +1,68 @@
 # VibeNode
 
-A local development environment for Claude Code — session management, hierarchical task planning, and a workflow board where your task tree terminates in working Claude sessions. Built by [CustomerNode](https://customernode.com) and [Claude Code](https://claude.ai/download).
+A local development environment for Claude Code — interactive session management, a hierarchical task board where your roadmap terminates in working Claude sessions, and a unified knowledge asset library that brings skills and agents together. Built by [CustomerNode](https://customernode.com) and [Claude Code](https://claude.ai/download).
 
-![VibeNode workflow board showing tasks organized across status columns](docs/screenshots/workflow-board.png)
+![VibeNode homepage showing Sessions, Workflow, and Workforce cards](docs/screenshots/homepage.png)
 
 ## Why we built this
 
-Two problems:
+Four problems:
 
 1. **Session sprawl.** Running 8+ Claude Code sessions across terminal windows gets unwieldy fast — especially permission management. Even a three-monitor setup runs out of space. We needed a way to graphically manage sessions without sprawling terminals everywhere.
 
 2. **Velocity without direction.** Claude Code is powerful, but we noticed our roadmap wasn't actually moving faster. Sessions would drift, work would get duplicated, and there was no connection between what Claude was doing and what we needed delivered. We needed sessions tightly coupled to a task plan so every session is working toward a specific deliverable.
 
+3. **Skills vs. agents confusion.** Claude Code has skills and agents — two nearly identical concepts (markdown files with instructions) that differ only in invocation method. For most people, the distinction is confusing and the CLI-only management makes them hard to discover, organize, or use consistently. We needed a visual library that treats them as one thing — knowledge assets — so you can build, browse, and invoke them without caring whether they run inline or as a subprocess.
+
+4. **Knowledge assets are invisible.** Even once you understand skills and agents, they live as scattered markdown files across `.claude/` directories with no discoverability. There's no way to browse what's available, see how they're organized, or invoke them without memorizing names. Integrating them into a GUI with a department hierarchy, search, and one-click invocation makes the whole system more approachable — and standardizes knowledge assets across both skill and sub-agent use cases.
+
 VibeNode is the result: a development system where the human is responsible for planning, oversight, and validating outputs, while Claude handles execution — scoped to tasks, not left to wander. The session manager makes pure vibe coding better on its own, but the workflow board is where it becomes vibe *engineering* — structured planning and validation with a human in the loop.
 
 ## What it does
 
-- Lists all your Claude Code sessions with live state (Working / Idle / Question / Sleeping)
+VibeNode is built around three pillars — **Sessions**, **Workflow**, and **Workforce** — each accessible from a homepage that serves as your command center.
+
+### Sessions
+
+Run and interact with your Claude Code sessions. This is the full interactive terminal experience — not just a list of sessions, but where you actually work.
+
+- Lists all sessions with live state (Working / Idle / Question / Sleeping)
 - Live terminal panel — watch Claude work in real time
 - Answer Claude's questions directly from the browser (with clickable option buttons)
 - Send commands to running sessions
 - Session tools: auto-name, duplicate, fork, rewind, delete, summarize, extract code, compare sessions
+- Display as visual grid cards or compact list — switch anytime from the sidebar menu
 
-### View modes
+![Session grid with live conversation panel](docs/screenshots/session-grid.png)
 
-**Grid** — Visual cards showing session status at a glance. The default view.
+Or switch to a compact list view:
 
-**List** — Compact table with name, date, and size columns. Good for large session counts.
+![Session list view](docs/screenshots/session-list.png)
 
-![Session list view with conversation panel](docs/screenshots/session-list.png)
+### Workflow
 
-**Workflow** — A full hierarchical task board for managing your development roadmap. Tasks are organized into configurable columns (Not Started, Working, Validating, Remediating, Complete by default) with drag-and-drop between them. Key capabilities:
+A full hierarchical task board for managing your development roadmap. Tasks are organized into configurable columns (Not Started, Working, Validating, Remediating, Complete by default) with drag-and-drop between them. Key capabilities:
+
+![Workflow board with tasks across status columns](docs/screenshots/workflow-board.png)
 
 - **Hierarchical tasks** — Arbitrary nesting depth. Break epics into tasks into subtasks. Each level tracks its own status independently, with completion propagating up automatically.
 - **Session scoping** — Sessions are integrated into the task tree itself. At any branch, a task can break into either subtasks or Claude Code sessions — so the leaf nodes of your hierarchy become actual working sessions instead of more tasks. Spawn a session from any task card and context (breadcrumb path, sibling tasks, parent description) is injected automatically. This is fundamentally different from tools that bolt sessions on as an afterthought — here the board structure *is* the session structure.
 
-![A task drilled down to show its subtask hierarchy — an epic branching into subtasks across different statuses with linked sessions](docs/screenshots/task-hierarchy.png)
+Drill into any task to see its subtasks with status tracking and a progress bar:
+
+![A task drilled down to show its subtask hierarchy](docs/screenshots/task-hierarchy.png)
+
+Tasks can also branch into sessions instead of subtasks — the leaf nodes of your hierarchy become working Claude sessions:
+
+![A task with linked sessions](docs/screenshots/task-sessions.png)
+
+New tasks start with a chooser — break into subtasks, spawn sessions directly, or let AI plan the breakdown:
+
+![Empty task showing the chooser](docs/screenshots/task-chooser.png)
+
+Open a session from the board and the full breadcrumb path stays visible, keeping the conversation scoped to its place in the hierarchy:
+
+![A session opened from the kanban drill-down with breadcrumb navigation](docs/screenshots/kanban-session.png)
 
 - **AI planner** — Describe work in natural language and Claude breaks it into a hierarchical task tree. Because it runs through Claude Code, it can read your codebase while planning — so the task breakdown reflects your actual architecture, not just your description. Iterate on the breakdown, then accept to bulk-create. Supports voice input.
 - **Dual storage backends** — SQLite (default, zero config, local file at `~/.claude/gui_kanban.db`) or Supabase (cloud PostgreSQL). Switch between them in System Settings with one-click migration.
@@ -47,13 +74,20 @@ VibeNode is the result: a development system where the human is responsible for 
 - **Multi-session coordination** — When a session launches from a task, it gets a briefing that includes sibling task statuses, which siblings have active sessions running (and for how long), open validation issues, and the full breadcrumb path up the task tree. Claude can see what's being worked on nearby and avoid conflicts — parallel sessions on related tasks are aware of each other.
 - **Tags, issues, and validation** — Tag tasks for filtering, log validation issues against tasks, track resolution status.
 
-**Workforce** *(experimental)* — Claude Code has two similar concepts — skills and agents — that don't translate naturally to a graphical environment. Workforce is our solution: a hierarchical knowledge base where each node has its own scoped instruction file (like a skill/agent MD file). Sessions launched from a node inherit that context, and Claude can see the full workforce tree to delegate work across it. You can scope tasks or sessions to any node in the hierarchy — clicking into a department to launch a session works like invoking a skill, while Claude autonomously dispatching work across the tree works like agents.
+### Workforce
 
-### Live session panel
+Claude Code has two similar concepts — skills and agents — that are really the same thing: a markdown file with instructions. The only difference is how they're invoked: skills inject into your current session, agents spawn a subprocess. Multiple voices in the community have been [arguing for convergence](https://vivekhaldar.com/articles/claude-code-subagents-commands-skills-converging/) — and [Vercel's research](https://vercel.com/blog/agents-md-outperforms-skills-in-our-agent-evals) showed that both are ultimately context delivery mechanisms that differ only in push vs. pull.
 
-Watch Claude work in real time, answer questions, and send follow-up commands — all from the browser.
+Workforce is where you manage them — as a single, unified library.
 
-![Live session panel showing Claude Code terminal output and conversation in real time](docs/screenshots/live-session.png)
+![Workforce agent library organized by department](docs/screenshots/workforce.png)
+
+- **One library for everything** — Build your own role definitions, import full execution pipelines like [gstack](https://github.com/garrytan/gstack), organize everything into a department hierarchy, and VibeNode handles the rest. From a one-line persona to a 1000-line review pipeline, it's all the same library.
+- **Dual invocation** — Every asset can be used two ways from the same definition. As an **agent**: the full catalog is injected into every session's system prompt so Claude can spawn specialists autonomously. As a **skill**: you invoke on demand via the UI or slash commands, and the asset's instructions are injected into your current session.
+- **Three complexity tiers** — Simple role prompts (one paragraph persona), structured skills (step-by-step workflows with tool permissions), and full pipelines (multi-phase execution with shell blocks, specialist dispatch, and external dependencies). All three tiers live in the same library and use the same invocation paths.
+- **Auto-discovery** — VibeNode scans your `.claude/agents/`, `.claude/skills/` (including installed skill packs like gstack), and its own workforce directories. Everything appears in one unified view with source badges and tier indicators. Install a skill pack and it shows up in your Workforce automatically.
+- **Hierarchical organization** — Organize assets into departments (Engineering, QA, Product, Security, etc.). The same hierarchy appears everywhere — in the Workforce view, in the mid-session picker, and in the new session quick-pick. One tree, one source of truth.
+- **Portable .md format** — Every asset is a markdown file with optional YAML frontmatter. Download them, share them, upload them, edit them in any text editor. The file format is a superset that accommodates everything from Claude Code's native agent format to gstack's SKILL.md pipeline format.
 
 ## Requirements
 

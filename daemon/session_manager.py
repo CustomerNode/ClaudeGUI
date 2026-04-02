@@ -499,13 +499,29 @@ class SessionManager:
         extra_args: Optional[dict] = None,
     ) -> dict:
         """Start or resume an SDK session. Returns immediately."""
+        _forward_to_send = False
         with self._lock:
             if session_id in self._sessions:
                 existing = self._sessions[session_id]
                 if existing.state not in (SessionState.STOPPED,):
-                    return {"ok": False, "error": "Session already running"}
-                # Allow restart of a stopped session
-                del self._sessions[session_id]
+                    # Session is alive (IDLE/WORKING/WAITING/STARTING).
+                    # If a prompt was provided, deliver it via send_message()
+                    # instead of rejecting — this covers the common case where
+                    # the frontend thought the session was sleeping (stale
+                    # runningIds) and fell back to start_session.
+                    if prompt:
+                        _forward_to_send = True
+                    else:
+                        return {"ok": False, "error": "Session already running"}
+                else:
+                    # Allow restart of a stopped session
+                    del self._sessions[session_id]
+
+        # Forward OUTSIDE the lock — send_message() also acquires self._lock,
+        # and since it's a threading.Lock (non-reentrant), calling it while
+        # holding the lock would deadlock the daemon thread.
+        if _forward_to_send:
+            return self.send_message(session_id, prompt)
 
         info = SessionInfo(
             session_id=session_id,
@@ -541,13 +557,16 @@ class SessionManager:
         )
         return {"ok": True}
 
-    def send_message(self, session_id: str, text: str) -> dict:
+    def send_message(self, session_id: str, text: str, _self_heal: bool = False) -> dict:
         """Send a follow-up message to an idle session.
 
         If the session is busy (WORKING/WAITING/STARTING), the message is
         automatically queued and will be dispatched when the session next
         becomes IDLE.  This eliminates race conditions where the frontend
         thinks the session is idle but it has already transitioned.
+
+        _self_heal: internal flag -- when True, the call is a self-healing
+        retry and the heal counter is NOT reset (so the <=3 limit works).
         """
         session_id = self._resolve_id(session_id)
         with self._lock:
@@ -565,11 +584,11 @@ class SessionManager:
                 # Auto-queue instead of returning an error
                 return self.queue_message(session_id, text)
             # Reset self-healing counters for new user messages.
-            # This allows self-healing to work again on the next turn
-            # after a successful user interaction.
-            if hasattr(info, '_stream_heal_count'):
-                info._stream_heal_count = 0
-            info._stream_heal_needed = False
+            # Skip reset on self-healing retries so heal_count <= 3 works.
+            if not _self_heal:
+                if hasattr(info, '_stream_heal_count'):
+                    info._stream_heal_count = 0
+                info._stream_heal_needed = False
             # Add user entry to history (don't emit — frontend shows it optimistically)
             # Skip slash commands — they're internal CLI directives, not user chat
             _stripped = text.strip()
@@ -988,6 +1007,8 @@ class SessionManager:
         if not info:
             return
 
+        got_result = False
+        result_handled = False
         try:
             options = ClaudeCodeOptions(
                 cwd=cwd or None,
@@ -1035,8 +1056,6 @@ class SessionManager:
                 await client.query(prompt)
 
             # Process messages (None = unknown types, skipped via monkey-patch)
-            got_result = False
-            result_handled = False
             info._stream_evt_logged = False
             async for message in client.receive_messages():
                 if message is not None:
@@ -1096,7 +1115,7 @@ class SessionManager:
                     or "ClosedResource" in _etype
                 )
                 if _is_transport:
-                    if not getattr(info, '_stream_heal_count', 0):
+                    if not hasattr(info, '_stream_heal_count'):
                         info._stream_heal_count = 0
                     info._stream_heal_count += 1
                     info._stream_heal_needed = True
@@ -1184,7 +1203,7 @@ class SessionManager:
                                 self._emit_entry(session_id, entry, entry_index)
                                 info.state = SessionState.IDLE
                                 self._emit_state(info)
-                                self.send_message(session_id, last_user_text)
+                                self.send_message(session_id, last_user_text, _self_heal=True)
                             else:
                                 entry = LogEntry(kind="system", text="Reconnected successfully")
                                 with info._lock:
@@ -1208,6 +1227,17 @@ class SessionManager:
                             self._emit_state(info)
                     else:
                         info._stream_heal_count = 0
+                        entry = LogEntry(
+                            kind="system",
+                            text="Too many stream errors \u2014 please resend your message",
+                            is_error=True,
+                        )
+                        with info._lock:
+                            info.entries.append(entry)
+                            entry_index = len(info.entries) - 1
+                        self._emit_entry(session_id, entry, entry_index)
+                        info.state = SessionState.IDLE
+                        self._emit_state(info)
             except Exception as heal_err:
                 logger.exception("Self-healing failed for %s: %s", session_id, heal_err)
                 if info:
@@ -1233,18 +1263,26 @@ class SessionManager:
         """Send a follow-up query to an already-connected session."""
         with self._lock:
             info = self._sessions.get(session_id)
-        if not info or not info.client:
-            # send_message already set state to WORKING before scheduling us.
-            # If client is gone, force back to IDLE so the session isn't stuck.
-            if info and info.state == SessionState.WORKING:
-                logger.error("_send_query: %s has no client — forcing IDLE", session_id)
-                info.state = SessionState.IDLE
-                info.error = "Session disconnected"
-                entry = LogEntry(kind="system", text="Session disconnected — no SDK client", is_error=True)
-                with info._lock:
-                    info.entries.append(entry)
-                self._emit_state(info)
+        if not info:
             return
+        if not info.client:
+            # Client is gone — attempt reconnection before giving up.
+            # This covers zombie sessions left IDLE with no client after
+            # a failed reconnect or a daemon registry restore.
+            logger.warning("_send_query: %s has no client — attempting reconnect", session_id)
+            if await self._reconnect_client(session_id, info):
+                logger.info("_send_query: reconnected %s successfully", session_id)
+            else:
+                # Reconnect failed — force back to IDLE so the session isn't stuck
+                if info.state == SessionState.WORKING:
+                    logger.error("_send_query: %s reconnect failed — forcing IDLE", session_id)
+                    info.state = SessionState.IDLE
+                    info.error = "Session disconnected — reconnect failed"
+                    entry = LogEntry(kind="system", text="Could not reconnect SDK client — please try again", is_error=True)
+                    with info._lock:
+                        info.entries.append(entry)
+                    self._emit_state(info)
+                return
 
         # Pre-populate tracked_files on follow-up turns (covers daemon
         # restart scenarios where tracked_files was lost).
@@ -1259,12 +1297,12 @@ class SessionManager:
         info._turn_had_direct_edit = False
         self._record_pre_turn_mtimes(info)
 
+        got_result = False
+        result_handled = False
         try:
             await info.client.query(text)
 
             # Process response messages (None = unknown types, skipped)
-            got_result = False
-            result_handled = False
             info.usage.pop('_per_call', None)  # clear stale per-call marker from previous turn
             info._stream_evt_logged = False  # re-enable diagnostic log for this turn
             async for message in info.client.receive_response():
@@ -1325,7 +1363,7 @@ class SessionManager:
                     or "ClosedResource" in _etype
                 )
                 if _is_transport:
-                    if not getattr(info, '_stream_heal_count', 0):
+                    if not hasattr(info, '_stream_heal_count'):
                         info._stream_heal_count = 0
                     info._stream_heal_count += 1
                     info._stream_heal_needed = True
@@ -1413,7 +1451,7 @@ class SessionManager:
                                 logger.info("Self-heal: resending last user message for %s", session_id)
                                 info.state = SessionState.IDLE
                                 self._emit_state(info)
-                                self.send_message(session_id, last_user_text)
+                                self.send_message(session_id, last_user_text, _self_heal=True)
                             else:
                                 entry = LogEntry(kind="system", text="Reconnected successfully")
                                 with info._lock:
@@ -1446,6 +1484,8 @@ class SessionManager:
                             info.entries.append(entry)
                             entry_index = len(info.entries) - 1
                         self._emit_entry(session_id, entry, entry_index)
+                        info.state = SessionState.IDLE
+                        self._emit_state(info)
             except Exception as heal_err:
                 logger.exception("Self-healing failed for %s: %s", session_id, heal_err)
                 if info:
@@ -1560,6 +1600,48 @@ class SessionManager:
                 info = manager._sessions.get(resolved_id)
             if not info:
                 return PermissionResultDeny(message="Session not found", interrupt=True)
+
+            # ── Early abort: if the CLI subprocess transport is dead,
+            # every tool use will fail with "Stream closed".  Instead of
+            # letting the agent retry dozens of times, deny with
+            # interrupt=True to end the turn immediately.  The finally
+            # block in _drive_session / _send_query will reconnect and
+            # retry the whole message on a fresh CLI process.
+            try:
+                _transport_alive = (
+                    info.client
+                    and info.client._query
+                    and info.client._query.transport
+                    and info.client._query.transport.is_ready()
+                )
+            except Exception:
+                _transport_alive = False
+            if not _transport_alive:
+                logger.warning(
+                    "Transport dead for %s — aborting turn for tool %s "
+                    "(will reconnect in finally block)",
+                    resolved_id, tool_name,
+                )
+                # Flag for self-healing so the finally block reconnects
+                info._stream_heal_needed = True
+                if not hasattr(info, '_stream_heal_count'):
+                    info._stream_heal_count = 0
+                info._stream_heal_count += 1
+                # Log a single user-visible message (only on first detection)
+                if info._stream_heal_count == 1:
+                    _heal_entry = LogEntry(
+                        kind="system",
+                        text="Connection lost \u2014 aborting turn, will reconnect and retry automatically",
+                        is_error=True,
+                    )
+                    with info._lock:
+                        info.entries.append(_heal_entry)
+                        _heal_idx = len(info.entries) - 1
+                    manager._emit_entry(resolved_id, _heal_entry, _heal_idx)
+                return PermissionResultDeny(
+                    message="Transport disconnected — reconnecting",
+                    interrupt=True,
+                )
 
             # Auto-approve if user previously clicked "Always" for this tool
             if tool_name in info.always_allowed_tools:
@@ -1754,7 +1836,7 @@ class SessionManager:
                     # will reconnect the client and resend the last user message
                     # so the failed tools actually execute.
                     if is_err and "Stream closed" in rt:
-                        if not getattr(info, '_stream_heal_count', 0):
+                        if not hasattr(info, '_stream_heal_count'):
                             info._stream_heal_count = 0
                         info._stream_heal_count += 1
                         info._stream_heal_needed = True

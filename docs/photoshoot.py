@@ -53,7 +53,6 @@ BOARD = [
     ]},
 ]
 
-# Subtasks drill-down (Auth epic)
 EPIC_SUBTASKS = {
     "title": "Authentication System Overhaul",
     "status": "WORKING", "color": "#3b82f6",
@@ -68,7 +67,6 @@ EPIC_SUBTASKS = {
     ],
 }
 
-# Sessions drill-down (Performance Sprint)
 EPIC_SESSIONS = {
     "title": "Performance Sprint",
     "status": "WORKING", "color": "#3b82f6",
@@ -82,7 +80,6 @@ EPIC_SESSIONS = {
     ],
 }
 
-# Chooser drill-down (new empty task)
 EPIC_CHOOSER = {
     "title": "API Gateway Refactor",
     "status": "NOT STARTED", "color": "#6b7280",
@@ -127,11 +124,11 @@ CONVERSATION = [
 
 _JS_DISMISS = r"(function(){var s=document.getElementById('ps-hide');if(!s){s=document.createElement('style');s.id='ps-hide';s.textContent='#project-overlay,#health-blocker,#pm-overlay,#compare-overlay,.modal-overlay,#extract-drawer,.boot-splash,#project-card,.dashboard,#btn-git-publish,#git-sync-overlay{display:none!important;visibility:hidden!important;opacity:0!important}';document.head.appendChild(s);}['project-overlay','health-blocker','pm-overlay','compare-overlay','git-sync-overlay'].forEach(function(id){var e=document.getElementById(id);if(e){e.classList.remove('show');e.style.display='none';}});var gb=document.getElementById('btn-git-publish');if(gb)gb.style.display='none';var d=document.querySelector('.dashboard');if(d)d.style.display='none';document.querySelectorAll('.show').forEach(function(e){var p=getComputedStyle(e).position;if(p==='fixed'||p==='absolute'){e.classList.remove('show');e.style.display='none';}});window.openProjectOverlay=function(){};window.openHealthBlocker=function(){};window.openGitPublish=function(){};})();"
 
-_JS_BOARD = r"""(function(cols){var board=document.getElementById('kanban-board');if(!board)return;board.innerHTML='';var w=document.createElement('div');w.className='kanban-columns-wrapper';board.appendChild(w);cols.forEach(function(col){var c=document.createElement('div');c.className='kanban-column';c.setAttribute('data-status',col.status);var h=document.createElement('div');h.className='kanban-column-header';h.innerHTML='<div class="kanban-column-color-bar" style="background:'+col.color+'"></div><span class="kanban-column-name">'+col.label+'</span><span class="kanban-column-count">'+col.tasks.length+'</span>';c.appendChild(h);var b=document.createElement('div');b.className='kanban-column-body';b.setAttribute('data-status',col.status);c.appendChild(b);col.tasks.forEach(function(t){var card=document.createElement('div');card.className='kanban-card';card.setAttribute('data-status',col.status);var tags='';(t.tags||[]).forEach(function(g){tags+='<span class="kanban-tag-pill" style="background:'+g[1]+'22;color:'+g[1]+';border-color:'+g[1]+'44;">'+g[0]+'</span>';});var mp=[];if(t.subtasks)mp.push('<div class="kanban-card-subtask-text">'+t.subtasks+'</div>');if(t.sessions)mp.push('<div class="kanban-card-session-badge" style="background:#3b82f622;color:#60a5fa;">\u25cf '+t.sessions+'</div>');var mr=mp.length?'<div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap;">'+mp.join('')+'</div>':'';card.innerHTML='<div class="kanban-card-header"><div class="kanban-card-title-row"><span class="kanban-card-title">'+t.title+'</span><span class="kanban-card-time">'+(t.date||'')+'</span></div><span class="kanban-card-owner">'+(t.owner||'')+'</span></div><div class="kanban-card-desc">'+(t.desc||'')+'</div>'+mr+'<div class="kanban-card-bottom"><div class="kanban-card-tags">'+tags+'</div></div>';b.appendChild(card);});w.appendChild(c);});window.initKanban=function(){};
+_JS_FREEZE = r"(function(){window.renderWorkforce=function(){};window.loadSessions=function(){};window.renderList=function(){};window.initKanban=function(){};window._pollSessions=function(){};if(typeof pollTimer!=='undefined'&&pollTimer){clearInterval(pollTimer);pollTimer=null;}})();"
+
+_JS_BOARD = r"""(function(cols){var board=document.getElementById('kanban-board');if(!board)return;board.innerHTML='';var w=document.createElement('div');w.className='kanban-columns-wrapper';board.appendChild(w);cols.forEach(function(col){var c=document.createElement('div');c.className='kanban-column';c.setAttribute('data-status',col.status);var h=document.createElement('div');h.className='kanban-column-header';h.innerHTML='<div class="kanban-column-color-bar" style="background:'+col.color+'"></div><span class="kanban-column-name">'+col.label+'</span><span class="kanban-column-count">'+col.tasks.length+'</span>';c.appendChild(h);var b=document.createElement('div');b.className='kanban-column-body';b.setAttribute('data-status',col.status);c.appendChild(b);col.tasks.forEach(function(t){var card=document.createElement('div');card.className='kanban-card';card.setAttribute('data-status',col.status);var tags='';(t.tags||[]).forEach(function(g){tags+='<span class="kanban-tag-pill" style="background:'+g[1]+'22;color:'+g[1]+';border-color:'+g[1]+'44;">'+g[0]+'</span>';});var mp=[];if(t.subtasks)mp.push('<div class="kanban-card-subtask-text">'+t.subtasks+'</div>');if(t.sessions)mp.push('<div class="kanban-card-session-badge" style="background:#3b82f622;color:#60a5fa;">\u25cf '+t.sessions+'</div>');var mr=mp.length?'<div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap;">'+mp.join('')+'</div>':'';card.innerHTML='<div class="kanban-card-header"><div class="kanban-card-title-row"><span class="kanban-card-title">'+t.title+'</span><span class="kanban-card-time">'+(t.date||'')+'</span></div><span class="kanban-card-owner" style="background:transparent;color:var(--text-faint);font-size:9px;opacity:0.5;">'+(t.owner||'')+'</span></div><div class="kanban-card-desc">'+(t.desc||'')+'</div>'+mr+'<div class="kanban-card-bottom"><div class="kanban-card-tags">'+tags+'</div></div>';b.appendChild(card);});w.appendChild(c);});
 })(arguments[0]);"""
 
-# Shared drill-down builder: left side (status, title, timestamps, desc, tags)
-# The right side differs per mode so callers supply it via d.rightHTML
 _JS_DRILL_BASE = r"""(function(d){
 var board=document.getElementById('kanban-board');if(!board)return;board.innerHTML='';
 var menuIcon=arguments[1],chevR=arguments[2],planIcon=arguments[3];
@@ -182,7 +179,9 @@ list.appendChild(row);
 })(arguments[0]);"""
 
 _JS_LIVE = r"""(function(msgs){
-var log=document.getElementById('live-log');if(!log)return;log.innerHTML='';
+var log=document.getElementById('live-log');
+if(!log){var mb=document.getElementById('main-body');if(mb){mb.innerHTML='<div class="live-panel" id="live-panel"><div class="conversation live-log" id="live-log"></div><div class="live-input-bar" id="live-input-bar"></div></div>';mb.style.display='';log=document.getElementById('live-log');var lp=document.getElementById('live-panel');if(lp)lp.style.display='';}}
+if(!log)return;log.innerHTML='';
 var sticky=document.querySelector('.sticky-user-bar');if(sticky){sticky.innerHTML='<span class="sticky-user-text">Rate limiting middleware</span>';sticky.classList.add('visible');}
 var toolIcon='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>';
 var checkIcon='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#44aa66" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>';
@@ -207,8 +206,23 @@ log.appendChild(r);
 }
 });
 var bar=document.getElementById('live-input-bar');
-if(bar)bar.innerHTML='<textarea class="live-textarea" rows="3" placeholder="Describe what you want Claude to do\u2026" disabled></textarea><div class="live-bar-row"><span class="send-hint">Enter to send</span></div>';
+if(bar)bar.innerHTML='<textarea class="live-textarea" rows="3" placeholder="Describe what you want Claude to do\u2026" disabled></textarea><div class="live-bar-row"><span class="send-hint" style="font-size:10px;color:var(--text-faint);">Enter to send · Ctrl+Enter for new line<span class="send-hint-btn" title="Change send shortcut"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></span></span><button class="live-send-btn" disabled>Send</button></div>';
 })(arguments[0]);"""
+
+_JS_KANBAN_SESSION = r"""(function(d){
+var menuIcon=arguments[1],chevR=arguments[2];
+var kb=document.getElementById('kanban-board');if(kb)kb.style.display='none';
+var mb=document.getElementById('main-body');if(mb)mb.style.display='';
+var old=document.getElementById('kanban-session-bar');if(old)old.remove();
+var html='<div class="kanban-drill-titlebar" id="kanban-session-bar"><div class="kanban-drill-breadcrumb">';
+html+='<span class="kanban-drill-crumb">'+menuIcon+' Board</span>';
+html+='<span class="kanban-drill-sep">'+chevR+'</span>';
+html+='<span class="kanban-drill-crumb">'+d.taskTitle+'</span>';
+html+='<span class="kanban-drill-sep">'+chevR+'</span>';
+html+='<span class="kanban-drill-crumb current">'+d.sessionName+'</span>';
+html+='</div><div class="kanban-drill-actions"><span class="btn-group-label">Actions</span><div class="btn-group-divider"></div><span class="btn-group-label">Analyze &#9662;</span></div></div>';
+if(mb)mb.insertAdjacentHTML('beforebegin',html);
+})(arguments[0],arguments[1],arguments[2]);"""
 
 # ---------------------------------------------------------------------------
 # DRIVER / HELPERS
@@ -220,18 +234,22 @@ def _driver():
         opts.add_argument(a)
     return webdriver.Chrome(options=opts)
 
-def _init(drv):
+def _fresh_page(drv, mode="workforce"):
     drv.get(BASE); time.sleep(1)
-    drv.execute_script("localStorage.setItem('activeProject',arguments[0]);localStorage.setItem('theme','dark');localStorage.setItem('viewMode','workforce');localStorage.setItem('sidebarCollapsed','false');", PROJECT)
-    drv.get(BASE); time.sleep(4)
+    drv.execute_script(
+        "localStorage.setItem('activeProject',arguments[0]);"
+        "localStorage.setItem('theme','dark');"
+        "localStorage.setItem('viewMode',arguments[1]);"
+        "localStorage.setItem('sidebarCollapsed','false');",
+        PROJECT, mode)
+    drv.get(BASE); time.sleep(2)
+    # Freeze render functions ASAP so they don't overwrite our injections
+    drv.execute_script(_JS_FREEZE)
+    time.sleep(3)
     drv.execute_script("document.documentElement.setAttribute('data-theme','dark');")
-    drv.execute_script(_JS_DISMISS); time.sleep(2)
     drv.execute_script(_JS_DISMISS); time.sleep(1)
-    n = drv.execute_script("return document.querySelectorAll('.wf-card,.card,.session-item,.kanban-card').length;")
-    print(f"  Browser ready ({n} items)")
-    if n == 0:
-        drv.execute_script("if(typeof loadSessions==='function') loadSessions();")
-        time.sleep(3)
+    drv.execute_script(_JS_DISMISS)
+    drv.execute_script(_JS_FREEZE)
 
 def _snap(drv, name, label):
     drv.execute_script(_JS_DISMISS); time.sleep(0.5)
@@ -243,11 +261,9 @@ def _hide_live(drv):
     drv.execute_script("var p=document.querySelector('.live-panel');if(p)p.style.display='none';var m=document.querySelector('.main');if(m)m.style.flex='1';var s=document.querySelector('.sticky-user-bar');if(s){s.classList.remove('visible');s.style.display='none';}")
 
 def _drill(drv, data):
-    """Inject a drill-down view. data must have 'rightHTML' key."""
     drv.execute_script(_JS_DRILL_BASE, data, _ICON_MENU, _ICON_CHEVR, _ICON_PLAN)
 
 def _build_subtasks_right(epic):
-    """Build rightHTML for subtasks mode."""
     chevR = _ICON_CHEVR
     planIcon = _ICON_PLAN
     rows = ''
@@ -259,7 +275,6 @@ def _build_subtasks_right(epic):
     return '<div class="kanban-drill-panel-header"><span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-dim);">Subtasks</span><span class="kanban-drill-inline-progress" style="display:inline-flex;align-items:center;gap:6px;margin-left:auto;"><span class="kanban-drill-inline-bar"><span class="kanban-drill-inline-fill" style="width:' + str(pct) + '%;"></span></span><span class="kanban-drill-inline-pct">' + str(pct) + '%</span></span></div><div class="kanban-drill-panel"><div class="kanban-drill-panel-body">' + rows + '</div></div><button class="kanban-drill-ai-plan-btn" style="margin-top:10px;">' + planIcon + ' Plan with AI</button>'
 
 def _build_sessions_right(epic):
-    """Build rightHTML for sessions mode."""
     chevR = _ICON_CHEVR
     rows = ''
     for s in epic["sessions"]:
@@ -268,7 +283,6 @@ def _build_sessions_right(epic):
     return '<div class="kanban-drill-panel-header"><span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-dim);">Sessions</span></div><div class="kanban-drill-panel"><div class="kanban-drill-panel-body">' + rows + '</div></div>'
 
 def _build_chooser_right():
-    """Build rightHTML for empty-state chooser mode."""
     listIcon = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>'
     boltIcon = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>'
     planIcon = _ICON_PLAN
@@ -287,69 +301,119 @@ def run():
     drv = _driver()
     print("\n--- Taking screenshots ---\n")
     try:
-        _init(drv)
+        # 1 -- Homepage
+        print("  [1/8] Homepage")
+        _fresh_page(drv, "homepage")
+        # Scale up the homepage cards by 20%
+        drv.execute_script("var cards=document.querySelector('.homepage-cards');if(cards){cards.style.transform='scale(1.2)';cards.style.transformOrigin='center center';}")
+        time.sleep(2); _snap(drv, "homepage", "homepage with 3 cards")
 
-        # 1 -- Session Grid (with live panel showing conversation)
-        print("  [1/7] Session Grid")
-        drv.execute_script("if(typeof setViewMode==='function') setViewMode('workforce');")
-        time.sleep(3)
-        # Click a real card to bootstrap the live panel
+        # 2 -- Session Grid (sidebar grid + conversation in main)
+        print("  [2/8] Session Grid")
+        drv.execute_script("localStorage.setItem('viewMode','sessions');localStorage.setItem('sessionDisplayMode','grid');")
+        drv.get(BASE); time.sleep(2)
+        drv.execute_script(_JS_FREEZE); time.sleep(3)
+        drv.execute_script(_JS_DISMISS); time.sleep(1)
+        drv.execute_script(_JS_DISMISS); drv.execute_script(_JS_FREEZE)
+        # Click a real card to open the live panel
+        drv.execute_script("var g=document.getElementById('workforce-grid');if(g)g.classList.add('visible');")
         drv.execute_script("var c=document.querySelectorAll('.wf-card');if(c.length)c[0].click();")
-        time.sleep(4)
-        # Inject fake grid + conversation
-        drv.execute_script(_JS_GRID, SESSIONS)
+        time.sleep(5)
+        # Stop live stream, freeze renders, then inject our content
+        drv.execute_script("if(typeof stopLivePanel==='function')stopLivePanel();")
+        drv.execute_script(_JS_FREEZE)
         drv.execute_script(_JS_LIVE, CONVERSATION)
-        time.sleep(1); _snap(drv, "session-grid", "workforce grid with live panel")
+        drv.execute_script(_JS_GRID, SESSIONS)
+        drv.execute_script("var g=document.getElementById('workforce-grid');if(g)g.classList.add('visible');")
+        time.sleep(1); _snap(drv, "session-grid", "session grid with conversation")
 
-        # 2 -- Workflow Board
-        print("  [2/7] Workflow Board")
-        _hide_live(drv)
-        drv.execute_script("if(typeof setViewMode==='function') setViewMode('kanban');")
-        time.sleep(3); drv.execute_script(_JS_DISMISS)
+        # 3 -- Session List (sidebar list + conversation in main)
+        print("  [3/8] Session List")
+        drv.execute_script("localStorage.setItem('viewMode','sessions');localStorage.setItem('sessionDisplayMode','list');")
+        drv.get(BASE); time.sleep(5)
+        drv.execute_script(_JS_DISMISS); time.sleep(1)
+        drv.execute_script(_JS_DISMISS)
+        # Open a real session to bootstrap the live panel
+        drv.execute_script("var s=typeof allSessions!=='undefined'&&allSessions.length?allSessions[0]:null;if(s&&typeof openInGUI==='function')openInGUI(s.id);")
+        time.sleep(5)
+        # Stop live stream, freeze, then inject our content
+        drv.execute_script("if(typeof stopLivePanel==='function')stopLivePanel();")
+        drv.execute_script(_JS_FREEZE)
+        drv.execute_script(_JS_LIVE, CONVERSATION)
+        drv.execute_script(_JS_LIST, SESSIONS)
+        time.sleep(1); _snap(drv, "session-list", "session list with conversation")
+
+        # 4 -- Workflow Board
+        print("  [4/8] Workflow Board")
+        _fresh_page(drv, "kanban")
         drv.execute_script(_JS_BOARD, BOARD)
         time.sleep(1); _snap(drv, "workflow-board", "kanban with demo tasks")
 
-        # 3 -- Task Hierarchy: Subtasks
-        print("  [3/7] Task Hierarchy (subtasks)")
+        # 5 -- Task Hierarchy: Subtasks
+        print("  [5/8] Task Hierarchy (subtasks)")
         d = dict(EPIC_SUBTASKS)
         d["rightHTML"] = _build_subtasks_right(d)
         _drill(drv, d)
         time.sleep(1); _snap(drv, "task-hierarchy", "epic drill-down subtasks")
 
-        # 4 -- Task Hierarchy: Sessions
-        print("  [4/7] Task Hierarchy (sessions)")
+        # 6 -- Task Hierarchy: Sessions
+        print("  [6/8] Task Hierarchy (sessions)")
         d = dict(EPIC_SESSIONS)
         d["rightHTML"] = _build_sessions_right(d)
         _drill(drv, d)
         time.sleep(1); _snap(drv, "task-sessions", "epic drill-down sessions")
 
-        # 5 -- Task Hierarchy: Chooser (empty state)
-        print("  [5/7] Task Hierarchy (chooser)")
+        # 7 -- Task Hierarchy: Chooser
+        print("  [7/8] Task Hierarchy (chooser)")
         d = dict(EPIC_CHOOSER)
         d["rightHTML"] = _build_chooser_right()
         _drill(drv, d)
         time.sleep(1); _snap(drv, "task-chooser", "empty task chooser")
 
-        # 6 -- Live Session
-        print("  [6/7] Live Session")
-        drv.execute_script("if(typeof setViewMode==='function') setViewMode('workforce');")
-        time.sleep(3)
-        drv.execute_script(_JS_GRID, SESSIONS)
+        # 8 -- Kanban Session (Board > Task > Session with conversation)
+        print("  [8/9] Kanban Session")
+        # Load kanban mode to get real sidebar, then inject session view
+        _fresh_page(drv, "kanban")
+        drv.execute_script(_JS_BOARD, BOARD)
         time.sleep(1)
-        drv.execute_script("var c=document.querySelectorAll('.wf-card');if(c.length)c[0].click();")
-        time.sleep(4)
-        drv.execute_script(_JS_GRID, SESSIONS)
+        # Inject breadcrumb bar, hide kanban board, show main-body with conversation
+        drv.execute_script(_JS_KANBAN_SESSION,
+            {"taskTitle": "Auth System Overhaul", "sessionName": "OAuth2 provider integration"},
+            _ICON_MENU, _ICON_CHEVR)
         drv.execute_script(_JS_LIVE, CONVERSATION)
-        time.sleep(1); _snap(drv, "live-session", "session with live panel")
+        drv.execute_script("document.getElementById('main-toolbar').style.display='none';")
+        time.sleep(1); _snap(drv, "kanban-session", "session from kanban drill-down")
 
-        # 7 -- Session List (with live panel showing conversation)
-        print("  [7/7] Session List")
-        drv.execute_script("if(typeof setViewMode==='function') setViewMode('list');")
-        time.sleep(3)
-        drv.execute_script(_JS_LIST, SESSIONS)
-        drv.execute_script(_JS_LIVE, CONVERSATION)
-        time.sleep(1); _snap(drv, "session-list", "list view with live panel")
 
+        # 9 -- Workforce (inject command center into main-body)
+        print("  [9/9] Workforce")
+        _fresh_page(drv, "workplace")
+        drv.execute_script(r"""(function(){
+var mb=document.getElementById('main-body');if(!mb)return;mb.style.display='';
+var wI='<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#5555bb" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>';
+var qI='<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ff9500" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="#ff9500"/></svg>';
+var iI='<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#44aa66" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
+var sI='<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9h6M9 15h6"/></svg>';
+var fI='<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
+var ic={working:wI,question:qI,idle:iI,sleeping:sI};
+var depts=[['Backend','#3b82f6',6,3],['Frontend','#8b5cf6',4,1],['DevOps','#f97316',3,1],['Security','#ef4444',2,1],['QA','#14b8a6',3,0]];
+var recent=[['OAuth2 provider integration','working','Backend','2:31 PM'],['Rate limiting middleware','working','Security','2:28 PM'],['DB query caching layer','working','Backend','2:15 PM'],['Fix WebSocket reconnect bug','question','Frontend','2:10 PM'],['Frontend bundle analysis','idle','Frontend','1:45 PM'],['API response compression','idle','Backend','1:30 PM'],['CI/CD pipeline hardening','idle','DevOps','12:15 PM'],['Session token encryption','idle','Security','12:50 PM']];
+var h='<div class="ws-container"><div class="wf-command-center">';
+h+='<div class="wf-cc-header"><div class="wf-cc-title">Workforce</div><div class="wf-cc-subtitle">5 departments \u00b7 3 sub-departments \u00b7 16 sessions</div></div>';
+h+='<div class="wf-cc-stats">';
+h+='<div class="wf-cc-stat wf-cc-stat-working"><div class="wf-cc-stat-icon">'+wI+'</div><div class="wf-cc-stat-num">3</div><div class="wf-cc-stat-label">Working</div></div>';
+h+='<div class="wf-cc-stat wf-cc-stat-waiting"><div class="wf-cc-stat-icon">'+qI+'</div><div class="wf-cc-stat-num">1</div><div class="wf-cc-stat-label">Waiting</div></div>';
+h+='<div class="wf-cc-stat wf-cc-stat-idle"><div class="wf-cc-stat-icon">'+iI+'</div><div class="wf-cc-stat-num">4</div><div class="wf-cc-stat-label">Idle</div></div>';
+h+='<div class="wf-cc-stat wf-cc-stat-sleeping"><div class="wf-cc-stat-icon">'+sI+'</div><div class="wf-cc-stat-num">8</div><div class="wf-cc-stat-label">Sleeping</div></div>';
+h+='</div><div class="wf-cc-section-label">Departments</div><div class="ws-canvas">';
+depts.forEach(function(d){h+='<div class="ws-folder-card"><div class="ws-folder-icon" style="color:'+d[1]+';">'+fI+'</div><div class="ws-folder-name">'+d[0]+'</div><div class="ws-folder-meta">'+d[2]+' agents \u00b7 '+d[3]+' active</div></div>';});
+h+='</div><div class="wf-cc-section-label">Recent Sessions</div><div class="wf-cc-recent">';
+recent.forEach(function(r){h+='<div class="wf-cc-recent-row"><span class="wf-cc-recent-icon">'+ic[r[1]]+'</span><span class="wf-cc-recent-name">'+r[0]+'</span><span class="wf-cc-recent-dept">'+r[2]+'</span><span class="wf-cc-recent-date">'+r[3]+'</span></div>';});
+h+='</div></div></div>';mb.innerHTML=h;
+var sp=document.getElementById('sidebar-perm-panel');
+if(sp){sp.style.display='';sp.innerHTML='<div class="kanban-sidebar-section"><div class="kanban-sidebar-label">Permissions</div><button class="kanban-sidebar-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Manual</button><div class="ws-perm-card"><div class="ws-perm-card-top"><span class="ws-perm-card-session">Fix WebSocket reconnect bug</span><span class="ws-perm-tool">Bash</span></div><div class="ws-perm-cmd">npm test -- --grep reconnect</div><div class="ws-perm-actions"><button class="ws-perm-btn ws-perm-allow">Allow</button><button class="ws-perm-btn ws-perm-deny">Deny</button><button class="ws-perm-btn ws-perm-always">Always</button></div></div><div class="ws-perm-card"><div class="ws-perm-card-top"><span class="ws-perm-card-session">OAuth2 provider integration</span><span class="ws-perm-tool">Write</span></div><div class="ws-perm-cmd">app/auth/oauth2.py</div><div class="ws-perm-actions"><button class="ws-perm-btn ws-perm-allow">Allow</button><button class="ws-perm-btn ws-perm-deny">Deny</button><button class="ws-perm-btn ws-perm-always">Always</button></div></div></div>';}
+})();""")
+        time.sleep(1); _snap(drv, "workforce", "workforce command center")
         print(f"\n  All saved to {SCREENSHOT_DIR}/")
     finally:
         drv.quit()
