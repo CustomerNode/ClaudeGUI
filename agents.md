@@ -1,18 +1,15 @@
-# ClaudeCodeGUI — Agent Standards & Guidelines
+# VibeNode — Agent Standards & Guidelines
 
-This document defines the standards for any agent (human or AI) working on ClaudeCodeGUI. Follow these rules for every change.
+This document defines the standards for any agent (human or AI) working on VibeNode. Follow these rules for every change.
 
 ---
 
 ## Architecture
 
 ```
-ClaudeCodeGUI/
-  session_manager.py          # Entrypoint — launches boot splash, delegates to run.py
-  run.py                      # Startup sequence — ports, deps, daemon, Flask app
+VibeNode/
+  session_manager.py          # Entrypoint — creates app, starts server
   app/
-    boot_splash.py            # Tkinter boot splash (subprocess, polls status file)
-    singleton.py              # Process-level mutex locking (web + daemon)
     __init__.py               # App factory, blueprint registration
     config.py                 # Paths, caches, shared state
     sessions.py               # Session loading, parsing, summarization
@@ -73,7 +70,7 @@ ClaudeCodeGUI/
 
 ### Theming
 
-ClaudeCodeGUI supports three theme modes: **dark**, **light**, and **auto** (adaptive).
+VibeNode supports three theme modes: **dark**, **light**, and **auto** (adaptive).
 
 #### CSS Custom Properties
 

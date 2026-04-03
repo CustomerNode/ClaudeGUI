@@ -163,7 +163,7 @@ cat > ~/.local/share/applications/vibenode.desktop << 'EOF'
 [Desktop Entry]
 Name=VibeNode
 Exec=bash -c 'cd ~/Documents/VibeNode && ./launch.sh'
-Icon=~/Documents/VibeNode/static/claudecodegui.ico
+Icon=~/Documents/VibeNode/static/vibenode.ico
 Type=Application
 Terminal=false
 EOF

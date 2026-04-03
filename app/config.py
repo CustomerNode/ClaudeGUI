@@ -128,7 +128,7 @@ def _sessions_dir() -> Path:
         _active_project = ""
 
     # Derive from server's own repo path — Claude encodes paths with dashes
-    # e.g. C:\Users\foo\Documents\ClaudeGUI -> C--Users-foo-Documents-ClaudeGUI
+    # e.g. C:\Users\foo\Documents\VibeNode -> C--Users-foo-Documents-VibeNode
     repo_path = str(_VIBENODE_DIR).replace("\\", "-").replace("/", "-").replace(":", "-")
     for d in _CLAUDE_PROJECTS.iterdir():
         if not d.is_dir() or d.name.startswith("subagents") or d.name.startswith("_"):

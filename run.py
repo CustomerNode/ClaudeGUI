@@ -218,7 +218,7 @@ def _fix_shortcut():
         if not pythonw.exists():
             return
         script = Path(__file__).resolve().parent / "session_manager.py"
-        icon = Path(__file__).resolve().parent / "static" / "claudecodegui.ico"
+        icon = Path(__file__).resolve().parent / "static" / "vibenode.ico"
         # Read current shortcut target to see if it already points to pythonw
         # (avoid rewriting on every launch if already correct)
         ps_read = (

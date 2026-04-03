@@ -1,4 +1,4 @@
-# ClaudeGUI Project Rules
+# VibeNode Project Rules
 
 ## Server restarts — CRITICAL RULES
 

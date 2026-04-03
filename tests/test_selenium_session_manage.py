@@ -58,7 +58,7 @@ def _ttl(t, sid="t"):
     return json.dumps({"type":"custom-title","customTitle":t,"sessionId":sid})
 
 def _fsd():
-    return CP / "C--Users-15512-Documents-ClaudeGUI"
+    return CP / "C--Users-15512-Documents-VibeNode"
 
 
 # ---------------------------------------------------------------------------
