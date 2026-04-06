@@ -9,15 +9,17 @@ function setToolbarSession(id, titleText, isUntitled, customTitle) {
   titleEl.dataset.customTitle = customTitle || '';
   titleEl.dataset.editable = id ? 'true' : 'false';
   titleEl.title = id ? 'Click to rename' : '';
-  // In kanban mode, main-toolbar NEVER shows
-  if (typeof viewMode !== 'undefined' && viewMode === 'kanban') {
-    document.getElementById('main-toolbar').style.display = 'none';
-    return;
-  }
+  // Enable/disable action buttons regardless of view mode — the Actions
+  // popup uses these same buttons even in kanban mode.
   ['btn-autoname','btn-open','btn-open-gui','btn-delete','btn-duplicate','btn-continue','btn-summary','btn-extract','btn-export','btn-fork','btn-rewind','btn-fork-rewind'].forEach(b => {
     const el = document.getElementById(b);
     if (el) el.disabled = !id;
   });
+  // In kanban mode, main-toolbar NEVER shows (actions are in the crumb bar)
+  if (typeof viewMode !== 'undefined' && viewMode === 'kanban') {
+    document.getElementById('main-toolbar').style.display = 'none';
+    return;
+  }
   document.getElementById('main-toolbar').style.display = id ? '' : 'none';
   // btn-close enabled when session is running or open in GUI
   const btnClose = document.getElementById('btn-close');
@@ -787,7 +789,13 @@ async function deleteSession(id) {
     // Unlink from any kanban tasks (best-effort, don't block)
     fetch('/api/kanban/sessions/' + id + '/unlink-all', { method: 'DELETE' }).catch(() => {});
     if (liveSessionId === id) stopLivePanel();
-    deselectSession();
+    // In kanban mode, navigate back to the task (or board) instead of
+    // just deselecting — otherwise the user is stuck on a dead view.
+    if (typeof viewMode !== 'undefined' && viewMode === 'kanban' && window._kanbanSessionTaskId) {
+      _kanbanSessionClose(window._kanbanSessionTaskId);
+    } else {
+      deselectSession();
+    }
     document.getElementById('search').placeholder = 'Search ' + allSessions.length + ' sessions\u2026';
     showToast('Session deleted');
   } else {

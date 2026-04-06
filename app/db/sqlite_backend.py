@@ -315,7 +315,7 @@ class SqliteRepository(KanbanRepository):
         conn = self._get_conn()
         now = datetime.now(timezone.utc).isoformat()
 
-        # If status changed, record in history
+        # If status changed, record in history and assign end-of-column position
         if "status" in fields:
             old_task = self.get_task(task_id)
             new_status = fields["status"]
@@ -323,6 +323,12 @@ class SqliteRepository(KanbanRepository):
                 new_status = new_status.value
             fields["status"] = new_status
             if old_task and old_task.status.value != new_status:
+                # Assign a new position at the end of the target column
+                # so it doesn't collide with existing tasks there.
+                if "position" not in fields:
+                    fields["position"] = self.get_next_position(
+                        old_task.project_id, new_status
+                    )
                 conn.execute(
                     "INSERT INTO task_status_history "
                     "(id, task_id, old_status, new_status, changed_by, changed_at) "
@@ -498,6 +504,18 @@ class SqliteRepository(KanbanRepository):
         row = cur.fetchone()
         max_pos = row["max_pos"] if row and row["max_pos"] is not None else 0
         return max_pos + _POSITION_GAP
+
+    def get_min_position(self, project_id, status):
+        """Return the smallest position in a column (for top-insert)."""
+        conn = self._get_conn()
+        status_val = status.value if isinstance(status, TaskStatus) else status
+        cur = conn.execute(
+            "SELECT MIN(position) as min_pos FROM tasks "
+            "WHERE project_id = ? AND status = ?",
+            (project_id, status_val),
+        )
+        row = cur.fetchone()
+        return row["min_pos"] if row and row["min_pos"] is not None else _POSITION_GAP
 
     # ------------------------------------------------------------------
     # Task ↔ Session links

@@ -27,6 +27,69 @@ let kanbanAllTags = [];
 let kanbanQuillInstance = null;
 let kanbanFocusedCard = -1;
 
+// ── Recent navigation history ──
+const _KANBAN_HISTORY_KEY = 'kanbanRecentHistory';
+const _KANBAN_HISTORY_MAX = 10;
+let _kanbanHistory = JSON.parse(localStorage.getItem(_KANBAN_HISTORY_KEY) || '[]');
+
+function _kanbanHistoryPush(entry) {
+  // entry: {type:'task'|'session', id, title, taskId?}
+  // Dedup: remove any entry with the same id OR same type+title (catches
+  // new sessions spawned under the same task with different UUIDs)
+  _kanbanHistory = _kanbanHistory.filter(h =>
+    h.id !== entry.id && !(h.type === entry.type && h.title === entry.title)
+  );
+  _kanbanHistory.unshift(entry);
+  if (_kanbanHistory.length > _KANBAN_HISTORY_MAX) _kanbanHistory.length = _KANBAN_HISTORY_MAX;
+  localStorage.setItem(_KANBAN_HISTORY_KEY, JSON.stringify(_kanbanHistory));
+}
+
+function _kanbanHistoryIcon() {
+  if (!_kanbanHistory.length) return '';
+  return '<span class="kanban-history-trigger" onclick="_toggleKanbanHistory(event)">'
+    + '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>'
+    + '</span>';
+}
+
+function _toggleKanbanHistory(event) {
+  event.stopPropagation();
+  let dropdown = document.getElementById('kanban-history-dropdown');
+  if (dropdown) { dropdown.remove(); return; }
+  if (!_kanbanHistory.length) return;
+
+  const trigger = event.currentTarget;
+  const rect = trigger.getBoundingClientRect();
+  dropdown = document.createElement('div');
+  dropdown.id = 'kanban-history-dropdown';
+  dropdown.className = 'kanban-history-dropdown';
+  dropdown.style.top = (rect.bottom + 4) + 'px';
+  dropdown.style.left = rect.left + 'px';
+
+  // Filter out current view
+  const _curId = liveSessionId || kanbanDetailTaskId || '';
+  const _filtered = _kanbanHistory.filter(h => h.id !== _curId);
+  if (!_filtered.length) { dropdown.remove(); return; }
+
+  let html = '<div class="kanban-history-header">Recent</div>';
+  for (const h of _filtered) {
+    const icon = h.type === 'session'
+      ? '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
+      : '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>';
+    const onclick = h.type === 'session'
+      ? `_kanbanOpenSession('${h.taskId || ''}','${h.id}')`
+      : `navigateToTask('${h.id}')`;
+    html += `<div class="kanban-history-item" onclick="document.getElementById('kanban-history-dropdown')?.remove();${onclick}">`
+      + icon + '<span>' + escHtml((h.title || '').slice(0, 40)) + '</span></div>';
+  }
+  dropdown.innerHTML = html;
+  document.body.appendChild(dropdown);
+  // Close on outside click
+  setTimeout(() => {
+    const _close = (e) => { if (!dropdown.contains(e.target)) { dropdown.remove(); document.removeEventListener('click', _close); } };
+    document.addEventListener('click', _close);
+  }, 0);
+}
+
 // Status colors read from CSS variables for theme support
 let _statusColorCache = null;
 function _readStatusColors() {
@@ -1840,6 +1903,8 @@ async function renderTaskDetail(taskId) {
     const task = await taskRes.json();
     // Store title for breadcrumb use by session opener
     window._kanbanDetailTaskTitle = task.title || '';
+    // Track in recent history
+    _kanbanHistoryPush({ type: 'task', id: taskId, title: task.title || '' });
     let ancestors = [];
     if (ancRes.ok) {
       const ancData = await ancRes.json();
@@ -1857,6 +1922,7 @@ async function renderTaskDetail(taskId) {
     // ── Navigation title bar: breadcrumb + actions ──
     let html = '<div class="kanban-drill-titlebar">';
     html += '<div class="kanban-drill-breadcrumb">';
+    html += _kanbanHistoryIcon();
     html += '<span class="kanban-drill-crumb" onclick="navigateToBoard()">' + KI.menu + ' Board</span>';
     for (const a of ancestors) {
       html += '<span class="kanban-drill-sep">' + KI.chevronR + '</span>';
@@ -2299,7 +2365,15 @@ function _inlineRenameSubtask(taskId, el) {
   };
   el.onblur = save;
   el.onkeydown = (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      el.blur();
+      // After saving, focus the "Add subtask" input for rapid entry
+      setTimeout(() => {
+        const addInput = document.getElementById('kanban-drill-new-subtask');
+        if (addInput) { addInput.scrollIntoView({ behavior: 'smooth', block: 'center' }); addInput.focus(); }
+      }, 50);
+    }
     if (e.key === 'Escape') { el.textContent = current; el.blur(); }
   };
 }
@@ -2700,6 +2774,13 @@ async function openSessionSpawner(taskId) {
     if (typeof showToast === 'function') showToast('Session spawner not available', true);
     return;
   }
+  // Close the planner panel if open — its CSS rule hides #live-input-bar
+  const _pp = document.getElementById('kanban-planner-panel');
+  if (_pp && _pp.classList.contains('open')) {
+    _pp.classList.remove('open');
+    _pp.remove();
+    _persistPlannerState(null);
+  }
 
   // Fetch task context; use stored title for breadcrumbs
   let taskTitle = window._kanbanDetailTaskTitle || '';
@@ -2728,71 +2809,73 @@ async function openSessionSpawner(taskId) {
 
   const newId = crypto.randomUUID();
 
-  // Extend the existing kanban titlebar — add Session crumb + Actions/Analyze
-  const titlebar = board.querySelector('.kanban-drill-titlebar');
-  if (titlebar) {
-    // Add Session to the breadcrumb
-    const crumbs = titlebar.querySelector('.kanban-drill-breadcrumb');
-    if (crumbs) {
-      // Make current crumb clickable (it was the task name)
-      const current = crumbs.querySelector('.kanban-drill-crumb.current');
-      if (current) {
-        current.classList.remove('current');
-        current.setAttribute('onclick', "_kanbanSessionClose('" + escHtml(taskId) + "')");
-      }
-      crumbs.innerHTML += '<span class="kanban-drill-sep">' + KI.chevronR + '</span>';
-      crumbs.innerHTML += '<span class="kanban-drill-crumb current">Session</span>';
-    }
-    // Add Actions + Analyze to the right
-    let actionsHtml = '<div class="kanban-drill-actions" id="kanban-session-actions">';
-    actionsHtml += '<span class="btn-group-label" onclick="openActionsPopup()">Actions</span>';
-    actionsHtml += '<div class="btn-group-divider"></div>';
-    actionsHtml += '<span class="btn-group-label" onclick="toggleGrpDropdown(\'grp-analyze\')">Analyze &#9662;</span>';
-    actionsHtml += '</div>';
-    titlebar.insertAdjacentHTML('beforeend', actionsHtml);
-  }
-
-  // Replace task detail body with live panel
-  const drillBody = board.querySelector('.kanban-drill-body') || board.querySelector('.kanban-drill-split');
-  const target = drillBody || board;
-  // Clear everything after the titlebar
-  const children = [...board.children];
-  for (const child of children) {
-    if (child !== titlebar) child.remove();
-  }
-
-  // Render live panel inside kanban-board
-  const sessionDiv = document.createElement('div');
-  sessionDiv.className = 'kanban-session-body';
-  sessionDiv.innerHTML =
-    '<div class="live-panel" id="live-panel">' +
-    '<div class="conversation live-log" id="live-log">' +
-    '<div class="empty-state" style="padding:60px 0;text-align:center;">' +
-    '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-faint)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:12px;opacity:0.4;"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>' +
-    '<div style="color:var(--text-faint);font-size:13px;">What will we VibeNode today?</div>' +
-    '</div></div>' +
-    '<div class="live-input-bar" id="live-input-bar"></div>' +
-    '</div>';
-  board.appendChild(sessionDiv);
-
-  // Push history
-  history.pushState({ view: 'kanban', taskId: taskId, session: true, sessionId: newId }, '', window.location.pathname + '#kanban/task/' + taskId + '/session/' + newId);
-
-  // Set up session state
+  // Register session
   allSessions.unshift({
     id: newId, display_title: 'New Session', custom_title: '',
     last_activity: '', size: '', message_count: 0, preview: '',
   });
   if (typeof guiOpenAdd === 'function') guiOpenAdd(newId);
-  filterSessions();
+
+  // ── Build crumb bar (same as _openSessionInKanban) ──
+  const kb = document.getElementById('kanban-board');
+  const existingBreadcrumb = kb ? kb.querySelector('.kanban-drill-breadcrumb') : null;
+  const _isSkel = existingBreadcrumb && existingBreadcrumb.querySelector('.skel-shimmer');
+  let crumbInnerHtml = '';
+  if (existingBreadcrumb && !_isSkel) {
+    const clone = existingBreadcrumb.cloneNode(true);
+    // Remove history icon from clone — the new crumb bar adds its own
+    const oldTrigger = clone.querySelector('.kanban-history-trigger');
+    if (oldTrigger) oldTrigger.remove();
+    const current = clone.querySelector('.kanban-drill-crumb.current');
+    if (current && taskId) {
+      current.classList.remove('current');
+      current.setAttribute('onclick', "_kanbanSessionClose('" + escHtml(taskId) + "')");
+    }
+    crumbInnerHtml = clone.innerHTML;
+  } else {
+    crumbInnerHtml = '<span class="kanban-drill-crumb" onclick="_kanbanSessionClose(\'board\')">' + KI.menu + ' Board</span>';
+    if (taskId) {
+      const taskTitle = window._kanbanDetailTaskTitle || '';
+      if (taskTitle) {
+        crumbInnerHtml += '<span class="kanban-drill-sep">' + KI.chevronR + '</span>';
+        crumbInnerHtml += '<span class="kanban-drill-crumb" onclick="_kanbanSessionClose(\'' + escHtml(taskId) + '\')">' + escHtml(taskTitle) + '</span>';
+      }
+    }
+  }
+  if (kb) kb.style.display = 'none';
+  const mb = document.getElementById('main-body');
+  if (mb) mb.style.display = '';
+  const oldBar = document.getElementById('kanban-session-bar');
+  if (oldBar) oldBar.remove();
+  let crumbHtml = '<div class="kanban-drill-titlebar" id="kanban-session-bar"><div class="kanban-drill-breadcrumb">' + _kanbanHistoryIcon() + crumbInnerHtml
+    + '<span class="kanban-drill-sep">' + KI.chevronR + '</span><span class="kanban-drill-crumb current">Session</span></div>'
+    + '<div class="kanban-drill-actions"><span class="btn-group-label" onclick="openActionsPopup()">Actions</span>'
+    + '<div class="btn-group-divider"></div><span class="btn-group-label" onclick="toggleGrpDropdown(\'grp-analyze\')">Analyze &#9662;</span></div></div>';
+  if (mb) mb.insertAdjacentHTML('beforebegin', crumbHtml);
+
+  window._kanbanSessionTaskId = taskId;
   activeId = newId;
   liveSessionId = newId;
+  localStorage.setItem('activeSessionId', newId);
+  filterSessions();
+
+  // Push history
+  history.pushState({ view: 'kanban', taskId: taskId, session: true, sessionId: newId }, '', window.location.pathname + '#kanban/task/' + taskId + '/session/' + newId);
+
+  // ── Render new session UI directly (same as addNewAgent) ──
+  document.getElementById('main-body').innerHTML =
+    '<div class="live-panel" id="live-panel">' +
+    '<div class="conversation live-log" id="live-log">' +
+    '<div class="empty-state" style="padding:60px 0;text-align:center;">' +
+    '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-faint)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:12px;opacity:0.4;"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>' +
+    '<div style="color:var(--text-faint);font-size:13px;">What will we VibeNode today?</div>' +
+    (typeof _renderTemplateGrid === 'function' ? _renderTemplateGrid(newId) : '') +
+    '</div></div>' +
+    '<div class="live-input-bar" id="live-input-bar"></div></div>';
   liveLineCount = 0;
   liveAutoScroll = true;
   liveBarState = null;
   if (typeof _renderedUserTexts !== 'undefined') _renderedUserTexts.clear();
-
-  // Input bar
   const bar = document.getElementById('live-input-bar');
   if (bar) {
     bar.innerHTML =
@@ -2806,11 +2889,13 @@ async function openSessionSpawner(taskId) {
     if (typeof setupVoiceButton === 'function') {
       setupVoiceButton(document.getElementById('live-input-ta'), document.getElementById('live-voice-btn'), () => _newSessionSubmit(newId));
     }
-    setTimeout(() => { const ta = document.getElementById('live-input-ta'); if (ta) ta.focus(); }, 50);
+    setTimeout(() => { const ta = document.getElementById('live-input-ta'); if (ta) { ta.focus(); if (typeof _initAutoResize === 'function') _initAutoResize(ta); } }, 50);
   }
-
-  // Force main-toolbar hidden — setting activeId may have triggered it
   document.getElementById('main-toolbar').style.display = 'none';
+  ['btn-autoname','btn-open','btn-open-gui','btn-delete','btn-duplicate','btn-continue','btn-summary','btn-extract','btn-export','btn-fork','btn-rewind','btn-fork-rewind'].forEach(b => {
+    const el = document.getElementById(b);
+    if (el) el.disabled = false;
+  });
 
   // Link session to task
   setTimeout(async () => {
@@ -2871,14 +2956,21 @@ function _openSessionInKanban(sessionId) {
   const s = allSessions.find(x => x.id === sessionId);
   const sessionName = s ? (s.display_title || 'Session') : 'Session';
   const taskId = kanbanDetailTaskId || null;
+  // Track in recent history
+  _kanbanHistoryPush({ type: 'session', id: sessionId, title: sessionName, taskId: taskId || '' });
 
   // Snapshot the existing breadcrumb from the drill-down before we hide it
   const kb = document.getElementById('kanban-board');
   const existingBreadcrumb = kb ? kb.querySelector('.kanban-drill-breadcrumb') : null;
+  // Don't clone skeleton breadcrumbs — they have shimmer divs, not real crumbs
+  const _isSkeleton = existingBreadcrumb && existingBreadcrumb.querySelector('.skel-shimmer');
   let crumbInnerHtml = '';
-  if (existingBreadcrumb) {
+  if (existingBreadcrumb && !_isSkeleton) {
     // Make the "current" crumb clickable (it was the task name — navigate back to it)
     const clone = existingBreadcrumb.cloneNode(true);
+    // Remove history icon from clone — the new crumb bar adds its own
+    const _oldTrigger = clone.querySelector('.kanban-history-trigger');
+    if (_oldTrigger) _oldTrigger.remove();
     const current = clone.querySelector('.kanban-drill-crumb.current');
     if (current && taskId) {
       current.classList.remove('current');
@@ -2909,6 +3001,7 @@ function _openSessionInKanban(sessionId) {
   // Build crumb bar: existing breadcrumb + session crumb
   let crumbHtml = '<div class="kanban-drill-titlebar" id="kanban-session-bar">';
   crumbHtml += '<div class="kanban-drill-breadcrumb">';
+  crumbHtml += _kanbanHistoryIcon();
   crumbHtml += crumbInnerHtml;
   crumbHtml += '<span class="kanban-drill-sep">' + KI.chevronR + '</span>';
   crumbHtml += '<span class="kanban-drill-crumb current">' + escHtml(sessionName) + '</span>';
@@ -2932,6 +3025,12 @@ function _openSessionInKanban(sessionId) {
   if (runningIds.has(sessionId)) guiOpenAdd(sessionId);
   if (liveSessionId && liveSessionId !== sessionId) { _autoSendPendingInput(); stopLivePanel(); }
   filterSessions();
+
+  // Enable action buttons (delete, etc.) — the Actions popup reuses these.
+  ['btn-autoname','btn-open','btn-open-gui','btn-delete','btn-duplicate','btn-continue','btn-summary','btn-extract','btn-export','btn-fork','btn-rewind','btn-fork-rewind'].forEach(b => {
+    const el = document.getElementById(b);
+    if (el) el.disabled = false;
+  });
 
   // Start live panel — writes to #main-body
   if (typeof startLivePanel === 'function') startLivePanel(sessionId);
@@ -4205,7 +4304,10 @@ function _kanbanOnBoardRefresh(data) { if (kanbanDetailTaskId) return; initKanba
 
 function navigateToTask(taskId) {
   if (_kanbanDidDrag) return;
-  if (liveSessionId && window._kanbanSessionTaskId) return;
+  if (liveSessionId && window._kanbanSessionTaskId) {
+    _kanbanSessionClose(taskId);
+    return;
+  }
   const board = document.getElementById('kanban-board');
   if (board) board.innerHTML = _taskDetailSkeleton();
   const state = { view: 'kanban', taskId };
@@ -4215,7 +4317,10 @@ function navigateToTask(taskId) {
 }
 
 function navigateToBoard() {
-  if (liveSessionId && window._kanbanSessionTaskId) return;
+  if (liveSessionId && window._kanbanSessionTaskId) {
+    _kanbanSessionClose('board');
+    return;
+  }
   const board = document.getElementById('kanban-board');
   if (board) board.innerHTML = _kanbanSkeleton();
   const state = { view: 'kanban', taskId: null };
@@ -4245,7 +4350,7 @@ function restoreFromHash() {
 
     // After a page refresh _idRemaps is empty — ask the server to resolve
     // the session ID in case it was remapped before the refresh.
-    const _doOpen = (sid) => renderTaskDetail(taskId).then(() => _openSessionInKanban(sid));
+    const _doOpen = (sid) => renderTaskDetail(taskId).catch(() => {}).then(() => _openSessionInKanban(sid));
     if (sessionId === sessMatch[2] && !allSessions.find(x => x.id === sessionId)) {
       const _krp = localStorage.getItem('activeProject') || '';
       const _krpQ = _krp ? '?project=' + encodeURIComponent(_krp) : '';
@@ -4318,7 +4423,7 @@ window.addEventListener('popstate', (e) => {
       // Forward into a session — wait for drill-down to render first
       kanbanDetailTaskId = e.state.taskId;
       const _sid = _resolveSessionId(e.state.sessionId);
-      renderTaskDetail(e.state.taskId).then(() => _openSessionInKanban(_sid));
+      renderTaskDetail(e.state.taskId).catch(() => {}).then(() => _openSessionInKanban(_sid));
     } else if (e.state.taskId) {
       goToTask(e.state.taskId);
     } else {
@@ -4331,7 +4436,7 @@ window.addEventListener('popstate', (e) => {
     if (sessMatch) {
       kanbanDetailTaskId = sessMatch[1];
       const _sid = _resolveSessionId(sessMatch[2]);
-      renderTaskDetail(sessMatch[1]).then(() => _openSessionInKanban(_sid));
+      renderTaskDetail(sessMatch[1]).catch(() => {}).then(() => _openSessionInKanban(_sid));
     } else if (hash && hash.startsWith('#kanban/task/')) {
       const tid = hash.replace('#kanban/task/', '').replace('/session', '');
       if (tid) goToTask(tid);

@@ -185,6 +185,11 @@ class KanbanRepository(ABC):
         to the end of the column identified by *status*."""
         ...
 
+    @abstractmethod
+    def get_min_position(self, project_id, status):
+        """Return the smallest position in a column (for top-insert)."""
+        ...
+
     # ── Task ↔ Session links ──────────────────────────────────────────
 
     @abstractmethod

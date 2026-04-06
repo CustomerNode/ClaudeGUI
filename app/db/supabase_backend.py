@@ -388,7 +388,7 @@ class SupabaseRepository(KanbanRepository):
 
         now = datetime.now(timezone.utc).isoformat()
 
-        # If status changed, record in history
+        # If status changed, record in history and assign end-of-column position
         if "status" in fields:
             old_task = self.get_task(task_id)
             new_status = fields["status"]
@@ -396,6 +396,12 @@ class SupabaseRepository(KanbanRepository):
                 new_status = new_status.value
             fields["status"] = new_status
             if old_task and old_task.status.value != new_status:
+                # Assign a new position at the end of the target column
+                # so it doesn't collide with existing tasks there.
+                if "position" not in fields:
+                    fields["position"] = self.get_next_position(
+                        old_task.project_id, new_status
+                    )
                 self.client.table("task_status_history").insert({
                     "id": str(uuid.uuid4()),
                     "task_id": task_id,
@@ -603,6 +609,22 @@ class SupabaseRepository(KanbanRepository):
         )
         if result.data:
             return result.data[0]["position"] + _POSITION_GAP
+        return _POSITION_GAP
+
+    def get_min_position(self, project_id, status):
+        """Return the smallest position in a column (for top-insert)."""
+        status_val = status.value if isinstance(status, TaskStatus) else status
+        result = (
+            self.client.table("tasks")
+            .select("position")
+            .eq("project_id", project_id)
+            .eq("status", status_val)
+            .order("position", desc=False)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]["position"]
         return _POSITION_GAP
 
     # ------------------------------------------------------------------

@@ -154,20 +154,30 @@ def register_ws_events(socketio, app):
 
     @socketio.on('connect')
     def handle_connect():
-        """On connect, send ID aliases only — NOT a full state snapshot.
+        """On connect, send a full state snapshot immediately.
 
-        The client immediately follows up with request_state_snapshot (which
-        carries the current project from localStorage).  That handler builds
-        the correctly-filtered snapshot.  Sending a snapshot HERE is dangerous
-        because the SocketIO query param can be stale (set at page load, not
-        updated on project switch), causing sessions from the wrong project
-        to overwrite the client's state.
+        Uses the project from the SocketIO query param (set from localStorage
+        at page load) so sessions are filtered correctly.  The client also
+        sends request_state_snapshot right after connect as a backup, but
+        this initial snapshot ensures running sessions show their true state
+        without any delay.
         """
+        from flask import request as flask_request
+        project = ""
+        try:
+            project = (flask_request.args.get("project") or "").strip()
+        except Exception:
+            pass
         sm = app.session_manager
-        # Send aliases so the client can resolve remapped IDs immediately
+        sessions = _filter_sessions_for_project(sm.get_all_states(), project=project)
+        queues = {}
+        for s in sessions:
+            q = s.get('queue')
+            if q:
+                queues[s['session_id']] = q
         aliases = dict(sm._id_aliases) if hasattr(sm, '_id_aliases') else {}
-        emit('state_snapshot', {'sessions': [], 'queues': {}, 'aliases': aliases})
-        logger.debug("WebSocket client connected, sent aliases only")
+        emit('state_snapshot', {'sessions': sessions, 'queues': queues, 'aliases': aliases})
+        logger.debug("WebSocket client connected, sent %d session states", len(sessions))
 
     @socketio.on('disconnect')
     def handle_disconnect():

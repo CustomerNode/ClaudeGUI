@@ -315,9 +315,8 @@ def create_task():
         status = TaskStatus(status_str)
         insert_position = data.get("insert_position", "bottom")
         if insert_position == "top":
-            # Position 0 — the board sorts by position ASC so this goes first
-            # Existing tasks have position >= 1000 (gap numbering)
-            position = 0
+            # Find the current minimum position and place this task before it
+            position = repo.get_min_position(project_id, status_str) - 1000
         else:
             position = repo.get_next_position(project_id, status_str)
 

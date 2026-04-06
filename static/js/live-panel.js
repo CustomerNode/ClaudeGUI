@@ -493,6 +493,19 @@ function startLivePanel(id, opts) {
   liveBarState = null;
   updateLiveInputBar();
   _renderQueueBanner();
+
+  // Eagerly fetch this session's state from the daemon so we don't
+  // show "sleeping" while waiting for the full state_snapshot.
+  if (!runningIds.has(id) && !sessionKinds[id]) {
+    fetch('/api/session/' + id + '?meta_only=1' + (_lpProj ? '&project=' + encodeURIComponent(_lpProj) : ''))
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d || liveSessionId !== id) return;
+        // Check daemon state directly
+        socket.emit('request_state_snapshot', { project: localStorage.getItem('activeProject') || '' });
+      }).catch(() => {});
+  }
+
   setTimeout(() => {
     const ta = document.getElementById('live-input-ta');
     if (ta && ta.value.trim()) return; // user is typing, don't clobber

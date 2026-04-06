@@ -1209,9 +1209,15 @@ async function loadSessions() {
   }
 
   // Restore session from URL, then localStorage, then per-project memory, or show dashboard.
+  // Skip session restore entirely when the URL hash points to a kanban view —
+  // restoreFromHash handles navigation there; restoring a stale activeSessionId
+  // would hijack the view and open a session from a different task/subtree.
+  const _hashIsKanban = window.location.hash.startsWith('#kanban');
   const _activeProj = localStorage.getItem('activeProject');
-  let _restoreId = _urlChatId || localStorage.getItem('activeSessionId')
-    || (_activeProj && localStorage.getItem('projectSession_' + _activeProj));
+  let _restoreId = _hashIsKanban ? null : (
+    _urlChatId || localStorage.getItem('activeSessionId')
+    || (_activeProj && localStorage.getItem('projectSession_' + _activeProj))
+  );
 
   // If the stored ID isn't in allSessions, it may have been remapped by the SDK.
   // Ask the server to resolve the alias before giving up.
