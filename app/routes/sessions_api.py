@@ -10,8 +10,10 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request
 
 from ..config import (
+    _CLAUDE_PROJECTS,
     _sessions_dir,
     _load_names,
+    _names_file,
     _save_name,
     _delete_name,
     _remap_name,
@@ -23,6 +25,7 @@ from ..config import (
     _mark_deleted_bulk,
     _get_utility_ids,
     _resolve_remapped_id,
+    _load_remaps,
 )
 from ..sessions import load_session, load_session_timeline, all_sessions
 from ..titling import smart_title
@@ -32,7 +35,14 @@ bp = Blueprint('sessions_api', __name__)
 
 @bp.route("/api/sessions")
 def api_sessions():
-    sessions = all_sessions(summary_only=True)
+    # ── Extract project from client request ──
+    # The client passes ?project=<encoded> so the server uses the correct
+    # project without mutating the global _active_project.
+    project = request.args.get("project", "").strip()
+    if project and not (_CLAUDE_PROJECTS / project).is_dir():
+        project = get_active_project()
+
+    sessions = all_sessions(summary_only=True, project=project)
 
     # Merge in SDK-managed sessions that haven't written a .jsonl yet.
     # Without this, sessions started via the GUI disappear on page refresh
@@ -42,30 +52,35 @@ def api_sessions():
     # Resolve aliased (pre-remap) session IDs so JSONL-based sessions
     # appear under their canonical (SDK-assigned) ID, preventing duplicates
     # with daemon stubs that use the new ID.
+    # Merge in-memory aliases with disk-persisted remaps so resolution
+    # still works after a web restart (when _id_aliases is empty).
     aliases = dict(sm._id_aliases) if hasattr(sm, '_id_aliases') else {}
+    for old_id, entry in _load_remaps(project).items():
+        if old_id not in aliases and entry.get("new_id"):
+            aliases[old_id] = entry["new_id"]
+
     if aliases:
-        _seen = set()
         for s in sessions:
             new_id = aliases.get(s["id"])
             if new_id:
                 s["id"] = new_id
+
+    # Always deduplicate — keeps the first (richer JSONL-based) entry
+    # when both an old and new ID resolve to the same canonical ID.
+    deduped = []
+    _seen = set()
+    for s in sessions:
+        if s["id"] not in _seen:
             _seen.add(s["id"])
-        # Deduplicate — if both old JSONL and new stub existed, keep the
-        # richer JSONL-based entry (it comes first from all_sessions).
-        deduped = []
-        _final = set()
-        for s in sessions:
-            if s["id"] not in _final:
-                _final.add(s["id"])
-                deduped.append(s)
-        sessions = deduped
+            deduped.append(s)
+    sessions = deduped
 
     # Final pass: filter out any sessions whose resolved ID is a utility session
-    utility_ids = _get_utility_ids()
+    utility_ids = _get_utility_ids(project)
     sessions = [s for s in sessions if s["id"] not in utility_ids]
 
     existing_ids = {s["id"] for s in sessions}
-    names = _load_names()  # check _session_names.json for auto-named titles
+    names = _load_names(project)  # check _session_names.json for auto-named titles
     for state in sm.get_all_states():
         sid = state.get("session_id", "")
         if state.get("session_type") in ("planner", "title"):
@@ -74,7 +89,7 @@ def api_sessions():
             continue
         # ── Project isolation: skip sessions belonging to other projects ──
         state_cwd = state.get("cwd", "")
-        if state_cwd and not cwd_matches_active_project(state_cwd):
+        if state_cwd and not cwd_matches_active_project(state_cwd, project=project):
             continue
         if sid and sid not in existing_ids and state.get("state") != "stopped":
             saved_name = names.get(sid, "")
@@ -106,11 +121,12 @@ def api_resolve_session(session_id):
     Checks in-memory aliases first, then falls back to the persisted
     remap file so resolution works even before aliases are synced.
     """
+    project = request.args.get("project", "").strip()
     sm = current_app.session_manager
     resolved = sm._resolve_id(session_id) if hasattr(sm, '_resolve_id') else session_id
     if resolved == session_id:
         # In-memory alias not found — check disk-persisted remaps
-        disk_resolved = _resolve_remapped_id(session_id)
+        disk_resolved = _resolve_remapped_id(session_id, project)
         if disk_resolved:
             resolved = disk_resolved
     return jsonify({"id": resolved, "remapped": resolved != session_id})
@@ -119,20 +135,21 @@ def api_resolve_session(session_id):
 @bp.route("/api/session/<session_id>")
 def api_session(session_id):
     meta_only = request.args.get("meta_only") == "1"
+    project = request.args.get("project", "").strip()
 
     # If this ID was remapped (old temp UUID -> real SDK UUID), redirect to
     # the canonical ID so stale cached references never serve a ghost session.
-    canonical = _resolve_remapped_id(session_id)
+    canonical = _resolve_remapped_id(session_id, project)
     if canonical:
         session_id = canonical
 
-    path = _sessions_dir() / f"{session_id}.jsonl"
+    path = _sessions_dir(project) / f"{session_id}.jsonl"
     if not path.exists():
         # Check if it's an SDK-managed session with no .jsonl yet
         sm = current_app.session_manager
         if sm.has_session(session_id):
             if meta_only:
-                saved_title = _load_names().get(session_id, "")
+                saved_title = _load_names(project).get(session_id, "")
                 return jsonify({
                     "id": session_id,
                     "display_title": saved_title or "New Session",
@@ -140,7 +157,7 @@ def api_session(session_id):
                 })
             entries = sm.get_entries(session_id)
             state = sm.get_session_state(session_id) or "idle"
-            saved_title = _load_names().get(session_id, "")
+            saved_title = _load_names(project).get(session_id, "")
             return jsonify({
                 "id": session_id,
                 "display_title": saved_title or "New Session",
@@ -168,15 +185,16 @@ def api_session(session_id):
 def api_rename(session_id):
     data = request.get_json(silent=True) or {}
     new_title = data.get("title", "").strip()
+    project = (data.get("project") or request.args.get("project", "")).strip()
     if not new_title:
         return jsonify({"error": "Title cannot be empty"}), 400
 
     # Save to the persistent names store FIRST -- this always succeeds even if
     # the .jsonl doesn't exist yet (new sessions before first message).
-    _save_name(session_id, new_title)
+    _save_name(session_id, new_title, project)
 
     # Also write to the .jsonl so Claude Code's own UI sees the name (if file exists)
-    path = _sessions_dir() / f"{session_id}.jsonl"
+    path = _sessions_dir(project) / f"{session_id}.jsonl"
     if path.exists():
         entry = json.dumps({"type": "custom-title", "customTitle": new_title, "sessionId": session_id})
         with open(path, "a", encoding="utf-8") as f:
@@ -191,15 +209,16 @@ def api_remap_name():
     data = request.get_json(silent=True) or {}
     old_id = data.get("old_id", "").strip()
     new_id = data.get("new_id", "").strip()
+    project = data.get("project", "").strip()
     if not old_id or not new_id:
         return jsonify({"error": "old_id and new_id required"}), 400
 
-    title = _remap_name(old_id, new_id)
+    title = _remap_name(old_id, new_id, project)
     if not title:
         return jsonify({"ok": True, "skipped": True})
 
     # Write custom-title entry to the new .jsonl if it exists
-    path = _sessions_dir() / f"{new_id}.jsonl"
+    path = _sessions_dir(project) / f"{new_id}.jsonl"
     if path.exists():
         entry = json.dumps({"type": "custom-title", "customTitle": title, "sessionId": new_id})
         with open(path, "a", encoding="utf-8") as f:
@@ -210,23 +229,24 @@ def api_remap_name():
 
 @bp.route("/api/autonname/<session_id>", methods=["POST"])
 def api_autoname(session_id):
+    data = request.get_json(silent=True) or {}
+    project = (data.get("project") or request.args.get("project", "")).strip()
+
     # Never override a name the user manually set
-    existing = _load_names().get(session_id)
+    existing = _load_names(project).get(session_id)
     if existing:
         return jsonify({"ok": True, "title": existing, "skipped": True,
                         "reason": "User-set name preserved"})
 
     # Accept prompt text directly (for immediate naming before JSONL exists)
-    data = request.get_json(silent=True) or {}
     prompt_text = (data.get("prompt") or "").strip()
     messages = []
     if prompt_text:
         messages = [{"role": "user", "content": prompt_text}]
     else:
         # Fall back to reading from JSONL
-        path = _sessions_dir() / f"{session_id}.jsonl"
+        path = _sessions_dir(project) / f"{session_id}.jsonl"
         if not path.exists():
-            from ..config import _CLAUDE_PROJECTS
             for d in _CLAUDE_PROJECTS.iterdir():
                 if not d.is_dir() or d.name.startswith("subagents"):
                     continue
@@ -276,7 +296,7 @@ def api_autoname(session_id):
     is_re_evaluate = data.get("re_evaluate", False) and old_title
 
     if not messages:
-        all_s = all_sessions(summary_only=True)
+        all_s = all_sessions(summary_only=True, project=project)
         empty_count = sum(
             1 for s in all_s
             if (s.get("custom_title") or "").startswith("Empty Session")
@@ -302,7 +322,7 @@ def api_autoname(session_id):
             entry = json.dumps({"type": "custom-title", "customTitle": title, "sessionId": session_id})
             with open(path, "a", encoding="utf-8") as f:
                 f.write("\n" + entry + "\n")
-        _save_name(session_id, title)
+        _save_name(session_id, title, project)
 
         return jsonify({"ok": True, "title": title, "renamed": is_re_evaluate})
 
@@ -316,8 +336,9 @@ def api_delete(session_id):
     import signal
     import time
 
-    path = _sessions_dir() / f"{session_id}.jsonl"
-    folder = _sessions_dir() / session_id
+    project = request.args.get("project", "").strip()
+    path = _sessions_dir(project) / f"{session_id}.jsonl"
+    folder = _sessions_dir(project) / session_id
 
     # Phase 1: Close the SDK session SYNCHRONOUSLY so the CLI subprocess is
     # fully dead before we remove the file (prevents it from being recreated).
@@ -346,7 +367,7 @@ def api_delete(session_id):
     # Phase 3: Tombstone + delete the file.
     # Write the tombstone FIRST so all_sessions() hides this ID immediately,
     # even if a dying process recreates the .jsonl after we unlink it.
-    _mark_deleted(session_id)
+    _mark_deleted(session_id, project)
 
     if not path.exists():
         sm._save_registry_now()
@@ -394,7 +415,7 @@ def api_delete(session_id):
         del _summary_cache[key]
 
     # Clean up user-set name from persistent store
-    _delete_name(session_id)
+    _delete_name(session_id, project)
 
     # Force immediate registry save so recovery can't resurrect this session
     sm._save_registry_now()
@@ -408,7 +429,8 @@ def api_delete_all():
     import time
     from concurrent.futures import ThreadPoolExecutor
 
-    sd = _sessions_dir()
+    project = request.args.get("project", "").strip()
+    sd = _sessions_dir(project)
     sm = current_app.session_manager
 
     sids_to_delete = [f.stem for f in sd.glob("*.jsonl")]
@@ -416,7 +438,7 @@ def api_delete_all():
         return jsonify({"ok": True, "deleted": 0})
 
     # Phase 1: tombstone ALL immediately so UI hides them right away
-    _mark_deleted_bulk(sids_to_delete)
+    _mark_deleted_bulk(sids_to_delete, project)
 
     # Phase 2: close SDK sessions in parallel (don't wait for each one)
     def _close(sid):
@@ -444,7 +466,7 @@ def api_delete_all():
 
     # Phase 4: clear names file in one write instead of per-session
     try:
-        nf = _names_file()
+        nf = _names_file(project)
         nf.write_text("{}", encoding="utf-8")
     except Exception:
         pass
@@ -461,20 +483,21 @@ def api_delete_empty():
     import signal
     import time
 
+    project = request.args.get("project", "").strip()
     sm = current_app.session_manager
     deleted = []
     deleted_paths = []  # track for Phase 4 sweep
 
     # First pass: identify empty sessions and tombstone them immediately
     empty_files = []
-    for f in _sessions_dir().glob("*.jsonl"):
+    for f in _sessions_dir(project).glob("*.jsonl"):
         s = load_session(f)
         if s.get("message_count", 0) == 0:
             empty_files.append(f)
 
     # Tombstone all empty session IDs BEFORE deleting anything
     if empty_files:
-        _mark_deleted_bulk([f.stem for f in empty_files])
+        _mark_deleted_bulk([f.stem for f in empty_files], project)
 
     # Second pass: close, kill, and delete
     for f in empty_files:
@@ -496,7 +519,7 @@ def api_delete_empty():
         except Exception:
             pass
 
-        folder = _sessions_dir() / sid
+        folder = _sessions_dir(project) / sid
         path_str = str(f)
         if f.exists():
             f.unlink()
@@ -504,7 +527,7 @@ def api_delete_empty():
             shutil.rmtree(folder)
         for key in [k for k in _summary_cache if k[0] == path_str]:
             del _summary_cache[key]
-        _delete_name(sid)
+        _delete_name(sid, project)
         deleted.append(sid)
         deleted_paths.append((f, folder))
 
@@ -531,12 +554,13 @@ def api_delete_empty():
 @bp.route("/api/duplicate/<session_id>", methods=["POST"])
 def api_duplicate(session_id):
     import uuid as uuid_mod
-    src = _sessions_dir() / f"{session_id}.jsonl"
+    project = request.args.get("project", "").strip()
+    src = _sessions_dir(project) / f"{session_id}.jsonl"
     if not src.exists():
         return jsonify({"error": "Not found"}), 404
 
     new_id = str(uuid_mod.uuid4())
-    dst = _sessions_dir() / f"{new_id}.jsonl"
+    dst = _sessions_dir(project) / f"{new_id}.jsonl"
 
     # Copy file, rewriting sessionId in every line
     lines_out = []
@@ -560,7 +584,8 @@ def api_duplicate(session_id):
 def api_continue(session_id):
     import uuid as uuid_mod
 
-    src = _sessions_dir() / f"{session_id}.jsonl"
+    project = request.args.get("project", "").strip()
+    src = _sessions_dir(project) / f"{session_id}.jsonl"
     if not src.exists():
         return jsonify({"error": "Not found"}), 404
 
@@ -609,7 +634,7 @@ def api_continue(session_id):
                   "uuid": msg_uuid, "timestamp": now}
     title_entry = {"type": "custom-title", "customTitle": f"[cont] {topic[:55]}", "sessionId": new_id}
 
-    dst = _sessions_dir() / f"{new_id}.jsonl"
+    dst = _sessions_dir(project) / f"{new_id}.jsonl"
     with open(dst, "w", encoding="utf-8") as f:
         f.write(json.dumps(snapshot) + "\n")
         f.write(json.dumps(user_entry) + "\n")
@@ -621,10 +646,11 @@ def api_continue(session_id):
 @bp.route("/api/session-timeline/<session_id>")
 def api_session_timeline(session_id):
     """Return lightweight message list for the fork/rewind timeline picker."""
-    canonical = _resolve_remapped_id(session_id)
+    project = request.args.get("project", "").strip()
+    canonical = _resolve_remapped_id(session_id, project)
     if canonical:
         session_id = canonical
-    path = _sessions_dir() / f"{session_id}.jsonl"
+    path = _sessions_dir(project) / f"{session_id}.jsonl"
     if not path.exists():
         # Check SDK-managed sessions with no .jsonl yet
         sm = current_app.session_manager
@@ -641,7 +667,8 @@ def api_fork(session_id):
     """Create a new session containing only JSONL lines up to a given line number."""
     import uuid as uuid_mod
 
-    src = _sessions_dir() / f"{session_id}.jsonl"
+    project = request.args.get("project", "").strip()
+    src = _sessions_dir(project) / f"{session_id}.jsonl"
     if not src.exists():
         return jsonify({"error": "Not found"}), 404
 
@@ -651,7 +678,7 @@ def api_fork(session_id):
         return jsonify({"error": "up_to_line is required"}), 400
 
     new_id = str(uuid_mod.uuid4())
-    dst = _sessions_dir() / f"{new_id}.jsonl"
+    dst = _sessions_dir(project) / f"{new_id}.jsonl"
 
     lines_out = []
     line_num = 0
@@ -692,7 +719,8 @@ def api_fork(session_id):
 @bp.route("/api/rewind/<session_id>", methods=["POST"])
 def api_rewind(session_id):
     """Rewind tracked files to the state at a given message line number."""
-    src = _sessions_dir() / f"{session_id}.jsonl"
+    project = request.args.get("project", "").strip()
+    src = _sessions_dir(project) / f"{session_id}.jsonl"
     if not src.exists():
         return jsonify({"error": "Not found"}), 404
 
@@ -832,7 +860,8 @@ def api_fork_rewind(session_id):
     """Fork conversation AND rewind code to a given message."""
     import uuid as uuid_mod
 
-    src = _sessions_dir() / f"{session_id}.jsonl"
+    project = request.args.get("project", "").strip()
+    src = _sessions_dir(project) / f"{session_id}.jsonl"
     if not src.exists():
         return jsonify({"error": "Not found"}), 404
 
@@ -843,7 +872,7 @@ def api_fork_rewind(session_id):
 
     # --- Fork ---
     new_id = str(uuid_mod.uuid4())
-    dst = _sessions_dir() / f"{new_id}.jsonl"
+    dst = _sessions_dir(project) / f"{new_id}.jsonl"
 
     lines_out = []
     line_num = 0
@@ -929,7 +958,8 @@ def api_fork_rewind(session_id):
 @bp.route("/api/open/<session_id>", methods=["POST"])
 def api_open(session_id):
     """Open/resume a session via the SDK SessionManager."""
-    path = _sessions_dir() / f"{session_id}.jsonl"
+    project = request.args.get("project", "").strip()
+    path = _sessions_dir(project) / f"{session_id}.jsonl"
     if not path.exists():
         return jsonify({"error": "Not found"}), 404
 

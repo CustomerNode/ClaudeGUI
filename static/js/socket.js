@@ -1,6 +1,11 @@
 /* socket.js — WebSocket (Socket.IO) event handling, replaces polling.js */
 
-const socket = io();
+// Pass activeProject as a query param so the server can filter the initial
+// state_snapshot by the correct project — before the client has a chance to
+// send request_state_snapshot.  This fixes sessions from the wrong project
+// appearing (or real sessions being excluded) on the very first snapshot.
+const _socketProject = localStorage.getItem('activeProject') || '';
+const socket = io({ query: { project: _socketProject } });
 let _wsConnected = false;
 
 /**
@@ -54,6 +59,10 @@ function _sessionBelongsToActiveProject(cwd) {
 socket.on('connect', () => {
     _wsConnected = true;
     console.log('[WS] Connected');
+    // Update SocketIO query params with current project so reconnects
+    // and the server's handle_connect use the right project context.
+    const _curProj = localStorage.getItem('activeProject') || '';
+    if (socket.io && socket.io.opts) socket.io.opts.query = { project: _curProj };
     // Update status bar connection indicator
     const sbConn = document.getElementById('sb-connection');
     if (sbConn) { sbConn.textContent = '\u25CF'; sbConn.style.color = 'var(--idle-label)'; sbConn.title = 'Connected'; }
@@ -61,14 +70,17 @@ socket.on('connect', () => {
     if (typeof permissionPolicy !== 'undefined') {
         socket.emit('set_permission_policy', { policy: permissionPolicy, customRules: customPolicies || {} });
     }
-    // Refresh session list on reconnect so new/changed sessions appear
-    if (typeof loadSessions === 'function') {
+    // Refresh session list on reconnect — but only AFTER initial load
+    // is complete.  On first connect, loadProjects() handles session loading
+    // (with proper project sync).  Calling loadSessions() here too causes
+    // a race that tears down the live panel mid-stream.
+    if (typeof loadSessions === 'function' && window._initialLoadDone) {
         loadSessions();
     }
     // Request full state snapshot to resync indicators.
     // Include activeProject so the server syncs its _active_project
     // (which resets to VibeNode on web restart) before filtering.
-    const _ap = localStorage.getItem('activeProject') || '';
+    const _ap = _curProj;
     socket.emit('request_state_snapshot', {project: _ap});
     // Retry after 3s in case the first snapshot was silently dropped
     // (e.g. DaemonClient not yet reconnected when server just restarted)
@@ -224,7 +236,7 @@ socket.on('state_snapshot', (data) => {
         console.warn('[state_snapshot] Live session', liveSessionId,
             'transitioned from working →', newKinds[liveSessionId],
             '— re-fetching entries in case real-time events were lost');
-        socket.emit('get_session_log', {session_id: liveSessionId, since: 0});
+        socket.emit('get_session_log', {session_id: liveSessionId, since: 0, project: localStorage.getItem('activeProject') || ''});
     }
 
     // Preserve optimistic state for sessions the frontend knows are running
@@ -387,6 +399,10 @@ socket.on('state_snapshot', (data) => {
 socket.on('session_state', (data) => {
     const {session_id, state, cost_usd, error, name, model, working_since} = data;
     if (_isHiddenSession(session_id, data)) return;
+    // Cross-project filtering: drop state events from other projects so
+    // sessions don't bleed into sessionKinds/runningIds/sidebar.
+    // Always allow the live session through (user is actively watching it).
+    if (data.cwd && session_id !== liveSessionId && !_sessionBelongsToActiveProject(data.cwd)) return;
     const substatus = data.substatus || '';
     const usage = data.usage || null;
 
@@ -436,6 +452,11 @@ socket.on('session_state', (data) => {
         sessionKinds[session_id] = 'working';
     } else if (state === 'idle') {
         sessionKinds[session_id] = 'idle';
+        // Clean up any leftover streaming bubble when session goes idle
+        if (session_id === liveSessionId) {
+            const _sb = document.querySelector('.msg.assistant.streaming-bubble');
+            if (_sb) _sb.remove();
+        }
     } else if (state === 'stopped') {
         delete sessionKinds[session_id];
     }
@@ -504,11 +525,11 @@ socket.on('session_state', (data) => {
             const sc = data.entry_count;
             if (sc != null && sc > liveLineCount) {
                 console.warn('[entry-catchup] Backend has', sc, 'entries but frontend has', liveLineCount);
-                socket.emit('get_session_log', {session_id: session_id, since: 0});
+                socket.emit('get_session_log', {session_id: session_id, since: 0, project: localStorage.getItem('activeProject') || ''});
             } else {
                 setTimeout(() => {
                     if (liveSessionId === session_id) {
-                        socket.emit('get_session_log', {session_id: session_id, since: 0});
+                        socket.emit('get_session_log', {session_id: session_id, since: 0, project: localStorage.getItem('activeProject') || ''});
                     }
                 }, 500);
             }
@@ -590,6 +611,97 @@ socket.on('session_usage', (data) => {
     }
 });
 
+// ── Real-time streaming text deltas ──────────────────────────────────
+// The backend forwards raw Claude SDK StreamEvents. We use
+// content_block_delta events to build a live-typing assistant bubble
+// that gets replaced by the final 'asst' session_entry when complete.
+socket.on('stream_event', (data) => {
+    if (!data || !data.session_id || !data.event) return;
+    if (_hiddenSessionIds.has(data.session_id)) return;
+
+    // ── Session ID match (same alias logic as session_entry) ──
+    let _sidMatch = (data.session_id === liveSessionId);
+    if (!_sidMatch && liveSessionId && window._idRemaps) {
+        if (window._idRemaps[liveSessionId] === data.session_id) {
+            _sidMatch = true;
+        }
+        for (const oldId in window._idRemaps) {
+            if (window._idRemaps[oldId] === liveSessionId && oldId === data.session_id) {
+                _sidMatch = true;
+                break;
+            }
+        }
+    }
+    if (!_sidMatch) return;
+
+    const evtType = data.event.event || '';
+    const evtData = data.event.data || {};
+
+    // ── content_block_delta → append text to streaming bubble ──
+    if (evtType === 'content_block_delta') {
+        // SDK shape: data.delta may be {type:"text_delta", text:"..."} or a plain string
+        let chunk = '';
+        const delta = evtData.delta;
+        if (typeof delta === 'string') {
+            chunk = delta;
+        } else if (delta && typeof delta === 'object') {
+            chunk = delta.text || '';
+        }
+        if (!chunk) return;
+
+        const logEl = document.getElementById('live-log');
+        if (!logEl) return;
+
+        // Find or create the streaming bubble
+        let bubble = logEl.querySelector('.msg.assistant.streaming-bubble');
+        if (!bubble) {
+            // Clear skeleton on first real content
+            if (liveLineCount === 0) {
+                const skel = logEl.querySelector('.skel-bar, .skeleton-loader, .live-log-empty, .empty-state');
+                if (skel) logEl.innerHTML = '';
+            }
+            bubble = document.createElement('div');
+            bubble.className = 'msg assistant streaming-bubble';
+            bubble.innerHTML =
+                '<div class="msg-role">claude <span class="msg-time" style="color:var(--text-faint);font-size:10px;">streaming\u2026</span></div>' +
+                '<div class="msg-body msg-content"></div>';
+            logEl.appendChild(bubble);
+        }
+
+        // Append chunk to raw text accumulator, then re-render markdown
+        // Throttle markdown re-parsing to avoid jank on fast streams
+        if (!bubble._rawText) bubble._rawText = '';
+        bubble._rawText += chunk;
+        const bodyEl = bubble.querySelector('.msg-body');
+        if (bodyEl) {
+            const now = Date.now();
+            const elapsed = now - (bubble._lastRender || 0);
+            if (elapsed >= 80 && typeof mdParse === 'function') {
+                bodyEl.innerHTML = mdParse(bubble._rawText);
+                bubble._lastRender = now;
+                clearTimeout(bubble._renderTimer);
+                bubble._renderTimer = 0;
+            } else if (!bubble._renderTimer) {
+                // Schedule a trailing render so the last chunk always shows
+                bubble._renderTimer = setTimeout(() => {
+                    if (bodyEl && typeof mdParse === 'function') {
+                        bodyEl.innerHTML = mdParse(bubble._rawText || '');
+                    }
+                    bubble._lastRender = Date.now();
+                    bubble._renderTimer = 0;
+                }, 80);
+            }
+        }
+
+        if (liveAutoScroll) {
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        // Reset watchdog — data is flowing
+        if (typeof _resetMessageWatchdog === 'function') _resetMessageWatchdog(liveSessionId);
+    }
+});
+
 // Live log entries pushed in real-time
 socket.on('session_entry', (data) => {
     // Never process entries for hidden utility sessions (planner, title).
@@ -601,10 +713,10 @@ socket.on('session_entry', (data) => {
     // consistency check below doesn't inject it into the sidebar.
     if (data.session_id !== liveSessionId && !allSessions.find(x => x.id === data.session_id)) return;
 
-    // Reset (not cancel) watchdog — data is flowing but session hasn't
-    // completed yet.  Keep the watchdog alive so a lost IDLE event triggers
-    // recovery within 10s of the last streaming activity.
-    if (data.session_id && typeof _resetMessageWatchdog === 'function') _resetMessageWatchdog(data.session_id);
+    // NOTE: Watchdog reset moved AFTER session_id match check below.
+    // Previously it was here, so entries for a mismatched session_id (e.g.
+    // stale pre-remap alias) kept resetting the watchdog without rendering,
+    // permanently defeating the recovery safety net.
 
     // Consistency check: if we're getting entries for a session the UI
     // thinks is idle/stopped, our state is stale — request a refresh.
@@ -626,30 +738,51 @@ socket.on('session_entry', (data) => {
         }
     }
 
-    // Track highest server entry index for periodic sync
-    if (data.session_id && data.index != null) {
-        if (!window._srvIdx) window._srvIdx = {};
-        window._srvIdx[data.session_id] = data.index;
+    // Session ID match — also check aliases. The daemon resolves session IDs
+    // through its alias table, so entries can arrive under the canonical (new)
+    // ID while liveSessionId still holds the old pre-remap ID. Auto-heal.
+    let _sidMatch = (data.session_id === liveSessionId);
+    if (!_sidMatch && liveSessionId && window._idRemaps) {
+        if (window._idRemaps[liveSessionId] === data.session_id) {
+            console.warn('[entry] auto-healing liveSessionId alias:',
+                liveSessionId, '→', data.session_id);
+            liveSessionId = data.session_id;
+            _sidMatch = true;
+        }
+        for (const oldId in window._idRemaps) {
+            if (window._idRemaps[oldId] === liveSessionId && oldId === data.session_id) {
+                console.warn('[entry] accepting late pre-remap entry:', data.session_id,
+                    '(remapped to', liveSessionId, ')');
+                _sidMatch = true;
+                break;
+            }
+        }
     }
-    if (data.session_id !== liveSessionId) {
-        console.debug('[entry] sid mismatch:', data.session_id, '!=', liveSessionId);
+    if (!_sidMatch) {
+        console.warn('[entry] sid mismatch:', data.session_id, '!=', liveSessionId,
+            'kind:', data.entry && data.entry.kind, 'idx:', data.index);
         return;
     }
+
+    // Reset (not cancel) watchdog — data is flowing AND matches our live
+    // session. Must be AFTER the session_id match check above.
+    if (typeof _resetMessageWatchdog === 'function') _resetMessageWatchdog(liveSessionId);
     if (!data.entry) return;
     const logEl = document.getElementById('live-log');
     if (!logEl) {
         console.warn('[entry-drop] live-log not in DOM! kind:', data.entry.kind, 'idx:', data.index);
         return;
     }
+    // Remove streaming bubble when the final assistant entry arrives
+    // (or any other entry type — the complete entry replaces the stream)
+    const _streamBubble = logEl.querySelector('.msg.assistant.streaming-bubble');
+    if (_streamBubble) {
+        _streamBubble.remove();
+    }
     // Clear skeleton/placeholder on first real entry
     if (liveLineCount === 0) {
         const skel = logEl.querySelector('.skel-bar, .skeleton-loader, .live-log-empty, .empty-state');
         if (skel) logEl.innerHTML = '';
-    }
-    // Index-based dedup: skip entries we've already rendered
-    if (data.index != null && data.index < liveLineCount) {
-        console.debug('[entry-dedup] idx', data.index, '<', liveLineCount);
-        return;
     }
     // DOM-level dedup for user messages: the frontend renders an optimistic
     // bubble immediately on send. When the server echoes it back, check if
@@ -674,6 +807,11 @@ socket.on('session_entry', (data) => {
 // Permission requests
 socket.on('session_permission', (data) => {
     if (_hiddenSessionIds.has(data.session_id)) return;
+    // ── Cross-project filtering: permission events don't include cwd,
+    // but if this session_id isn't in allSessions and isn't the live session,
+    // it belongs to another project — drop it so permission prompts from
+    // other projects don't appear in the current project's UI.
+    if (data.session_id !== liveSessionId && !allSessions.find(x => x.id === data.session_id)) return;
     waitingData[data.session_id] = {
         question: _formatPermissionQuestion(data.tool_name, data.tool_input),
         options: ['y', 'n', 'a'],
@@ -833,7 +971,7 @@ socket.on('session_id_remapped', (data) => {
     // Without this, auto-names saved under the old client-generated UUID are lost
     // when the SDK remaps to a new ID.
     window._idRemaps[oldId] = newId;
-    fetch('/api/remap-name', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({old_id:oldId, new_id:newId})}).catch(()=>{});
+    fetch('/api/remap-name', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({old_id:oldId, new_id:newId, project: localStorage.getItem('activeProject') || ''})}).catch(()=>{});
 
     // Update working since map
     if (window._workingSinceMap && window._workingSinceMap[oldId]) {
@@ -1011,9 +1149,6 @@ setInterval(() => {
 }, 15000);
 
 
-// ---- Periodic entry sync (bulletproof fallback) ----
-setInterval(function(){if(!liveSessionId||!socket.connected)return;if(sessionKinds[liveSessionId]!=="working")return;var si=window._srvIdx&&window._srvIdx[liveSessionId];if(si!=null&&si>=liveLineCount+2){console.warn("[entry-sync] srv",si,"rendered",liveLineCount);socket.emit("get_session_log",{session_id:liveSessionId,since:0})}},5000);
-
 // ---- Continuous stuck-session watchdog ----
 // Catches sessions stuck in "working" that the per-submit watchdog missed
 // (e.g. page refresh during active session, or submit before JS loaded).
@@ -1037,7 +1172,8 @@ setInterval(() => {
 }, 10000);
 
 // ---- Startup ----
-loadProjects();
+window._initialLoadDone = false;
+loadProjects().then(() => { window._initialLoadDone = true; }).catch(() => { window._initialLoadDone = true; });
 pollGitStatus();
 setInterval(pollGitStatus, 60000);
 // Initialize folder tree from server (shows template selector on first run)

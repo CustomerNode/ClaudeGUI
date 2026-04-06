@@ -5,7 +5,7 @@ Analysis routes -- summary, code extraction, export, compare.
 import io
 import zipfile
 
-from flask import Blueprint, jsonify, send_file
+from flask import Blueprint, jsonify, request, send_file
 
 from ..config import _sessions_dir
 from ..sessions import load_session
@@ -17,7 +17,8 @@ bp = Blueprint('analysis_api', __name__)
 
 @bp.route("/api/summary/<session_id>")
 def api_summary(session_id):
-    path = _sessions_dir() / f"{session_id}.jsonl"
+    project = request.args.get("project", "").strip()
+    path = _sessions_dir(project=project) / f"{session_id}.jsonl"
     if not path.exists():
         return jsonify({"error": "Not found"}), 404
 
@@ -129,7 +130,8 @@ def api_summary(session_id):
 
 @bp.route("/api/extract-code/<session_id>")
 def api_extract_code(session_id):
-    path = _sessions_dir() / f"{session_id}.jsonl"
+    project = request.args.get("project", "").strip()
+    path = _sessions_dir(project=project) / f"{session_id}.jsonl"
     if not path.exists():
         return jsonify({"error": "Not found"}), 404
     blocks = _extract_code_blocks(path)
@@ -139,7 +141,8 @@ def api_extract_code(session_id):
 
 @bp.route("/api/export-project/<session_id>")
 def api_export_project(session_id):
-    path = _sessions_dir() / f"{session_id}.jsonl"
+    project = request.args.get("project", "").strip()
+    path = _sessions_dir(project=project) / f"{session_id}.jsonl"
     if not path.exists():
         return jsonify({"error": "Not found"}), 404
 
@@ -196,8 +199,9 @@ def api_export_project(session_id):
 
 @bp.route("/api/compare/<id1>/<id2>")
 def api_compare(id1, id2):
-    path1 = _sessions_dir() / f"{id1}.jsonl"
-    path2 = _sessions_dir() / f"{id2}.jsonl"
+    project = request.args.get("project", "").strip()
+    path1 = _sessions_dir(project=project) / f"{id1}.jsonl"
+    path2 = _sessions_dir(project=project) / f"{id2}.jsonl"
     if not path1.exists():
         return jsonify({"error": f"Session {id1} not found"}), 404
     if not path2.exists():

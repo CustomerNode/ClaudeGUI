@@ -24,7 +24,8 @@ async function runCompare() {
   const body = document.getElementById('compare-body');
   body.innerHTML = '<p style="padding:20px;color:var(--text-faint);font-size:12px;">Comparing\u2026</p>';
   try {
-    const r = await fetch(`/api/compare/${activeId}/${id2}`);
+    const _p = localStorage.getItem('activeProject') || '';
+    const r = await fetch(`/api/compare/${activeId}/${id2}?project=${encodeURIComponent(_p)}`);
     const d = await r.json();
     renderCompare(d);
   } catch(e) {

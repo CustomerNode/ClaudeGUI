@@ -96,7 +96,8 @@ def load_session_summary(path: Path) -> dict:
 
     preview = first_user_content[:120] + ("\u2026" if len(first_user_content) > 120 else "")
 
-    names = _load_names_cached()
+    _proj = path.parent.name  # encoded project name from path
+    names = _load_names_cached(project=_proj)
     user_set_name = names.get(path.stem)
     effective_title = user_set_name or custom_title
 
@@ -236,7 +237,8 @@ def load_session(path: Path) -> dict:
         size_str = f"{file_bytes / (1024*1024):.0f} MB"
 
     # User-set names in _session_names.json always win over anything in the .jsonl
-    user_set_name = _load_names().get(path.stem)
+    _proj = path.parent.name  # encoded project name from path
+    user_set_name = _load_names(project=_proj).get(path.stem)
     effective_title = user_set_name or custom_title
 
     return {
@@ -483,15 +485,15 @@ def _is_system_content(text: str) -> bool:
     )
 
 
-def all_sessions(summary_only: bool = False) -> list:
+def all_sessions(summary_only: bool = False, project: str = "") -> list:
     # Prune stale utility session JSONL files (>24h) from the system project
     _cleanup_system_sessions()
     # Filter out tombstoned (recently deleted) sessions so zombie .jsonl files
     # recreated by dying claude.exe processes never appear in the UI.
-    deleted_ids = _get_deleted_ids()
-    utility_ids = _get_utility_ids()
-    remapped_ids = _get_remapped_ids()
-    files = [f for f in _sessions_dir().glob("*.jsonl")
+    deleted_ids = _get_deleted_ids(project)
+    utility_ids = _get_utility_ids(project)
+    remapped_ids = _get_remapped_ids(project)
+    files = [f for f in _sessions_dir(project).glob("*.jsonl")
              if f.stem not in deleted_ids
              and f.stem not in utility_ids
              and f.stem not in remapped_ids

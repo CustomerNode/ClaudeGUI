@@ -8,7 +8,8 @@ async function openExtract() {
   body.innerHTML = '<p style="padding:20px;color:var(--text-faint);font-size:12px;">Loading\u2026</p>';
   document.getElementById('extract-drawer').classList.add('open');
   try {
-    const r = await fetch('/api/extract-code/' + activeId);
+    const _p = localStorage.getItem('activeProject') || '';
+    const r = await fetch('/api/extract-code/' + activeId + '?project=' + encodeURIComponent(_p));
     const d = await r.json();
     extractBlocks = d.blocks || [];
     renderExtractBlocks(extractBlocks);
@@ -60,7 +61,8 @@ function copyBlock(i) {
 function triggerExport() {
   if (!activeId) return;
   const a = document.createElement('a');
-  a.href = '/api/export-project/' + activeId;
+  const _p = localStorage.getItem('activeProject') || '';
+  a.href = '/api/export-project/' + activeId + '?project=' + encodeURIComponent(_p);
   a.download = 'session_export.zip';
   a.click();
 }

@@ -337,13 +337,13 @@ def api_new_session():
         new_id = str(uuid_mod.uuid4())
 
         # Create the .jsonl so it shows in our session list
-        jsonl_path = _sessions_dir() / f"{new_id}.jsonl"
+        jsonl_path = _sessions_dir(project=active_project) / f"{new_id}.jsonl"
         if not jsonl_path.exists():
             jsonl_path.write_text("", encoding="utf-8")
 
         # Write the user-provided name if given
         if name:
-            _save_name(new_id, name)
+            _save_name(new_id, name, project=active_project)
 
         # Start SDK session
         result = sm.start_session(

@@ -1059,21 +1059,38 @@ class SessionManager:
                 await client.query(prompt)
 
             # Process messages (None = unknown types, skipped via monkey-patch)
+            #
+            # IMPORTANT: use receive_response() (not receive_messages()) so the
+            # iterator terminates after ResultMessage.  receive_messages() keeps
+            # the generator alive for the entire subprocess lifetime, which
+            # means _drive_session would never exit after the first turn.  When
+            # _send_query later calls receive_response() on the same client,
+            # BOTH generators compete for messages from the same underlying
+            # stream — causing ResultMessages to be consumed by the wrong
+            # handler and leaving sessions stuck in WORKING forever.
             info._stream_evt_logged = False
-            async for message in client.receive_messages():
-                if message is not None:
-                    if isinstance(message, ResultMessage):
-                        got_result = True
-                    try:
-                        await self._process_message(session_id, message)
+            if prompt:
+                async for message in client.receive_response():
+                    if message is not None:
                         if isinstance(message, ResultMessage):
-                            result_handled = True
-                    except Exception as pm_err:
-                        # Don't let one bad message kill the entire stream.
-                        logger.exception(
-                            "_process_message error for %s (msg type %s): %s",
-                            session_id, type(message).__name__, pm_err
-                        )
+                            got_result = True
+                        try:
+                            await self._process_message(session_id, message)
+                            if isinstance(message, ResultMessage):
+                                result_handled = True
+                        except Exception as pm_err:
+                            # Don't let one bad message kill the entire stream.
+                            logger.exception(
+                                "_process_message error for %s (msg type %s): %s",
+                                session_id, type(message).__name__, pm_err
+                            )
+            else:
+                # No prompt (empty session or bare resume) — nothing to receive.
+                # Go straight to IDLE so send_message() can dispatch follow-ups.
+                got_result = True
+                result_handled = True
+                info.state = SessionState.IDLE
+                self._emit_state(info)
 
             # Safety net: if the stream ended without a ResultMessage,
             # force IDLE so the session isn't stuck.  Skip if we already

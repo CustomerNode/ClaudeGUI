@@ -42,7 +42,7 @@ def project_git_status():
         if proj:
             proj_path = Path(_decode_project(proj))
         else:
-            sd = _sessions_dir()
+            sd = _sessions_dir(project=proj)
             if sd != _CLAUDE_PROJECTS:
                 proj_path = Path(_decode_project(sd.name))
             else:

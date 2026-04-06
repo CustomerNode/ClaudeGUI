@@ -380,7 +380,9 @@ async function openInGUI(id) {
   const initTitle = cached ? cached.display_title : 'Loading\u2026';
   setToolbarSession(id, initTitle, !(cached && cached.custom_title), (cached && cached.custom_title) || '');
   document.getElementById('main-body').innerHTML = _chatSkeleton();
-  const resp = await fetch('/api/session/' + id + '?meta_only=1');
+  const _lpProj = localStorage.getItem('activeProject') || '';
+  const _lpProjQ = _lpProj ? '&project=' + encodeURIComponent(_lpProj) : '';
+  const resp = await fetch('/api/session/' + id + '?meta_only=1' + _lpProjQ);
 
   // New session with no .jsonl yet — re-show the new session input
   if (!resp.ok) {
@@ -482,7 +484,7 @@ function startLivePanel(id, opts) {
 
   // Request the log via WebSocket (skip for brand-new sessions — optimistic bubble is enough)
   if (!skipLog) {
-    socket.emit('get_session_log', {session_id: id, since: 0});
+    socket.emit('get_session_log', {session_id: id, since: 0, project: localStorage.getItem('activeProject') || ''});
   }
 
   // Render input bar immediately and schedule re-renders in case
@@ -1170,7 +1172,7 @@ function _watchdogHttpCheck(sid, forceApply) {
           // CRITICAL: re-fetch entries — the real-time session_entry events
           // were silently lost, so the response text is missing from the DOM.
           // Without this, the UI recovers state but the response never appears.
-          socket.emit('get_session_log', {session_id: sid, since: 0});
+          socket.emit('get_session_log', {session_id: sid, since: 0, project: localStorage.getItem('activeProject') || ''});
         }
         filterSessions();
       } else if (serverState === 'working') {
@@ -1180,7 +1182,7 @@ function _watchdogHttpCheck(sid, forceApply) {
         if (sid === liveSessionId && serverEntryCount > liveLineCount + 1) {
           console.warn('[watchdog] Entry mismatch while working: server has', serverEntryCount,
             'but frontend has', liveLineCount, '— re-fetching');
-          socket.emit('get_session_log', {session_id: sid, since: 0});
+          socket.emit('get_session_log', {session_id: sid, since: 0, project: localStorage.getItem('activeProject') || ''});
         }
         if (forceApply) {
           // Request a fresh snapshot to resync any other stale state

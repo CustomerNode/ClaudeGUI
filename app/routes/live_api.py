@@ -159,7 +159,8 @@ def api_session_log(session_id):
         return jsonify({"entries": entries, "total_lines": since + len(entries)})
 
     # Fall back to .jsonl file parsing for historical sessions
-    path = _sessions_dir() / f"{session_id}.jsonl"
+    project = request.args.get("project", "").strip()
+    path = _sessions_dir(project=project) / f"{session_id}.jsonl"
     if not path.exists():
         return jsonify({"error": "Not found"}), 404
 
@@ -255,7 +256,7 @@ def _get_project_path() -> Path:
         if p.is_dir():
             return p
     # Fall back: use sessions dir parent heuristic
-    sd = _sessions_dir()
+    sd = _sessions_dir(project=proj)
     if sd != _CLAUDE_PROJECTS:
         decoded = _decode_project(sd.name)
         p = Path(decoded)

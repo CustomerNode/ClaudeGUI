@@ -68,7 +68,19 @@ async function loadProjects() {
     ? saved
     : (_allProjects.slice().sort((a,b) => b.session_count - a.session_count)[0] || {}).encoded;
   if (target) {
-    await setProject(target, true);
+    // If the saved project is the same as the target, skip the full
+    // setProject teardown (which destroys live panels and clears state).
+    // Just sync the server and load sessions without the nuclear reset.
+    if (saved && saved === target) {
+      localStorage.setItem('activeProject', target);
+      await fetch('/api/set-project', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({project: target})
+      });
+      await loadSessions();
+    } else {
+      await setProject(target, true);
+    }
   } else {
     // No project available — clear skeleton and show prompt
     const listEl = document.getElementById('session-list');
@@ -148,9 +160,11 @@ async function setProject(encoded, reload = true) {
   // Reset agent catalog so it gets re-written for the new project
   _agentCatalogPath = null;
   _agentCatalogPromise = null;
-  // Re-sync live session states from daemon (working_since, sessionKinds, etc.)
-  if (typeof socket !== 'undefined' && socket.connected) {
-    socket.emit('request_state_snapshot', {project: encoded});
+  // Update SocketIO query params so reconnects use the new project
+  if (typeof socket !== 'undefined') {
+    if (socket.io && socket.io.opts) socket.io.opts.query = { project: encoded };
+    // Re-sync live session states from daemon (working_since, sessionKinds, etc.)
+    if (socket.connected) socket.emit('request_state_snapshot', {project: encoded});
   }
   if (reload) loadSessions();
 }
@@ -554,7 +568,9 @@ async function deleteAllSessions() {
   showToast('Deleting ' + count + ' sessions…');
   if (liveSessionId) stopLivePanel();
   deselectSession();
-  const resp = await fetch('/api/delete-all', { method: 'DELETE' });
+  const _dap = localStorage.getItem('activeProject') || '';
+  const _dapQ = _dap ? '?project=' + encodeURIComponent(_dap) : '';
+  const resp = await fetch('/api/delete-all' + _dapQ, { method: 'DELETE' });
   const data = await resp.json();
   await loadSessions();
   showToast((data.deleted || count) + ' sessions deleted');
@@ -670,7 +686,7 @@ async function autoNameAllSessions() {
   let named = 0;
   for (const s of untitled) {
     try {
-      const resp = await fetch('/api/autonname/' + s.id, { method: 'POST' });
+      const resp = await fetch('/api/autonname/' + s.id, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({project: localStorage.getItem('activeProject') || ''}) });
       const data = await resp.json();
       if (data.ok && data.title) {
         s.custom_title = data.title;
@@ -1104,8 +1120,13 @@ async function loadSessions() {
   if (typeof _loadWorkforceFromDisk === 'function') {
     try { await _loadWorkforceFromDisk(); } catch(e) {}
   }
+  // Pass activeProject so the server syncs _active_project before processing.
+  // Closes the race where this HTTP fetch arrives before the WebSocket
+  // reconnects and sends request_state_snapshot with the project context.
+  const _projParam = localStorage.getItem('activeProject') || '';
+  const _sessUrl = _projParam ? '/api/sessions?project=' + encodeURIComponent(_projParam) : '/api/sessions';
   const [resp] = await Promise.all([
-    fetch('/api/sessions'),
+    fetch(_sessUrl),
     (typeof initFolderTree === 'function') ? initFolderTree().catch(function(){}) : Promise.resolve(),
   ]);
   const _freshSessions = await resp.json();
@@ -1196,7 +1217,9 @@ async function loadSessions() {
   // Ask the server to resolve the alias before giving up.
   if (_restoreId && !allSessions.find(s => s.id === _restoreId)) {
     try {
-      const resolveResp = await fetch('/api/resolve-session/' + _restoreId);
+      const _rsp = localStorage.getItem('activeProject') || '';
+      const _rspQ = _rsp ? '?project=' + encodeURIComponent(_rsp) : '';
+      const resolveResp = await fetch('/api/resolve-session/' + _restoreId + _rspQ);
       if (resolveResp.ok) {
         const resolved = await resolveResp.json();
         if (resolved.remapped && allSessions.find(s => s.id === resolved.id)) {

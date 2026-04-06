@@ -51,7 +51,7 @@ def _system_user_label(text: str) -> str:
     return "System message"
 
 
-def _parse_jsonl_entries(app, session_id: str, since: int = 0) -> list:
+def _parse_jsonl_entries(app, session_id: str, since: int = 0, project: str = "") -> list:
     """Parse .jsonl file on disk to produce structured log entries.
 
     Reuses the same logic as live_api.py's api_session_log endpoint so that
@@ -59,7 +59,7 @@ def _parse_jsonl_entries(app, session_id: str, since: int = 0) -> list:
     """
     from ..config import _sessions_dir
 
-    path = _sessions_dir() / f"{session_id}.jsonl"
+    path = _sessions_dir(project) / f"{session_id}.jsonl"
     if not path.exists():
         return []
     try:
@@ -146,47 +146,28 @@ def _parse_jsonl_entries(app, session_id: str, since: int = 0) -> list:
 def register_ws_events(socketio, app):
     """Register all WebSocket event handlers with the SocketIO instance."""
 
-    def _sync_project_from_client(data):
-        """If the client sent a project name, sync the server's active project.
-
-        The server's _active_project is a Python global that resets to ""
-        on every web server restart and auto-detects as VibeNode (the server's
-        own repo).  The client persists its active project in localStorage,
-        so it's the authoritative source after a restart.
-        """
-        if not isinstance(data, dict):
-            return
-        project = (data.get("project") or "").strip()
-        if project:
-            from ..config import set_active_project, get_active_project, _CLAUDE_PROJECTS
-            if get_active_project() != project:
-                # Validate the project directory exists before accepting
-                if (_CLAUDE_PROJECTS / project).is_dir():
-                    set_active_project(project)
-                    logger.info("Synced active project from client: %s", project)
-
-    def _filter_sessions_for_project(sessions: list) -> list:
+    def _filter_sessions_for_project(sessions: list, project: str = "") -> list:
         """Return only sessions whose cwd matches the active project."""
         from ..config import cwd_matches_active_project
         return [s for s in sessions
-                if not s.get("cwd") or cwd_matches_active_project(s["cwd"])]
+                if not s.get("cwd") or cwd_matches_active_project(s["cwd"], project=project)]
 
     @socketio.on('connect')
     def handle_connect():
-        """On connect, send current state of all sessions including queue data."""
+        """On connect, send ID aliases only — NOT a full state snapshot.
+
+        The client immediately follows up with request_state_snapshot (which
+        carries the current project from localStorage).  That handler builds
+        the correctly-filtered snapshot.  Sending a snapshot HERE is dangerous
+        because the SocketIO query param can be stale (set at page load, not
+        updated on project switch), causing sessions from the wrong project
+        to overwrite the client's state.
+        """
         sm = app.session_manager
-        sessions = _filter_sessions_for_project(sm.get_all_states())
-        # Build top-level queues dict from per-session data for frontend sync
-        queues = {}
-        for s in sessions:
-            q = s.get('queue')
-            if q:
-                queues[s['session_id']] = q
-        # Include ID aliases so the client can resolve remapped session IDs
-        # (e.g. client stored old UUID in localStorage, server knows the new one)
+        # Send aliases so the client can resolve remapped IDs immediately
         aliases = dict(sm._id_aliases) if hasattr(sm, '_id_aliases') else {}
-        emit('state_snapshot', {'sessions': sessions, 'queues': queues, 'aliases': aliases})
-        logger.debug("WebSocket client connected, sent %d session states", len(sessions))
+        emit('state_snapshot', {'sessions': [], 'queues': {}, 'aliases': aliases})
+        logger.debug("WebSocket client connected, sent aliases only")
 
     @socketio.on('disconnect')
     def handle_disconnect():
@@ -196,19 +177,24 @@ def register_ws_events(socketio, app):
     def handle_request_state_snapshot(data=None):
         """Re-send full state snapshot on demand (e.g. after workspace switch).
 
-        Accepts optional ``{project: "encoded-name"}`` so the client can
-        sync the server's active project before the snapshot is built.
-        This covers the case where the web server restarted (resetting
-        _active_project to VibeNode) but the client still has the real
-        project in localStorage.
+        Accepts optional ``{project: "encoded-name"}`` so the snapshot is
+        filtered to the correct project without mutating _active_project.
         """
-        if data:
-            _sync_project_from_client(data)
+        project = ""
+        if isinstance(data, dict):
+            project = (data.get("project") or "").strip()
+        # Sync the global _active_project as a safety net for endpoints
+        # that don't receive an explicit project param (e.g. get_session_log).
+        if project:
+            from ..config import set_active_project, get_active_project, _CLAUDE_PROJECTS
+            if get_active_project() != project and (_CLAUDE_PROJECTS / project).is_dir():
+                set_active_project(project)
+                logger.info("Synced active project from client: %s", project)
         sm = app.session_manager
         if hasattr(sm, "is_connected") and not sm.is_connected:
             emit("state_snapshot", {"sessions": [], "queues": {}, "aliases": {}})
             return
-        sessions = _filter_sessions_for_project(sm.get_all_states())
+        sessions = _filter_sessions_for_project(sm.get_all_states(), project=project)
         queues = {}
         for s in sessions:
             q = s.get('queue')
@@ -435,6 +421,8 @@ def register_ws_events(socketio, app):
             except (ValueError, TypeError):
                 before = None
 
+        project = (data.get("project") or "").strip()
+
         if not session_id:
             emit('error', {'message': 'session_id is required'})
             return
@@ -442,7 +430,7 @@ def register_ws_events(socketio, app):
         sm = app.session_manager
 
         # Load from .jsonl first, then SDK entries for anything not yet on disk
-        jsonl_entries = _parse_jsonl_entries(app, session_id, since)
+        jsonl_entries = _parse_jsonl_entries(app, session_id, since, project=project)
         sdk_entries = sm.get_entries(session_id, since=0) if sm.has_session(session_id) else []
 
         if jsonl_entries and not sdk_entries:

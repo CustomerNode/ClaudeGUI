@@ -1383,7 +1383,8 @@ function _restorePlannerOnLoad() {
     _attachPlannerListeners();
 
     // Backfill: fetch existing session log to recover steps and any text so far
-    fetch('/api/session-log/' + savedSessionId).then(r => r.ok ? r.json() : []).then(entries => {
+    const _kp = localStorage.getItem('activeProject') || '';
+    fetch('/api/session-log/' + savedSessionId + '?project=' + encodeURIComponent(_kp)).then(r => r.ok ? r.json() : []).then(entries => {
       if (!Array.isArray(entries)) entries = entries.entries || [];
       for (const e of entries) {
         if (e.kind === 'tool_use') {
@@ -4246,7 +4247,9 @@ function restoreFromHash() {
     // the session ID in case it was remapped before the refresh.
     const _doOpen = (sid) => renderTaskDetail(taskId).then(() => _openSessionInKanban(sid));
     if (sessionId === sessMatch[2] && !allSessions.find(x => x.id === sessionId)) {
-      fetch('/api/resolve-session/' + sessionId).then(r => r.json()).then(d => {
+      const _krp = localStorage.getItem('activeProject') || '';
+      const _krpQ = _krp ? '?project=' + encodeURIComponent(_krp) : '';
+      fetch('/api/resolve-session/' + sessionId + _krpQ).then(r => r.json()).then(d => {
         if (d.remapped) {
           sessionId = d.id;
           // Fix the URL hash to the canonical ID

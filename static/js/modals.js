@@ -215,7 +215,8 @@ async function showSummary(id) {
   document.getElementById('summary-body').innerHTML = '<div style="color:var(--text-faint);font-size:13px;"><span class="spinner"></span> Building summary\u2026</div>';
   document.getElementById('summary-overlay').classList.add('show');
 
-  const resp = await fetch('/api/summary/' + id);
+  const _p = localStorage.getItem('activeProject') || '';
+  const resp = await fetch('/api/summary/' + id + '?project=' + encodeURIComponent(_p));
   const data = await resp.json();
   document.getElementById('summary-body').innerHTML = data.html || ('<p style="color:var(--text-muted)">' + (data.error||'No summary available') + '</p>');
 }

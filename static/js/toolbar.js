@@ -113,7 +113,9 @@ async function selectSession(id) {
   setToolbarSession(id, 'Loading\u2026', true, '');
   document.getElementById('main-body').innerHTML = _chatSkeleton();
 
-  const resp = await fetch('/api/session/' + id);
+  const _proj = localStorage.getItem('activeProject') || '';
+  const _projQ = _proj ? '?project=' + encodeURIComponent(_proj) : '';
+  const resp = await fetch('/api/session/' + id + _projQ);
   const s = await resp.json();
 
   const titleText = s.custom_title || s.display_title;
@@ -185,7 +187,7 @@ function startListInlineRename() {
     const resp = await fetch('/api/rename/' + activeId, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({title: val})
+      body: JSON.stringify({title: val, project: localStorage.getItem('activeProject') || ''})
     });
     const data = await resp.json();
     if (data.ok) {
@@ -484,7 +486,9 @@ function _chatSkeleton() {
 async function loadAllMessages(id) {
   const btn = document.getElementById('btn-load-all');
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Loading...'; }
-  const resp = await fetch('/api/session/' + id);
+  const _proj2 = localStorage.getItem('activeProject') || '';
+  const _projQ2 = _proj2 ? '?project=' + encodeURIComponent(_proj2) : '';
+  const resp = await fetch('/api/session/' + id + _projQ2);
   const s = await resp.json();
   document.getElementById('main-body').innerHTML =
     '<div class="conversation" id="convo">' + renderMessages(s.messages) + '</div>';
@@ -590,7 +594,7 @@ async function startToolbarRename() {
   _userNamedSessions.add(activeId);  // kill auto-naming instantly
   const resp = await fetch('/api/rename/' + activeId, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({title: newName})
+    body: JSON.stringify({title: newName, project: localStorage.getItem('activeProject') || ''})
   });
   const data = await resp.json();
   if (data.ok) {
@@ -628,7 +632,7 @@ async function submitRename() {
   const resp = await fetch('/api/rename/' + targetId, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({title})
+    body: JSON.stringify({title, project: localStorage.getItem('activeProject') || ''})
   });
   const data = await resp.json();
   closeRename();
@@ -665,9 +669,10 @@ async function autoName(id, silent, reEvaluate, promptText) {
 
   let data;
   try {
-    const payload = reEvaluate ? { re_evaluate: true } : promptText ? { prompt: promptText } : null;
-    const headers = payload ? { 'Content-Type': 'application/json' } : {};
-    const body = payload ? JSON.stringify(payload) : null;
+    const payload = reEvaluate ? { re_evaluate: true } : promptText ? { prompt: promptText } : {};
+    payload.project = localStorage.getItem('activeProject') || '';
+    const headers = { 'Content-Type': 'application/json' };
+    const body = JSON.stringify(payload);
     const resp = await fetch('/api/autonname/' + id, { method: 'POST', headers, body });
     data = await resp.json();
   } catch(e) {
@@ -696,7 +701,7 @@ async function autoName(id, silent, reEvaluate, promptText) {
 
     // Persist the name under the remapped ID too
     if (remappedId) {
-      fetch('/api/remap-name', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({old_id:id, new_id:remappedId})}).catch(()=>{});
+      fetch('/api/remap-name', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({old_id:id, new_id:remappedId, project: localStorage.getItem('activeProject') || ''})}).catch(()=>{});
     }
 
     // Update toolbar title if this is the active session
@@ -756,7 +761,9 @@ async function deleteSession(id) {
   showToast('Deleting session\u2026');
   let deleteOk = false;
   try {
-    const resp = await fetch('/api/delete/' + id, { method: 'DELETE' });
+    const _dp = localStorage.getItem('activeProject') || '';
+    const _dpQ = _dp ? '?project=' + encodeURIComponent(_dp) : '';
+    const resp = await fetch('/api/delete/' + id + _dpQ, { method: 'DELETE' });
     // Server may return HTML 500 if unlink failed — guard the JSON parse
     try {
       const data = await resp.json();
@@ -794,7 +801,9 @@ async function deleteEmptySessions() {
   const confirmed = await showConfirm('Delete Empty Sessions', `<p>Delete <strong>${empty.length}</strong> empty session${empty.length > 1 ? 's' : ''}?</p>`, { danger: true, confirmText: 'Delete All', icon: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>' });
   if (!confirmed) return;
 
-  const resp = await fetch('/api/delete-empty', { method: 'DELETE' });
+  const _dep = localStorage.getItem('activeProject') || '';
+  const _depQ = _dep ? '?project=' + encodeURIComponent(_dep) : '';
+  const resp = await fetch('/api/delete-empty' + _depQ, { method: 'DELETE' });
   const data = await resp.json();
 
   if (data.ok) {
@@ -822,7 +831,9 @@ async function deleteEmptySessions() {
 }
 
 async function duplicateSession(id) {
-  const resp = await fetch('/api/duplicate/' + id, { method: 'POST' });
+  const _dupp = localStorage.getItem('activeProject') || '';
+  const _duppQ = _dupp ? '?project=' + encodeURIComponent(_dupp) : '';
+  const resp = await fetch('/api/duplicate/' + id + _duppQ, { method: 'POST' });
   const data = await resp.json();
   if (data.ok) {
     await loadSessions();
@@ -837,7 +848,9 @@ async function continueSession(id) {
   const btnOrigHtml = btn ? btn.innerHTML : '';
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Building\u2026'; }
 
-  const resp = await fetch('/api/continue/' + id, { method: 'POST' });
+  const _contp = localStorage.getItem('activeProject') || '';
+  const _contpQ = _contp ? '?project=' + encodeURIComponent(_contp) : '';
+  const resp = await fetch('/api/continue/' + id + _contpQ, { method: 'POST' });
   const data = await resp.json();
 
   if (btn) { btn.disabled = false; btn.innerHTML = btnOrigHtml; }
@@ -853,7 +866,9 @@ async function continueSession(id) {
 }
 
 async function openInClaude(id) {
-  const resp = await fetch('/api/open/' + id, { method: 'POST' });
+  const _openp = localStorage.getItem('activeProject') || '';
+  const _openpQ = _openp ? '?project=' + encodeURIComponent(_openp) : '';
+  const resp = await fetch('/api/open/' + id + _openpQ, { method: 'POST' });
   const data = await resp.json();
   if (data.ok) showToast('Opening session in Claude\u2026');
   else showToast('Failed to open: ' + (data.error || 'unknown'), true);
@@ -907,7 +922,9 @@ async function showMessagePicker(sessionId, mode) {
 
   // Fetch timeline
   try {
-    const url = '/api/session-timeline/' + sessionId;
+    const _tlp = localStorage.getItem('activeProject') || '';
+    const _tlpQ = _tlp ? '?project=' + encodeURIComponent(_tlp) : '';
+    const url = '/api/session-timeline/' + sessionId + _tlpQ;
     const resp = await fetch(url);
     if (!resp.ok) {
       let errMsg = 'HTTP ' + resp.status;
@@ -1018,7 +1035,9 @@ async function _confirmPicker() {
     else if (_pickerMode === 'rewind') endpoint = '/api/rewind/';
     else endpoint = '/api/fork-rewind/';
 
-    const resp = await fetch(endpoint + _pickerSessionId, { method: 'POST', headers: hdrs, body });
+    const _frkp = localStorage.getItem('activeProject') || '';
+    const _frkpQ = _frkp ? '?project=' + encodeURIComponent(_frkp) : '';
+    const resp = await fetch(endpoint + _pickerSessionId + _frkpQ, { method: 'POST', headers: hdrs, body });
     if (!resp.ok) {
       let errMsg = 'HTTP ' + resp.status;
       try { const d = await resp.json(); errMsg = d.error || errMsg; } catch(e) {}
