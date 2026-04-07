@@ -151,6 +151,36 @@ async function setProject(encoded, reload = true) {
   sessionKinds = {};
   runningIds = new Set();
   waitingData = {};
+  // --- Clear view-specific state from the old project ---
+  // Folder tree: stale folder IDs / cached tree from old project
+  if (typeof _currentFolderId !== 'undefined') _currentFolderId = null;
+  if (typeof _folderTreeCache !== 'undefined') _folderTreeCache = null;
+  // Workspace: hidden sessions and card positions are per-project
+  workspaceHiddenSessions = new Set();
+  localStorage.removeItem('wsHiddenSessions');
+  workspaceCardPositions = {};
+  localStorage.removeItem('wsCardPositions');
+  _wsExpandedId = null;
+  const _wsBackBtn = document.getElementById('ws-back-btn');
+  if (_wsBackBtn) _wsBackBtn.remove();
+  // Kanban: reset board state if we're currently in kanban view
+  if (viewMode === 'kanban' && typeof resetKanbanState === 'function') {
+    resetKanbanState();
+    const _kSessionBar = document.getElementById('kanban-session-bar');
+    if (_kSessionBar) _kSessionBar.remove();
+    // Scrub the drill-down hash so restoreFromHash() doesn't re-open old task
+    const _kUrl = new URL(window.location);
+    if (_kUrl.hash.startsWith('#kanban/task/')) {
+      _kUrl.hash = '#kanban';
+      history.replaceState({ view: 'kanban', taskId: null }, '', _kUrl.pathname + _kUrl.search + '#kanban');
+    }
+  }
+  // Kanban: clear persisted filters / expanded tasks / history that belong to old project
+  kanbanExpandedTasks = new Set();
+  localStorage.removeItem('kanbanExpanded');
+  kanbanActiveTagFilter = [];
+  sessionStorage.removeItem('kanbanTagFilter');
+  if (typeof _kanbanHistory !== 'undefined') { _kanbanHistory = []; localStorage.removeItem('kanbanRecentHistory'); }
   // Show skeleton immediately
   if (reload) showSkeletonLoader();
   await fetch('/api/set-project', {
@@ -220,8 +250,10 @@ function closeProjectOverlay() {
 
 async function selectProjectFromOverlay(encoded) {
   closeProjectOverlay();
+  const p = _allProjects.find(x => x.encoded === encoded);
   showToast('Switching workspace\u2026');
   await setProject(encoded, true);
+  showToast('Switched to ' + (p ? _projectShortName(p) : 'project'));
 }
 
 async function renameProjectOverlay(encoded, currentName) {
