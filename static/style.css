@@ -6696,13 +6696,7 @@ mark.find-match.current { background: var(--accent); color:#fff; }
 .kanban-drill-crumb.current:hover { background: none; }
 .kanban-drill-sep { color: var(--text-dim, var(--text-faint)); font-size: 11px; display: inline-flex; align-items: center; }
 
-/* Recent history trigger + dropdown */
-.kanban-history-trigger {
-  display: inline-flex; align-items: center; cursor: pointer;
-  color: var(--text-dim); padding: 2px 4px; border-radius: 3px; margin-right: 2px;
-  opacity: 0.4; transition: opacity 0.15s;
-}
-.kanban-history-trigger:hover { opacity: 1; color: var(--accent); }
+/* Recent history dropdown (shown on Board crumb hover) */
 .kanban-history-dropdown {
   position: fixed; z-index: 9999;
   background: var(--bg-primary); border: 1px solid var(--border);
@@ -6722,6 +6716,12 @@ mark.find-match.current { background: var(--accent); color:#fff; }
 .kanban-history-item:hover { background: var(--bg-hover); color: var(--text-primary); }
 .kanban-history-item svg { flex-shrink: 0; opacity: 0.5; }
 .kanban-history-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kanban-history-item.current { opacity: 0.5; cursor: default; }
+.kanban-history-item.current:hover { background: none; }
+.kanban-history-current-tag {
+  font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+  color: var(--accent); opacity: 0.7; margin-left: auto; flex-shrink: 0;
+}
 
 .kanban-drill-body {
   padding: 28px 32px;

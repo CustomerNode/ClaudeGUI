@@ -487,6 +487,7 @@ function startLivePanel(id, opts) {
     socket.emit('get_session_log', {session_id: id, since: 0, project: localStorage.getItem('activeProject') || ''});
   }
 
+
   // Render input bar immediately and schedule re-renders in case
   // state events arrived before the DOM was ready.
   // BUT: skip re-render if user has already started typing.
@@ -1067,6 +1068,36 @@ function _liveSubmitDirect(sid, text, opts) {
   } else if (runningIds.has(sid)) {
     // Send message — server will process if idle, or queue if busy
     socket.emit('send_message', {session_id: sid, text: text});
+    // Ghost session safety net: if no session_state event arrives within 3s,
+    // the daemon has lost this session. Fall back to start_session to recover.
+    const _ghostTimer = setTimeout(() => {
+      socket.off('session_state', _ghostCancel);
+      if (liveSessionId !== sid) return;
+      console.warn('[submit] No daemon response for', sid, 'after 3s — ghost recovery: close then restart');
+      // Close the zombie session first, then restart after a short delay
+      socket.emit('close_session', {session_id: sid});
+      runningIds.delete(sid);
+      delete sessionKinds[sid];
+      setTimeout(() => {
+        if (liveSessionId !== sid) return;
+        socket.emit('start_session', {
+          session_id: sid,
+          prompt: text,
+          cwd: (typeof _currentProjectDir === 'function') ? _currentProjectDir() : '',
+          resume: true,
+        });
+        runningIds.add(sid);
+        sessionKinds[sid] = 'working';
+        updateLiveInputBar();
+      }, 1500);
+    }, 3000);
+    const _ghostCancel = function(data) {
+      if (data && data.session_id === sid && data.state !== 'stopped') {
+        clearTimeout(_ghostTimer);
+        socket.off('session_state', _ghostCancel);
+      }
+    };
+    socket.on('session_state', _ghostCancel);
   } else {
     // Session not in runningIds — try send_message first (it handles
     // IDLE/WORKING/WAITING gracefully with auto-queue), then fall back to
@@ -1080,18 +1111,48 @@ function _liveSubmitDirect(sid, text, opts) {
     const _fallbackHandler = function(err) {
       if (err && err.session_id === sid && /not found|is stopped/i.test(err.message || '')) {
         socket.off('error', _fallbackHandler);
+        clearTimeout(_ghostTimer2);  // fallback fired — no need for ghost timer
+        socket.off('session_state', _ghostCancel2);
         console.warn('[submit] send_message failed (' + err.message + ') — resuming with start_session');
         socket.emit('start_session', {
           session_id: sid,
           prompt: text,
-          cwd: _currentProjectDir(),
+          cwd: (typeof _currentProjectDir === 'function') ? _currentProjectDir() : '',
           resume: true,
         });
+        sessionKinds[sid] = 'working';
+        updateLiveInputBar();
       }
     };
     socket.on('error', _fallbackHandler);
-    // Auto-remove the fallback after 5s to avoid leaking listeners
-    setTimeout(() => socket.off('error', _fallbackHandler), 5000);
+    // Ghost safety net: if neither an error nor a session_state arrives
+    // within 3s, the daemon silently dropped the message. Resume directly.
+    const _ghostTimer2 = setTimeout(() => {
+      socket.off('error', _fallbackHandler);
+      socket.off('session_state', _ghostCancel2);
+      if (liveSessionId !== sid) return;
+      console.warn('[submit] No daemon response for', sid, 'after 3s (not-running path) — close then restart');
+      socket.emit('close_session', {session_id: sid});
+      setTimeout(() => {
+        if (liveSessionId !== sid) return;
+        socket.emit('start_session', {
+          session_id: sid,
+          prompt: text,
+          cwd: (typeof _currentProjectDir === 'function') ? _currentProjectDir() : '',
+          resume: true,
+        });
+        sessionKinds[sid] = 'working';
+        updateLiveInputBar();
+      }, 1500);
+    }, 3000);
+    const _ghostCancel2 = function(data) {
+      if (data && data.session_id === sid && data.state !== 'stopped') {
+        clearTimeout(_ghostTimer2);
+        socket.off('session_state', _ghostCancel2);
+        socket.off('error', _fallbackHandler);
+      }
+    };
+    socket.on('session_state', _ghostCancel2);
     socket.emit('send_message', {session_id: sid, text: text});
     runningIds.add(sid);
     guiOpenAdd(sid);

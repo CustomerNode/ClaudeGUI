@@ -45,49 +45,60 @@ function _kanbanHistoryPush(entry) {
 }
 
 function _kanbanHistoryIcon() {
-  if (!_kanbanHistory.length) return '';
-  return '<span class="kanban-history-trigger" onclick="_toggleKanbanHistory(event)">'
-    + '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>'
-    + '</span>';
+  // No longer renders a standalone icon — history is shown on Board crumb hover
+  return '';
 }
 
-function _toggleKanbanHistory(event) {
-  event.stopPropagation();
-  let dropdown = document.getElementById('kanban-history-dropdown');
-  if (dropdown) { dropdown.remove(); return; }
+let _kanbanHistoryTimer = null;
+
+function _showKanbanHistory(triggerEl) {
+  if (document.getElementById('kanban-history-dropdown')) return;
   if (!_kanbanHistory.length) return;
 
-  const trigger = event.currentTarget;
-  const rect = trigger.getBoundingClientRect();
-  dropdown = document.createElement('div');
+  const rect = triggerEl.getBoundingClientRect();
+  const dropdown = document.createElement('div');
   dropdown.id = 'kanban-history-dropdown';
   dropdown.className = 'kanban-history-dropdown';
-  dropdown.style.top = (rect.bottom + 4) + 'px';
+  dropdown.style.top = (rect.bottom) + 'px';
   dropdown.style.left = rect.left + 'px';
 
-  // Filter out current view
   const _curId = liveSessionId || kanbanDetailTaskId || '';
-  const _filtered = _kanbanHistory.filter(h => h.id !== _curId);
-  if (!_filtered.length) { dropdown.remove(); return; }
 
   let html = '<div class="kanban-history-header">Recent</div>';
-  for (const h of _filtered) {
+  for (const h of _kanbanHistory) {
+    const isCurrent = h.id === _curId;
     const icon = h.type === 'session'
       ? '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
       : '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>';
-    const onclick = h.type === 'session'
+    const onclick = isCurrent ? '' : (h.type === 'session'
       ? `_kanbanOpenSession('${h.taskId || ''}','${h.id}')`
-      : `navigateToTask('${h.id}')`;
-    html += `<div class="kanban-history-item" onclick="document.getElementById('kanban-history-dropdown')?.remove();${onclick}">`
-      + icon + '<span>' + escHtml((h.title || '').slice(0, 40)) + '</span></div>';
+      : `navigateToTask('${h.id}')`);
+    const cls = 'kanban-history-item' + (isCurrent ? ' current' : '');
+    const clickAttr = isCurrent ? '' : ` onclick="document.getElementById('kanban-history-dropdown')?.remove();${onclick}"`;
+    html += `<div class="${cls}"${clickAttr}>`
+      + icon + '<span>' + escHtml((h.title || '').slice(0, 40)) + '</span>'
+      + (isCurrent ? '<span class="kanban-history-current-tag">here</span>' : '')
+      + '</div>';
   }
   dropdown.innerHTML = html;
   document.body.appendChild(dropdown);
-  // Close on outside click
-  setTimeout(() => {
-    const _close = (e) => { if (!dropdown.contains(e.target)) { dropdown.remove(); document.removeEventListener('click', _close); } };
-    document.addEventListener('click', _close);
-  }, 0);
+
+  // Close when mouse leaves both the trigger and the dropdown.
+  // Use a shared timer so entering the dropdown cancels the close.
+  dropdown.addEventListener('mouseenter', () => { clearTimeout(_kanbanHistoryTimer); });
+  dropdown.addEventListener('mouseleave', () => {
+    _kanbanHistoryTimer = setTimeout(() => {
+      const dd = document.getElementById('kanban-history-dropdown');
+      if (dd) dd.remove();
+    }, 150);
+  });
+}
+
+function _hideKanbanHistory() {
+  _kanbanHistoryTimer = setTimeout(() => {
+    const dd = document.getElementById('kanban-history-dropdown');
+    if (dd) dd.remove();
+  }, 300);
 }
 
 // Status colors read from CSS variables for theme support
@@ -1879,7 +1890,7 @@ async function changeTaskStatus(taskId, newStatus) {
  * full-width task detail view. The board columns disappear — you're
  * now 'inside' the task. Browser back returns to the board."
  */
-async function renderTaskDetail(taskId) {
+async function renderTaskDetail(taskId, opts) {
   // NEVER blow away a live session
   if (liveSessionId && window._kanbanSessionTaskId) return;
 
@@ -1903,8 +1914,10 @@ async function renderTaskDetail(taskId) {
     const task = await taskRes.json();
     // Store title for breadcrumb use by session opener
     window._kanbanDetailTaskTitle = task.title || '';
-    // Track in recent history
-    _kanbanHistoryPush({ type: 'task', id: taskId, title: task.title || '' });
+    // Track in recent history (skip when rendering just for breadcrumb building)
+    if (!(opts && opts.skipHistory)) {
+      _kanbanHistoryPush({ type: 'task', id: taskId, title: task.title || '' });
+    }
     let ancestors = [];
     if (ancRes.ok) {
       const ancData = await ancRes.json();
@@ -1923,7 +1936,7 @@ async function renderTaskDetail(taskId) {
     let html = '<div class="kanban-drill-titlebar">';
     html += '<div class="kanban-drill-breadcrumb">';
     html += _kanbanHistoryIcon();
-    html += '<span class="kanban-drill-crumb" onclick="navigateToBoard()">' + KI.menu + ' Board</span>';
+    html += '<span class="kanban-drill-crumb kanban-board-crumb" onclick="navigateToBoard()" onmouseenter="_showKanbanHistory(this)" onmouseleave="_hideKanbanHistory()">' + KI.menu + ' Board</span>';
     for (const a of ancestors) {
       html += '<span class="kanban-drill-sep">' + KI.chevronR + '</span>';
       html += `<span class="kanban-drill-crumb" onclick="navigateToTask('${a.id}')">${escHtml(a.title)}</span>`;
@@ -2833,7 +2846,7 @@ async function openSessionSpawner(taskId) {
     }
     crumbInnerHtml = clone.innerHTML;
   } else {
-    crumbInnerHtml = '<span class="kanban-drill-crumb" onclick="_kanbanSessionClose(\'board\')">' + KI.menu + ' Board</span>';
+    crumbInnerHtml = '<span class="kanban-drill-crumb kanban-board-crumb" onclick="_kanbanSessionClose(\'board\')" onmouseenter="_showKanbanHistory(this)" onmouseleave="_hideKanbanHistory()">' + KI.menu + ' Board</span>';
     if (taskId) {
       const taskTitle = window._kanbanDetailTaskTitle || '';
       if (taskTitle) {
@@ -2907,9 +2920,26 @@ async function openSessionSpawner(taskId) {
   }, 500);
 }
 
-function _kanbanOpenSession(taskId, sessionId) {
+async function _kanbanOpenSession(taskId, sessionId) {
   sessionId = _resolveSessionId(sessionId);
-  kanbanDetailTaskId = taskId;
+  // Tear down current live session so renderTaskDetail isn't blocked by
+  // its guard, then render the task detail so breadcrumbs are correct
+  // when _openSessionInKanban clones them.
+  if (liveSessionId) { if (typeof stopLivePanel === 'function') stopLivePanel(); }
+  window._kanbanSessionTaskId = null;
+  const oldBar = document.getElementById('kanban-session-bar');
+  if (oldBar) oldBar.remove();
+  const _kb = document.getElementById('kanban-board');
+  // Show the board invisibly so renderTaskDetail can write breadcrumbs
+  // without the user seeing a flash of the task detail view.
+  if (_kb) { _kb.style.display = ''; _kb.style.visibility = 'hidden'; }
+  const _mb = document.getElementById('main-body');
+  if (_mb) _mb.style.display = 'none';
+  if (taskId) {
+    kanbanDetailTaskId = taskId;
+    await renderTaskDetail(taskId, { skipHistory: true }).catch(() => {});
+  }
+  if (_kb) _kb.style.visibility = '';
   // Push history so back/forward works
   history.pushState(
     { view: 'kanban', taskId: taskId, session: true, sessionId: sessionId },
@@ -2979,7 +3009,7 @@ function _openSessionInKanban(sessionId) {
     crumbInnerHtml = clone.innerHTML;
   } else {
     // Fallback: build minimal breadcrumb
-    crumbInnerHtml = '<span class="kanban-drill-crumb" onclick="_kanbanSessionClose(\'board\')">' + KI.menu + ' Board</span>';
+    crumbInnerHtml = '<span class="kanban-drill-crumb kanban-board-crumb" onclick="_kanbanSessionClose(\'board\')" onmouseenter="_showKanbanHistory(this)" onmouseleave="_hideKanbanHistory()">' + KI.menu + ' Board</span>';
     if (taskId) {
       const taskTitle = window._kanbanDetailTaskTitle || '';
       if (taskTitle) {
@@ -4350,7 +4380,7 @@ function restoreFromHash() {
 
     // After a page refresh _idRemaps is empty — ask the server to resolve
     // the session ID in case it was remapped before the refresh.
-    const _doOpen = (sid) => renderTaskDetail(taskId).catch(() => {}).then(() => _openSessionInKanban(sid));
+    const _doOpen = (sid) => renderTaskDetail(taskId, { skipHistory: true }).catch(() => {}).then(() => _openSessionInKanban(sid));
     if (sessionId === sessMatch[2] && !allSessions.find(x => x.id === sessionId)) {
       const _krp = localStorage.getItem('activeProject') || '';
       const _krpQ = _krp ? '?project=' + encodeURIComponent(_krp) : '';
@@ -4423,7 +4453,7 @@ window.addEventListener('popstate', (e) => {
       // Forward into a session — wait for drill-down to render first
       kanbanDetailTaskId = e.state.taskId;
       const _sid = _resolveSessionId(e.state.sessionId);
-      renderTaskDetail(e.state.taskId).catch(() => {}).then(() => _openSessionInKanban(_sid));
+      renderTaskDetail(e.state.taskId, { skipHistory: true }).catch(() => {}).then(() => _openSessionInKanban(_sid));
     } else if (e.state.taskId) {
       goToTask(e.state.taskId);
     } else {
@@ -4436,7 +4466,7 @@ window.addEventListener('popstate', (e) => {
     if (sessMatch) {
       kanbanDetailTaskId = sessMatch[1];
       const _sid = _resolveSessionId(sessMatch[2]);
-      renderTaskDetail(sessMatch[1]).catch(() => {}).then(() => _openSessionInKanban(_sid));
+      renderTaskDetail(sessMatch[1], { skipHistory: true }).catch(() => {}).then(() => _openSessionInKanban(_sid));
     } else if (hash && hash.startsWith('#kanban/task/')) {
       const tid = hash.replace('#kanban/task/', '').replace('/session', '');
       if (tid) goToTask(tid);

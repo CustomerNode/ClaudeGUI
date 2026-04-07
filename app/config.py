@@ -176,8 +176,15 @@ def _encode_cwd(cwd: str) -> str:
     """Encode a filesystem path into the Claude project directory name format.
 
     E.g. ``C:\\Users\\foo\\Bar`` → ``C--Users-foo-Bar``
+
+    IMPORTANT: Underscores must also be replaced with dashes.  Claude Code's
+    own project directory encoding converts underscores to dashes (e.g.
+    ``customerNode_root`` → ``customerNode-root``), but the daemon's CWD
+    preserves the original filesystem underscores.  Without this, sessions
+    whose CWD contains underscores fail the project filter silently —
+    they appear to not exist even though the daemon has them running.
     """
-    return cwd.replace("\\", "-").replace("/", "-").replace(":", "-")
+    return cwd.replace("\\", "-").replace("/", "-").replace(":", "-").replace("_", "-")
 
 
 def cwd_matches_active_project(cwd: str, project: str = "") -> bool:

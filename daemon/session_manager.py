@@ -506,7 +506,20 @@ class SessionManager:
         with self._lock:
             if session_id in self._sessions:
                 existing = self._sessions[session_id]
-                if existing.state not in (SessionState.STOPPED,):
+                # Detect zombie: task coroutine finished but state never
+                # transitioned to STOPPED/IDLE.  Force cleanup so the
+                # session can be restarted instead of stuck forever.
+                _is_zombie = (
+                    existing.state in (SessionState.WORKING, SessionState.STARTING)
+                    and existing.task is not None
+                    and existing.task.done()
+                )
+                if _is_zombie:
+                    logger.warning("Zombie session %s detected (state=%s, task done) — forcing cleanup",
+                                   session_id, existing.state.value)
+                    existing.state = SessionState.STOPPED
+                    del self._sessions[session_id]
+                elif existing.state not in (SessionState.STOPPED,):
                     # Session is alive (IDLE/WORKING/WAITING/STARTING).
                     # If a prompt was provided, deliver it via send_message()
                     # instead of rejecting — this covers the common case where
@@ -888,12 +901,21 @@ class SessionManager:
         return {"ok": True}
 
     def close_session(self, session_id: str) -> dict:
-        """Close and disconnect an SDK session."""
+        """Close and disconnect an SDK session.
+
+        Immediately forces the session to STOPPED so subsequent start_session
+        calls don't get rejected with 'already running'.  The async cleanup
+        (disconnect, cancel task) still runs in the background.
+        """
         session_id = self._resolve_id(session_id)
         with self._lock:
             info = self._sessions.get(session_id)
         if not info:
             return {"ok": False, "error": "Session not found"}
+
+        # Force STOPPED immediately so the session is unblocked for restart
+        info.state = SessionState.STOPPED
+        self._emit_state(info)
 
         asyncio.run_coroutine_threadsafe(
             self._close_session(session_id), self._loop
