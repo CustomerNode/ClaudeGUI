@@ -605,6 +605,7 @@ async function deleteAllSessions() {
   const resp = await fetch('/api/delete-all' + _dapQ, { method: 'DELETE' });
   const data = await resp.json();
   await loadSessions();
+  loadProjects();                       // refresh splash-screen session counts
   showToast((data.deleted || count) + ' sessions deleted');
 }
 

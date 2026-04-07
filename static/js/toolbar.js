@@ -797,6 +797,7 @@ async function deleteSession(id) {
       deselectSession();
     }
     document.getElementById('search').placeholder = 'Search ' + allSessions.length + ' sessions\u2026';
+    if (typeof loadProjects === 'function') loadProjects();  // refresh splash-screen session counts
     showToast('Session deleted');
   } else {
     showToast('Delete failed', true);
@@ -832,6 +833,7 @@ async function deleteEmptySessions() {
     filterSessions();
     const sessionCountEl = document.getElementById('session-count');
     if (sessionCountEl) sessionCountEl.textContent = allSessions.length + ' sessions';
+    if (typeof loadProjects === 'function') loadProjects();  // refresh splash-screen session counts
     showToast(`Deleted ${data.deleted} empty session${data.deleted !== 1 ? 's' : ''}`);
   } else {
     showToast('Delete failed', true);
