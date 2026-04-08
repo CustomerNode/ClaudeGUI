@@ -874,6 +874,11 @@ socket.on('queue_dispatched', (data) => {
     if (sid === liveSessionId && text && typeof _addOptimisticBubble === 'function') {
         _addOptimisticBubble(sid, text);
     }
+    // Clear local queue when all items dispatched
+    if (remaining === 0) {
+        delete _sessionQueues[sid];
+        if (sid === liveSessionId && typeof _renderQueueBanner === 'function') _renderQueueBanner();
+    }
 });
 
 // System messages from SDK (debug/info)

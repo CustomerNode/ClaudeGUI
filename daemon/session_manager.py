@@ -605,11 +605,19 @@ class SessionManager:
                 if hasattr(info, '_stream_heal_count'):
                     info._stream_heal_count = 0
                 info._stream_heal_needed = False
-            # Add user entry to history (don't emit — frontend shows it optimistically)
-            # Skip slash commands — they're internal CLI directives, not user chat
+            # Clear interrupted flag so queue dispatch resumes normally
+            _was_interrupted = getattr(info, '_interrupted', False)
+            info._interrupted = False
+            # Add user entry to history. Normally the frontend shows it
+            # optimistically so we skip the emit. But after an interrupt the
+            # optimistic bubble was cleared, so emit to avoid a gap.
             _stripped = text.strip()
             if not (_stripped.startswith('/') and ' ' not in _stripped):
-                info.entries.append(LogEntry(kind="user", text=text))
+                entry = LogEntry(kind="user", text=text)
+                info.entries.append(entry)
+                if _was_interrupted:
+                    entry_index = len(info.entries) - 1
+                    self._emit_entry(info.session_id, entry, entry_index)
             # Set state to WORKING before submitting query
             info.state = SessionState.WORKING
             # Set compacting substatus immediately so the state event carries it
@@ -895,6 +903,14 @@ class SessionManager:
                     self._save_queues()
                     self._emit_queue_update(session_id)
 
+        # Set IDLE synchronously so send_message sees it immediately.
+        # Without this, there's a race: the async _interrupt_session hasn't
+        # run yet, state is still WORKING, and send_message queues instead
+        # of sending.
+        info._interrupted = True
+        info.state = SessionState.IDLE
+        self._emit_state(info)
+
         asyncio.run_coroutine_threadsafe(
             self._interrupt_session(session_id), self._loop
         )
@@ -1131,9 +1147,14 @@ class SessionManager:
                 self._emit_state(info)
 
         except asyncio.CancelledError:
-            logger.info("Session %s cancelled", session_id)
-            info.state = SessionState.STOPPED
-            self._emit_state(info)
+            if getattr(info, '_interrupted', False):
+                # User interrupt — stay IDLE (already set by _interrupt_session)
+                logger.info("Session %s interrupted (task cancelled)", session_id)
+            else:
+                # Close/shutdown — go to STOPPED
+                logger.info("Session %s cancelled", session_id)
+                info.state = SessionState.STOPPED
+                self._emit_state(info)
         except Exception as e:
             err_str = str(e)
             logger.exception("Session %s stream error: %s", session_id, e)
@@ -1383,7 +1404,10 @@ class SessionManager:
                 self._emit_state(info)
 
         except asyncio.CancelledError:
-            # Don't leave session stuck in WORKING on cancel
+            # User interrupt — _interrupt_session already set IDLE, don't re-emit
+            if getattr(info, '_interrupted', False):
+                return
+            # Non-interrupt cancel — set IDLE so session isn't stuck
             if info.state == SessionState.WORKING:
                 info.state = SessionState.IDLE
                 self._emit_state(info)
@@ -1566,22 +1590,25 @@ class SessionManager:
                     result_holder[0] = (deny, False)
                     perm_event.set()
 
+            # _interrupted flag and IDLE state already set by the sync
+            # interrupt_session() before this coroutine was dispatched.
+
+            # Cancel the driving task — this is what actually stops the
+            # coroutine. client.interrupt() alone just signals the CLI
+            # but the coroutine keeps running and can set WORKING again.
+            if info.task and not info.task.done():
+                info.task.cancel()
+
             try:
                 await info.client.interrupt()
-            except Exception as int_err:
-                logger.warning("interrupt() failed for %s: %s, forcing disconnect", session_id, int_err)
-                try:
-                    await info.client.disconnect()
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
-            info.state = SessionState.IDLE
             entry = LogEntry(kind="system", text="Session interrupted by user")
             with info._lock:
                 info.entries.append(entry)
                 entry_index = len(info.entries) - 1
             self._emit_entry(session_id, entry, entry_index)
-            self._emit_state(info)
         except Exception as e:
             logger.exception("Interrupt error for %s: %s", session_id, e)
 
@@ -2715,8 +2742,10 @@ class SessionManager:
                              info.session_id, info.state, cb_err)
         # Keep the persistent registry up to date
         self._schedule_registry_save()
-        # Auto-dispatch queued messages when session goes IDLE
-        if info.state == SessionState.IDLE:
+        # Auto-dispatch queued messages when session goes IDLE —
+        # but NOT if the user just interrupted (flag is cleared on next
+        # send_message so the session resumes normal dispatch after).
+        if info.state == SessionState.IDLE and not getattr(info, '_interrupted', False):
             self._try_dispatch_queue(info.session_id)
             # Safety net: re-emit IDLE state after 3 seconds in case the first
             # push was silently lost (SocketIO transport hiccup, tab sleeping,

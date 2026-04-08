@@ -2292,6 +2292,10 @@ mark.find-match.current { background: var(--accent); color:#fff; }
   white-space: pre-wrap;
   word-break: break-word;
   opacity: 0.85;
+  max-height: 120px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.08) transparent;
 }
 [data-theme="light"] .live-queue-banner {
   background: #ff950018;

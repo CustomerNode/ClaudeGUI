@@ -592,8 +592,19 @@ function renderLiveEntry(e) {
 
   if (e.kind === 'user' || e.kind === 'asst') {
     const role = e.kind === 'user' ? 'user' : 'assistant';
-    div.className = 'msg ' + role;
     const text = e.text || '';
+
+    // Render bracketed messages like [Request interrupted by user] as centered pills
+    if (e.kind === 'user' && /^\[.+\]$/.test(text.trim())) {
+      div.className = 'live-entry live-interrupted';
+      div.innerHTML =
+        '<div class="live-interrupted-pill">' +
+        '<span>' + escHtml(text.trim().slice(1, -1)) + '</span>' +
+        '</div>';
+      return div;
+    }
+
+    div.className = 'msg ' + role;
     const LIMIT = e.kind === 'asst' ? 600 : 800;
     const displayText = text.length > LIMIT ? text.slice(0, LIMIT) : text;
 
@@ -1055,6 +1066,10 @@ function _liveSubmitDirect(sid, text, opts) {
   if (!sid) return;
   _liveSending = true;
 
+  // Clear stale client-side queue — message is being sent directly
+  delete _sessionQueues[sid];
+  _renderQueueBanner();
+
   // Only treat as permission response if explicitly flagged (not from queue)
   const isPermission = opts && opts.isPermission;
   const wasPermission = isPermission && !!waitingData[sid];
@@ -1336,6 +1351,11 @@ function liveSubmitContinue(fromId) {
   _addOptimisticBubble(sid, text);
 
   _liveSending = true;
+
+  // Clear any stale client-side queue from a previous interrupt —
+  // the message is being sent directly, not queued.
+  delete _sessionQueues[sid];
+  _renderQueueBanner();
 
   // If session is not running, resume it via WebSocket
   if (!runningIds.has(sid)) {
