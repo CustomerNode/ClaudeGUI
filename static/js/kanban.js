@@ -689,6 +689,7 @@ function renderExpandedContent(taskData) {
   html += '<div class="kanban-expand-actions">';
   html += `<button class="kanban-expand-action-btn" onclick="event.stopPropagation();toggleExpandedAddSubtask('${taskData.id}')">+ Add Subtask</button>`;
   html += `<button class="kanban-expand-action-btn" onclick="event.stopPropagation();openSessionSpawner('${taskData.id}')">+ New Session</button>`;
+  html += `<button class="kanban-expand-action-btn" onclick="event.stopPropagation();openSessionPickerModal('${taskData.id}','workflow','${escHtml(taskData.title||'').replace(/'/g,"&#39;")}')">+ Link Session</button>`;
   html += '</div>';
   html += `<div class="kanban-expand-add-subtask" id="kanban-expand-add-${taskData.id}" style="display:none;margin-top:6px;">`;
   html += `<div style="display:flex;gap:6px;align-items:center;">`;
@@ -2128,10 +2129,14 @@ async function renderTaskDetail(taskId, opts) {
         html += `<span class="kanban-drill-subtask-chevron" onclick="event.stopPropagation();_kanbanOpenSession('${task.id}','${escHtml(sessId)}')" title="Open">${KI.chevronR}</span>`;
         html += '</div>';
       }
-      // Ghost row for spawning
+      // Ghost rows for spawning and linking
       html += `<div class="kanban-drill-session-row kanban-drill-ghost-row" onclick="openSessionSpawner('${task.id}')" style="cursor:pointer;">`;
       html += `<div class="kanban-drill-subtask-status kanban-status-clickable" style="background:var(--bg-subtle);color:var(--text-dim);">new</div>`;
-      html += `<span class="kanban-drill-session-name" style="color:var(--text-dim);">Spawn session…</span>`;
+      html += `<span class="kanban-drill-session-name" style="color:var(--text-dim);">Spawn session\u2026</span>`;
+      html += `</div>`;
+      html += `<div class="kanban-drill-session-row kanban-drill-ghost-row" onclick="openSessionPickerModal('${task.id}','workflow','${escHtml(task.title||'').replace(/'/g,"&#39;")}')" style="cursor:pointer;">`;
+      html += `<div class="kanban-drill-subtask-status kanban-status-clickable" style="background:var(--bg-subtle);color:var(--text-dim);">link</div>`;
+      html += `<span class="kanban-drill-session-name" style="color:var(--text-dim);">Link existing session\u2026</span>`;
       html += `</div>`;
       html += '</div></div>';
     }

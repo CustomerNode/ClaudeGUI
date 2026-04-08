@@ -55,7 +55,7 @@ Run through this checklist with both agents before implementation starts:
 ### Shared Brain
 - [ ] compose-context.json is read by every agent before every action — no exceptions, no configuration
 - [ ] compose-context.json is written to after every meaningful update — automatic, not optional
-- [ ] The three sections (facts, sections, user_directives) are all present and structured correctly
+- [ ] The three parts (facts, sections, user_directives) are all present and structured correctly
 - [ ] File locking or atomic writes handle concurrent agent access safely
 
 ### Mid-Stream Changes
@@ -66,16 +66,16 @@ Run through this checklist with both agents before implementation starts:
 
 ### User Directives
 - [ ] Every shared prompt is logged with: id, gen (generation number), time, said_to, directive, shared, scope, superseded_by, potential_conflict
-- [ ] Generation numbers increment globally across the project, not per-section
+- [ ] Generation numbers increment globally across the composition, not per-section
 - [ ] Conflict detection runs on every new directive by scanning existing directives
 - [ ] Three resolution paths: clearly global (auto-resolve), clearly contextual (auto-resolve), ambiguous (surface to user)
 - [ ] The agent NEVER silently picks one interpretation when ambiguous
 - [ ] The user resolves conflicts with minimal friction (one click or one sentence)
 
 ### Shared Prompts Toggle
-- [ ] ONE boolean per project — shared_prompts_enabled
+- [ ] ONE boolean per composition — shared_prompts_enabled
 - [ ] Default is true (ON)
-- [ ] Lives in project settings, not in the chat UI, not per-prompt, not per-session
+- [ ] Lives in composition settings, not in the chat UI, not per-prompt, not per-session
 - [ ] When OFF, agents still share facts/status/outputs — only prompt logging is disabled
 - [ ] Agent nudge exists for when OFF and a prompt looks globally relevant
 
@@ -94,25 +94,25 @@ Run through this checklist with both agents before implementation starts:
 - [ ] Sidebar view cycling includes Compose
 
 ### Agent System Prompt
-- [ ] Injected automatically when a session belongs to a Compose task
+- [ ] Injected automatically when a session belongs to a composition task
 - [ ] Contains: read shared brain before every action, write after every update, changing flag protocol, full sibling file access
 - [ ] When shared_prompts_enabled: also contains directive logging and conflict detection instructions
 - [ ] User does NOT configure any of this
 
 ### Compose Planner
 - [ ] Forked from kanban planner with compose-specific system prompt
-- [ ] Plans content hierarchies (sections/subsections) not code tasks
+- [ ] Plans content hierarchies (sections and child sections) not code tasks
 - [ ] Accessible from Plan with AI button on the compose board
 
 ## QUESTIONS THE PM SHOULD ASK BEFORE IMPLEMENTATION
 
 These are questions that still need answers. The PM should either resolve them from the existing intent/design or escalate to the user:
 
-1. **Data storage** — Does Compose use the same JSON file store as kanban, or a separate one? If separate, what's the schema? (Intent Agent: user said "same way workflow does" for the board — implies same storage pattern. Answer Agent: proposed separate compose_api.py with per-project JSON.)
+1. **Data storage** — Does Compose use the same JSON file store as kanban, or a separate one? If separate, what's the schema? (Intent Agent: user said "same way workflow does" for the board — implies same storage pattern. Answer Agent: proposed separate compose_api.py with per-composition JSON.)
 
-2. **Project selection** — How does the user switch between Compose projects? Is there a project list/selector in the compose view? (Intent Agent: not discussed. Answer Agent: proposed GET /api/compose/projects endpoint but no UI detail.)
+2. **Composition selection** — How does the user switch between compositions? Is there a composition list/selector in the compose view? (Intent Agent: not discussed. Answer Agent: proposed GET /api/compose/projects endpoint but no UI detail.)
 
-3. **Session-to-task linking** — When a Compose task spawns a session, how is the compose system prompt injected? Via the session start socket event? Modified in the daemon? (Intent Agent: user wants agents at every level. Answer Agent: proposed modifying socket.emit start_session to detect compose tasks.)
+3. **Session-to-task linking** — When a composition task spawns a session, how is the compose system prompt injected? Via the session start socket event? Modified in the daemon? (Intent Agent: user wants agents at every level. Answer Agent: proposed modifying socket.emit start_session to detect composition tasks.)
 
 4. **Concurrent context writes** — Multiple agents writing compose-context.json simultaneously. File locking? Read-modify-write with retry? Merge strategy? (Intent Agent: user said "robust." Answer Agent: mentioned "file locking or atomic writes" but no specific design.)
 
@@ -122,9 +122,9 @@ These are questions that still need answers. The PM should either resolve them f
 
 7. **Root orchestrator agent** — The tree examples show a root agent that orchestrates. Is this an explicit session the user interacts with, or an implicit coordinator? (Intent Agent: user said agents at every level. Answer Agent: showed root as "[Orchestrator Agent]" but didn't detail the UX.)
 
-8. **Compose planner output** — Should the planner produce a task tree AND scaffold the project folder structure? Or just tasks, with folders created when agents start? (Intent Agent: not discussed. Answer Agent: proposed both init-folder endpoint and planner separately.)
+8. **Compose planner output** — Should the planner produce a task tree AND scaffold the composition folder structure? Or just tasks, with folders created when agents start? (Intent Agent: not discussed. Answer Agent: proposed both init-folder endpoint and planner separately.)
 
-9. **Cross-project context** — Can Compose projects reference each other's facts? Or is each project's shared brain fully isolated? (Intent Agent: not discussed. Answer Agent: designed per-project isolation.)
+9. **Cross-composition context** — Can compositions reference each other's facts? Or is each composition's shared brain fully isolated? (Intent Agent: not discussed. Answer Agent: designed per-composition isolation.)
 
 10. **Live progress visualization** — Should the compose board show real-time updates as agents work (status changes, changing flags appearing)? This would need WebSocket pushes when compose-context.json changes. (Intent Agent: not discussed but implied by "everyone always knows everything." Answer Agent: not designed but the existing kanban has real-time card updates via socket.)
 

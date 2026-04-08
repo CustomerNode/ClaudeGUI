@@ -16,7 +16,7 @@ You are the Answer Agent for the Compose feature. You hold the complete technica
 The design identified three failure modes of current AI knowledge work:
 1. **One giant session** — context bloats, becomes sequential, AI loses focus
 2. **Many small sessions** — no shared awareness, user becomes the manual coordinator
-3. **Compose is option 3** — a hierarchy of AI-coordinated agents that decompose, delegate, and synthesize, working in parallel with shared context
+3. **Compose is option 3** — a hierarchy of AI-coordinated agents that decompose, delegate, and synthesize, working in parallel with shared context within a composition
 
 ### The Architectural Parallel (ACCEPTED by user)
 
@@ -48,7 +48,7 @@ AI never touches binary files (.docx, .xlsx). It works on editable source repres
 | Timelines | Mermaid gantt / timeline | mermaid-cli |
 
 ### Context Sharing — Option C Was Chosen (ACCEPTED by user)
-Three options were presented:
+Three options were presented for how agents within a composition share knowledge:
 - Option A: File-system only (too simple, no change awareness)
 - Option B: File-system + shared context document (middle ground)
 - Option C: File-system + shared context + status notifications (CHOSEN)
@@ -57,7 +57,7 @@ But then the user OVERRODE the reporting mechanism. The original Option C had co
 
 **Every agent, every time, reads and writes the shared brain. No configuration. No triggers. No user choices about reporting modes. It just works.**
 
-### The Shared Brain — compose-context.json (ACCEPTED by user)
+### The Shared Brain — compose-context.json (ACCEPTED by user, one per composition)
 
 ```json
 {
@@ -107,7 +107,7 @@ But then the user OVERRODE the reporting mechanism. The original Option C had co
 3. **user_directives** — logged user prompts with generation numbers, scope, conflict tracking.
 
 ### Agent Behavior Protocol (ACCEPTED by user)
-Baked into every Compose agent's system prompt — not optional, not user-configured:
+Baked into every composition agent's system prompt — not optional, not user-configured:
 
 1. Before EVERY action: read compose-context.json
 2. Know what other agents have discovered (facts)
@@ -151,19 +151,19 @@ Directive conflict detected:
 User resolves in one click/sentence. Resolution logged as a new directive with explicit scope.
 
 ### Shared Prompts Toggle (ACCEPTED by user, with CORRECTION)
-- ONE toggle per Compose project — project-level, not per-prompt, not per-session
+- ONE toggle per composition — composition-level, not per-prompt, not per-session
 - User explicitly corrected: "I think you wanted living at the project level not every prompt or every session and then it'll just get annoying"
 - Default: ON (all prompts shared)
 - When OFF: agents still share facts/status/outputs via compose-context.json, only user prompt logging is disabled
 - Even when OFF: if agent detects a private prompt contains what looks like a global fact, it nudges (not blocks): "This looks like it might affect other sections. Want to share it?"
-- Lives in Compose project settings. Set once, change anytime.
+- Lives in composition settings. Set once, change anytime.
 
-### Project Folder Structure (PROPOSED, not explicitly confirmed)
+### Composition Folder Structure (PROPOSED, not explicitly confirmed)
 
 ```
 /compose-projects/{project-name}/
   compose-context.json        <- shared brain
-  brief.md                    <- root agent's project brief
+  brief.md                    <- root agent's composition brief
   sections/
     ceo-letter/
       draft.md
@@ -184,15 +184,15 @@ User resolves in one click/sentence. Resolution logged as a new directive with e
 Task cards on the board map to content sections:
 
 ```
-[Compose Project: Annual Report]          <- root agent: orchestrator
+[Composition: Annual Report]              <- root agent: orchestrator
   +-- [Section: CEO Letter]               <- agent writes .md
   +-- [Section: Financial Summary]        <- agent coordinates children
-  |     +-- [Revenue Analysis]            <- agent writes .md + .csv
-  |     +-- [Expense Breakdown]           <- agent writes .md + .csv
-  |     +-- [Projections]                 <- agent writes .md + charts
+  |     +-- [Section: Revenue Analysis]   <- agent writes .md + .csv
+  |     +-- [Section: Expense Breakdown]  <- agent writes .md + .csv
+  |     +-- [Section: Projections]        <- agent writes .md + charts
   +-- [Section: Market Position]          <- agent coordinates children
-  |     +-- [Competitor Scan]             <- agent researches + .md
-  |     +-- [TAM/SAM/SOM]                <- agent writes .md + .csv
+  |     +-- [Section: Competitor Scan]    <- agent researches + .md
+  |     +-- [Section: TAM/SAM/SOM]       <- agent writes .md + .csv
   +-- [Export Config]                     <- template, styles, format
 ```
 
@@ -206,14 +206,14 @@ Task cards on the board map to content sections:
 ### What Is New For Compose
 - compose-context.json shared brain management (read/write/merge)
 - Agent system prompt injection (compose-specific, automatic)
-- Shared prompts toggle (project-level setting in project settings)
+- Shared prompts toggle (composition-level setting in composition settings)
 - Directive conflict detection and resolution UI
 - Export pipeline (source files -> final deliverables via pandoc/openpyxl/python-pptx/mermaid-cli)
-- Project folder management (scaffold sections/, manage source files)
+- Composition folder management (scaffold sections/, manage source files)
 - Mid-stream change awareness (changing flag + yellow indicator on cards)
 - New view mode in app.js: viewMode 'compose'
 - New backend route file: app/routes/compose_api.py
-- Compose-specific planner (forked from kanban planner, different system prompt geared toward content decomposition not code tasks)
+- Compose-specific planner (forked from kanban planner, different system prompt geared toward content decomposition into sections, not code tasks)
 
 ### Navigation (PROPOSED, not explicitly confirmed)
 - New entry in app.js _viewModes (~line 477):
@@ -227,7 +227,7 @@ Task cards on the board map to content sections:
 Documents: reports, proposals, briefs, contracts, letters, blog posts, whitepapers, SOPs, manuals, scripts, copy. Data: spreadsheets, financial models, budgets, forecasts, survey results, comparison matrices, scorecards. Presentations: pitch decks, board decks, training materials, webinar slides, sales decks. Visual: diagrams, flowcharts, org charts, timelines, mind maps, wireframes, infographics. Structured: project plans, checklists, questionnaires, forms, inventories, catalogs. Communication: emails, newsletters, social posts, press releases, talking points.
 
 ### ITEMS PROPOSED BUT NOT EXPLICITLY CONFIRMED BY USER
-1. The exact project folder structure (compose-projects/{name}/sections/...)
+1. The exact composition folder structure (compose-projects/{name}/sections/...)
 2. The exact API endpoint paths (/api/compose/projects/<id>/...)
 3. The specific export tools (pandoc, openpyxl, python-pptx, mermaid-cli)
 4. The navigation position (where Compose sits in the sidebar cycle)

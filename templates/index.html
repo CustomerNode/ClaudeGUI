@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=29">
+<link rel="stylesheet" href="{{ versioned_static('style.css') }}">
 <link href="/static/vendor/quill.snow.css" rel="stylesheet">
 <script src="/static/vendor/quill.min.js"></script>
 <script>
@@ -77,11 +77,24 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         <span>New Session</span>
       </button>
-      <!-- View mode selector -->
-      <button id="btn-view-mode" class="sidebar-action-btn" onclick="setViewMode('homepage')" title="Go to homepage">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" id="view-mode-icon"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-        <span id="view-mode-label">Home</span>
-      </button>
+      <!-- View mode navigation -->
+      <div class="sidebar-nav" id="sidebar-nav">
+        <button class="sidebar-nav-btn active" data-view="homepage" onclick="setViewMode('homepage')" title="Home">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        </button>
+        <button class="sidebar-nav-btn" data-view="sessions" onclick="setViewMode('sessions')" title="Sessions">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        </button>
+        <button class="sidebar-nav-btn" data-view="kanban" onclick="setViewMode('kanban')" title="Workflow">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="5" height="18" rx="1"/><rect x="10" y="3" width="5" height="12" rx="1"/><rect x="17" y="3" width="5" height="15" rx="1"/></svg>
+        </button>
+        <button class="sidebar-nav-btn" data-view="workplace" onclick="setViewMode('workplace')" title="Workforce">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><circle cx="7" cy="10" r="1.5"/><circle cx="17" cy="10" r="1.5"/><path d="M10 10h4"/></svg>
+        </button>
+        <button class="sidebar-nav-btn" data-view="compose" onclick="setViewMode('compose')" title="Compose">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+        </button>
+      </div>
       <!-- Search + Sort + Sleep -->
       <div class="sidebar-search-row">
         <div class="sidebar-search">
@@ -122,6 +135,9 @@
       // Migrate old modes
       if (mode === 'workforce' || mode === 'list') mode = 'sessions';
       if (!localStorage.getItem('viewMode')) mode = 'homepage';
+      // Highlight active nav button immediately
+      var navBtns = document.querySelectorAll('.sidebar-nav-btn');
+      navBtns.forEach(function(b){ b.classList.toggle('active', b.dataset.view === mode); });
       if (mode === 'homepage') {
         // Hide sidebar entirely on homepage
         var sb = document.querySelector('.sidebar'); if (sb) sb.style.display = 'none';
@@ -146,6 +162,25 @@
         var mw = document.querySelector('.sidebar-menu-wrap'); if (mw) mw.style.display = 'none';
         var ba = document.getElementById('btn-add-agent'); if (ba) ba.style.display = 'none';
         var kbBoard = document.getElementById('kanban-board'); if (kbBoard) kbBoard.style.display = '';
+      } else if (mode === 'compose') {
+        // Show compose sidebar skeleton
+        var cs = document.getElementById('compose-sidebar');
+        if (cs) {
+          cs.style.display = '';
+          var html = '<div class="kanban-sidebar-section">';
+          html += '<div class="skel-shimmer" style="width:50px;height:10px;margin-bottom:8px;border-radius:3px;"></div>';
+          for (var i = 0; i < 4; i++) {
+            html += '<div class="skel-shimmer" style="width:100%;height:36px;border-radius:6px;margin-bottom:6px;"></div>';
+          }
+          html += '</div>';
+          cs.innerHTML = html;
+        }
+        // Hide everything that doesn't belong in compose
+        document.getElementById('session-list').style.display = 'none';
+        var sr = document.querySelector('.sidebar-search-row'); if (sr) sr.style.display = 'none';
+        var mw = document.querySelector('.sidebar-menu-wrap'); if (mw) mw.style.display = 'none';
+        var ba = document.getElementById('btn-add-agent'); if (ba) ba.style.display = 'none';
+        var cpBoard = document.getElementById('compose-board'); if (cpBoard) cpBoard.style.display = '';
       } else {
         // Show session list skeleton
         var el = document.getElementById('session-list');
@@ -165,6 +200,7 @@
     </script>
     <div id="workforce-grid"></div>
     <div id="kanban-sidebar" style="display:none;"></div>
+    <div id="compose-sidebar" style="display:none;"></div>
     <div id="sidebar-perm-panel" style="display:none;"></div>
     <div class="sidebar-footer"><span>by <a href="https://customernode.com" target="_blank">CustomerNode&trade;</a> and <a href="https://claude.ai/download" target="_blank">Claude Code</a></span><span>&copy; 2026 CustomerNode LLC</span></div>
   </div>
@@ -217,6 +253,27 @@
             var n = 2 + Math.floor(Math.random() * 3);
             for (var i = 0; i < n; i++) {
               h += '<div class="kanban-card kanban-skel-card"><div class="skel-shimmer skel-card-title" style="width:' + (50 + Math.random() * 40) + '%;"></div><div class="skel-shimmer skel-card-meta" style="width:' + (30 + Math.random() * 30) + '%;"></div></div>';
+            }
+            h += '</div></div>';
+          }
+          h += '</div>';
+          b.innerHTML = h;
+        }
+      })();
+      </script>
+    </div>
+    <div id="compose-board" style="display:none;">
+      <script>
+      (function(){
+        if ((localStorage.getItem('viewMode') || '') === 'compose') {
+          var b = document.getElementById('compose-board');
+          var h = '<div class="kanban-columns-wrapper compose-columns-wrapper">';
+          var names = ['Drafts','In Progress','In Review','Published','Archived'];
+          for (var c = 0; c < 5; c++) {
+            h += '<div class="kanban-column compose-column kanban-skel-col"><div class="kanban-column-header"><div class="skel-shimmer skel-col-title"></div><div class="skel-shimmer skel-col-count"></div></div><div class="kanban-column-body">';
+            var n = 2 + Math.floor(Math.random() * 3);
+            for (var i = 0; i < n; i++) {
+              h += '<div class="kanban-card compose-card kanban-skel-card"><div class="skel-shimmer skel-card-title" style="width:' + (50 + Math.random() * 40) + '%;"></div><div class="skel-shimmer skel-card-meta" style="width:' + (30 + Math.random() * 30) + '%;"></div></div>';
             }
             h += '</div></div>';
           }
@@ -446,34 +503,37 @@
 
 <!-- JavaScript files — load order matters -->
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-<script src="/static/js/utils.js"></script>
-<script src="/static/js/markdown.js"></script>
-<script src="/static/js/smart-copy.js"></script>
-<script src="/static/js/chat-component.js"></script>
-<script src="/static/js/app.js"></script>
-<script src="/static/js/workforce.js"></script>
-<script src="/static/js/folder-superset.js"></script>
-<script src="/static/js/folders.js"></script>
-<script src="/static/js/workspace.js?v=15"></script>
-<script src="/static/js/time-utils.js"></script>
-<script src="/static/js/kanban.js?v=37"></script>
-<script src="/static/js/kanban-report.js?v=15"></script>
-<script src="/static/js/kanban-planner.js?v=15"></script>
-<script src="/static/js/sessions.js"></script>
-<script src="/static/js/toolbar.js"></script>
-<script src="/static/js/modals.js"></script>
-<script src="/static/js/file-drop.js"></script>
-<script src="/static/js/templates.js"></script>
-<script src="/static/js/git-sync.js"></script>
-<script src="/static/js/sticky-user-msg.js"></script>
-<script src="/static/js/live-panel.js?v=29"></script>
-<script src="/static/js/find.js"></script>
-<script src="/static/js/extract.js"></script>
-<script src="/static/js/compare.js"></script>
-<script src="/static/js/voice.js"></script>
-<script src="/static/js/theme.js"></script>
-<script src="/static/js/healthchecks.js"></script>
-<script src="/static/js/socket.js?v=26"></script>
+<script src="{{ versioned_static('js/utils.js') }}"></script>
+<script src="{{ versioned_static('js/markdown.js') }}"></script>
+<script src="{{ versioned_static('js/smart-copy.js') }}"></script>
+<script src="{{ versioned_static('js/chat-component.js') }}"></script>
+<script src="{{ versioned_static('js/app.js') }}"></script>
+<script src="{{ versioned_static('js/workforce.js') }}"></script>
+<script src="{{ versioned_static('js/folder-superset.js') }}"></script>
+<script src="{{ versioned_static('js/folders.js') }}"></script>
+<script src="{{ versioned_static('js/workspace.js') }}"></script>
+<script src="{{ versioned_static('js/time-utils.js') }}"></script>
+<script src="{{ versioned_static('js/kanban.js') }}"></script>
+<script src="{{ versioned_static('js/kanban-report.js') }}"></script>
+<script src="{{ versioned_static('js/kanban-planner.js') }}"></script>
+<script src="{{ versioned_static('js/compose.js') }}"></script>
+<script src="{{ versioned_static('js/compose-planner.js') }}"></script>
+<script src="{{ versioned_static('js/link-picker.js') }}"></script>
+<script src="{{ versioned_static('js/sessions.js') }}"></script>
+<script src="{{ versioned_static('js/toolbar.js') }}"></script>
+<script src="{{ versioned_static('js/modals.js') }}"></script>
+<script src="{{ versioned_static('js/file-drop.js') }}"></script>
+<script src="{{ versioned_static('js/templates.js') }}"></script>
+<script src="{{ versioned_static('js/git-sync.js') }}"></script>
+<script src="{{ versioned_static('js/sticky-user-msg.js') }}"></script>
+<script src="{{ versioned_static('js/live-panel.js') }}"></script>
+<script src="{{ versioned_static('js/find.js') }}"></script>
+<script src="{{ versioned_static('js/extract.js') }}"></script>
+<script src="{{ versioned_static('js/compare.js') }}"></script>
+<script src="{{ versioned_static('js/voice.js') }}"></script>
+<script src="{{ versioned_static('js/theme.js') }}"></script>
+<script src="{{ versioned_static('js/healthchecks.js') }}"></script>
+<script src="{{ versioned_static('js/socket.js') }}"></script>
 
 <div id="session-tooltip"></div>
 </body>

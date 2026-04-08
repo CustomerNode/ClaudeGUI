@@ -261,7 +261,9 @@ def _daemon_title(messages: list) -> str | None:
     msg_block = "\n".join(f"- {t}" for t in texts)
     sid = f"_title_{uuid.uuid4().hex[:8]}"
 
+    from pathlib import Path as _Path
     from .config import _SYSTEM_UTILITY_CWD
+    _Path(_SYSTEM_UTILITY_CWD).mkdir(parents=True, exist_ok=True)
     result = sm.start_session(
         session_id=sid,
         prompt=msg_block,

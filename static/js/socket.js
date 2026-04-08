@@ -224,7 +224,7 @@ socket.on('state_snapshot', (data) => {
             if (s.permission) {
                 newWaiting[id] = {
                     question: _formatPermissionQuestion(s.permission.tool_name, s.permission.tool_input),
-                    options: ['y', 'n', 'a'],
+                    options: ['y', 'n', 'aa', 'a'],
                     kind: 'tool',
                     tool_name: s.permission.tool_name,
                     tool_input: s.permission.tool_input,
@@ -892,7 +892,7 @@ socket.on('session_permission', (data) => {
     if (data.session_id !== liveSessionId && !allSessions.find(x => x.id === data.session_id)) return;
     waitingData[data.session_id] = {
         question: _formatPermissionQuestion(data.tool_name, data.tool_input),
-        options: ['y', 'n', 'a'],
+        options: ['y', 'n', 'aa', 'a'],
         kind: 'tool',
         tool_name: data.tool_name,
         tool_input: data.tool_input,
@@ -1220,6 +1220,58 @@ socket.on('kanban_task_moved', (data) => {
 });
 socket.on('kanban_board_refresh', (data) => {
     if (typeof _kanbanOnBoardRefresh === 'function') _kanbanOnBoardRefresh(data);
+});
+
+// ── Compose board real-time events ──
+// These handlers call functions defined in compose.js (loaded before socket.js).
+socket.on('compose_task_created', (data) => {
+    if (typeof _composeOnTaskCreated === 'function') _composeOnTaskCreated(data);
+});
+socket.on('compose_task_updated', (data) => {
+    if (typeof _composeOnTaskUpdated === 'function') _composeOnTaskUpdated(data);
+});
+socket.on('compose_task_moved', (data) => {
+    if (typeof _composeOnTaskMoved === 'function') _composeOnTaskMoved(data);
+});
+socket.on('compose_board_refresh', (data) => {
+    if (typeof _composeOnBoardRefresh === 'function') _composeOnBoardRefresh(data);
+});
+// Changing-flag protocol: agents set changing=true before mutations,
+// clear it when done.  Siblings see the yellow dot update in real time.
+socket.on('compose_changing', (data) => {
+    if (typeof _composeOnChanging === 'function') _composeOnChanging(data);
+});
+
+// Directive conflict detection: when a directive is logged and the backend
+// detects ambiguous conflicts, surface the resolution UI in the live chat.
+socket.on('compose_directive_logged', (data) => {
+    if (typeof _injectDirectiveConflict === 'function') _injectDirectiveConflict(data);
+});
+
+// Context-updated push: compose-context.json was modified (either via API
+// or detected by the file watcher when an agent writes directly to disk).
+// Refreshes the board so parallel agents' progress reflects in real time.
+socket.on('compose_context_updated', (data) => {
+    if (typeof _composeOnContextUpdated === 'function') _composeOnContextUpdated(data);
+});
+
+// Directive conflict resolved: update any open conflict cards in the chat.
+socket.on('compose_directive_conflict_resolved', (data) => {
+    if (!data) return;
+    // Find and mark resolved any conflict cards matching the winner/loser pair.
+    // Use exact id matching to avoid substring false positives (e.g. d1 vs d12).
+    const cards = document.querySelectorAll('.live-directive-conflict:not(.dc-resolved)');
+    const candidateIds = [
+        'dc-' + data.winner_id + '-' + data.loser_id,
+        'dc-' + data.loser_id + '-' + data.winner_id,
+    ];
+    cards.forEach(card => {
+        if (candidateIds.indexOf(card.id) !== -1) {
+            if (typeof _markConflictResolved === 'function') {
+                _markConflictResolved(card.id, data.resolution, data);
+            }
+        }
+    });
 });
 
 // ---- Periodic state resync heartbeat ----

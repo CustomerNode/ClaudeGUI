@@ -471,9 +471,10 @@ class DaemonClient:
             "session_id": session_id, "text": text,
         })
 
-    def resolve_permission(self, session_id, allow, always=False):
+    def resolve_permission(self, session_id, allow, always=False, almost_always=False):
         return self._send_request("resolve_permission", {
             "session_id": session_id, "allow": allow, "always": always,
+            "almost_always": almost_always,
         })
 
     def interrupt_session(self, session_id):

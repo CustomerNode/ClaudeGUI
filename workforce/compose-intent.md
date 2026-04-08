@@ -82,12 +82,12 @@ User said: "In addition to the documents created I want relevant information fro
 
 CRITICAL NUANCE: The user identified the exact danger — temporal difference (user changed their mind) vs contextual difference (both are true for different sections). The user said "this can get messy" and "I want to be careful." This is not a feature to get approximately right. The user knows this is the hardest part.
 
-### The Toggle — PROJECT LEVEL, NOT PER-PROMPT
+### The Toggle — COMPOSITION LEVEL, NOT PER-PROMPT
 User said: "We probably want a preference button shown only in the new section where we can turn universal knowledge of prompt on and off."
 
 Then when I proposed per-prompt or per-session toggles, the user CORRECTED: "I think you wanted living at the project level not every prompt or every session and then it'll just get annoying."
 
-Explicit correction: project-level toggle. The user used the word "annoying" — any more granular than project-level is rejected.
+Explicit correction: composition-level toggle. The user used the word "annoying" — any more granular than composition-level is rejected.
 
 ### Unspoken But Implied Intent
 1. The user expects this to feel as natural as Workflow — not a separate app, not a complex setup. Same board, same card metaphor, just different domain.

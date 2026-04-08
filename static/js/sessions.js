@@ -232,6 +232,14 @@ function sessionContextMenu(e, sessionId) {
 
   items += '<div class="ws-ctx-divider"></div>';
 
+  // Link to task/section
+  items += '<div class="ws-ctx-item" onclick="_sessCtx(\'link-workflow\',\'' + sessionId + '\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> Link to Workflow Task</div>';
+  items += '<div class="ws-ctx-item" onclick="_sessCtx(\'link-compose\',\'' + sessionId + '\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> Link to Compose Section</div>';
+  items += '<div class="ws-ctx-item" onclick="_sessCtx(\'create-workflow\',\'' + sessionId + '\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Create Workflow Task</div>';
+  items += '<div class="ws-ctx-item" onclick="_sessCtx(\'create-compose\',\'' + sessionId + '\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Create Compose Section</div>';
+
+  items += '<div class="ws-ctx-divider"></div>';
+
   // Continue
   items += '<div class="ws-ctx-item" onclick="_sessCtx(\'continue\',\'' + sessionId + '\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg> Continue</div>';
 
@@ -304,6 +312,18 @@ function _sessCtx(action, sessionId) {
       } else {
         handleNameClick(sessionId);
       }
+      break;
+    case 'link-workflow':
+      openTaskPickerModal(sessionId, 'workflow');
+      break;
+    case 'link-compose':
+      openTaskPickerModal(sessionId, 'compose');
+      break;
+    case 'create-workflow':
+      createWorkflowTaskFromSession(sessionId);
+      break;
+    case 'create-compose':
+      createComposeSectionFromSession(sessionId);
       break;
     case 'continue':
       continueSession(sessionId);

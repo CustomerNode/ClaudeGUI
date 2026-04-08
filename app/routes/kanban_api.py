@@ -605,6 +605,84 @@ def unlink_session(task_id, session_id):
 
 
 # ---------------------------------------------------------------------------
+# Session linking — discovery & quick-create
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/kanban/unlinked-sessions", methods=["GET"])
+def unlinked_sessions():
+    """Return sessions not linked to any workflow task."""
+    try:
+        from flask import current_app
+        sm = current_app.session_manager
+        all_sess = sm.get_all_states() if hasattr(sm, 'get_all_states') else []
+
+        repo = _get_repo()
+        unlinked = []
+        for s in all_sess:
+            sid = s.get("id") or s.get("session_id", "")
+            if not sid:
+                continue
+            # Skip hidden/utility sessions
+            name = s.get("display_title") or s.get("name") or sid
+            if name.startswith("_"):
+                continue
+            task_id = repo.get_session_task(sid)
+            if task_id:
+                continue
+            unlinked.append({
+                "id": sid,
+                "display_title": name,
+                "state": s.get("state", "stopped"),
+            })
+        return jsonify(unlinked)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route("/api/kanban/tasks/from-session", methods=["POST"])
+def create_task_from_session():
+    """Quick-create a top-level task and link a session to it in one call.
+
+    Body: {session_id, title?}
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        session_id = data.get("session_id", "").strip()
+        if not session_id:
+            return jsonify({"error": "session_id is required"}), 400
+
+        title = data.get("title", "").strip() or session_id[:30]
+        repo = _get_repo()
+        project_id = _get_project_id()
+
+        task_id = str(uuid_mod.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        position = repo.get_next_position(project_id, "working")
+
+        task_obj = Task(
+            id=task_id,
+            project_id=project_id,
+            parent_id=None,
+            title=title,
+            description="",
+            verification_url="",
+            status=TaskStatus("working"),
+            position=position,
+            depth=0,
+            created_at=now,
+            updated_at=now,
+        )
+        task = repo.create_task(task_obj)
+        repo.link_session(task_id, session_id)
+        updated = handle_session_start(repo, task_id)
+
+        _emit("kanban_task_created", updated or task)
+        return jsonify({"task": _task_response(updated or task), "linked": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Issues
 # ---------------------------------------------------------------------------
 

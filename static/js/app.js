@@ -9,9 +9,12 @@ let viewMode = localStorage.getItem('viewMode') || 'homepage';
 // Migrate old view modes (grid/list collapse into sessions)
 if (viewMode === 'workforce' || viewMode === 'list') viewMode = 'sessions';
 // Guard against invalid view modes persisted in localStorage
-if (!['homepage', 'sessions', 'workplace', 'kanban'].includes(viewMode)) viewMode = 'sessions';
+if (!['homepage', 'sessions', 'workplace', 'kanban', 'compose'].includes(viewMode)) viewMode = 'sessions';
 // First-ever load detection — if no viewMode was ever set, force homepage
 if (!localStorage.getItem('viewMode')) viewMode = 'homepage';
+// Hash-based routing: URL hash overrides stored viewMode for direct-link support
+if (window.location.hash.startsWith('#kanban')) viewMode = 'kanban';
+if (window.location.hash.startsWith('#compose')) viewMode = 'compose';
 // Session display sub-mode (grid vs list within sessions view)
 let sessionDisplayMode = localStorage.getItem('sessionDisplayMode') || 'grid';
 if (!['grid', 'list'].includes(sessionDisplayMode)) sessionDisplayMode = 'grid';
@@ -173,6 +176,18 @@ async function setProject(encoded, reload = true) {
     if (_kUrl.hash.startsWith('#kanban/task/')) {
       _kUrl.hash = '#kanban';
       history.replaceState({ view: 'kanban', taskId: null }, '', _kUrl.pathname + _kUrl.search + '#kanban');
+    }
+  }
+  // Compose: reset board state if we're currently in compose view
+  if (viewMode === 'compose') {
+    if (typeof resetComposeState === 'function') resetComposeState();
+    const _composeEl = document.getElementById('compose-board');
+    if (_composeEl) { _composeEl.innerHTML = ''; }
+    // Scrub any compose sub-route hash back to base
+    const _cUrl = new URL(window.location);
+    if (_cUrl.hash.startsWith('#compose/')) {
+      _cUrl.hash = '#compose';
+      history.replaceState({ view: 'compose' }, '', _cUrl.pathname + _cUrl.search + '#compose');
     }
   }
   // Kanban: clear persisted filters / expanded tasks / history that belong to old project
@@ -543,6 +558,12 @@ const _viewModes = {
     title: 'Workforce',
     desc: 'Knowledge asset library — manage skills and agent definitions',
   },
+  compose: {
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>',
+    label: 'Compose View',
+    title: 'Compose',
+    desc: 'Documents, diagrams, and knowledge creation board',
+  },
 };
 
 function openViewModeSelector() {
@@ -550,12 +571,13 @@ function openViewModeSelector() {
 }
 
 function _updateViewModeButton(mode) {
-  // Show the current view's icon and label — tells you where you are
-  const m = _viewModes[mode] || _viewModes.sessions;
-  const iconEl = document.getElementById('view-mode-icon');
-  const labelEl = document.getElementById('view-mode-label');
-  if (iconEl) iconEl.outerHTML = m.icon.replace('width="18"', 'width="14" id="view-mode-icon"').replace('height="18"', 'height="14"');
-  if (labelEl) labelEl.textContent = m.label;
+  // Highlight the active nav button in the sidebar nav bar
+  const nav = document.getElementById('sidebar-nav');
+  if (nav) {
+    nav.querySelectorAll('.sidebar-nav-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.view === mode);
+    });
+  }
 }
 
 // Hydrate view mode button on load
@@ -980,6 +1002,12 @@ async function _newSessionSubmit(sessionId) {
   if (defaultThinking) startOpts.thinking_level = defaultThinking;
   if (systemPrompt) startOpts.system_prompt = systemPrompt;
 
+  // Auto-detect compose task context — inject compose_task_id so the
+  // backend can resolve and inject the compose system prompt automatically.
+  if (viewMode === 'compose' && typeof composeDetailTaskId !== 'undefined' && composeDetailTaskId) {
+    startOpts.compose_task_id = composeDetailTaskId;
+  }
+
   socket.emit('start_session', startOpts);
 
   // Use the user's first message as a placeholder title until auto-name kicks in,
@@ -1286,12 +1314,13 @@ async function loadSessions() {
   }
 
   // Restore session from URL, then localStorage, then per-project memory, or show dashboard.
-  // Skip session restore entirely when the URL hash points to a kanban view —
+  // Skip session restore entirely when the URL hash points to a kanban or compose view —
   // restoreFromHash handles navigation there; restoring a stale activeSessionId
   // would hijack the view and open a session from a different task/subtree.
   const _hashIsKanban = window.location.hash.startsWith('#kanban');
+  const _hashIsCompose = window.location.hash.startsWith('#compose');
   const _activeProj = localStorage.getItem('activeProject');
-  let _restoreId = _hashIsKanban ? null : (
+  let _restoreId = (_hashIsKanban || _hashIsCompose) ? null : (
     _urlChatId || localStorage.getItem('activeSessionId')
     || (_activeProj && localStorage.getItem('projectSession_' + _activeProj))
   );

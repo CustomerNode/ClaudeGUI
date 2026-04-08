@@ -66,14 +66,15 @@ function _setViewModeImmediate(mode, prevMode) {
   // Clean stale URL state when switching modes
   if (prevMode !== mode) {
     const url = new URL(window.location);
-    if (mode !== 'kanban') { url.hash = ''; }
-    // Always strip ?chat= when going to homepage, kanban, or workplace
-    if (mode === 'homepage' || mode === 'kanban' || mode === 'workplace') { url.searchParams.delete('chat'); }
+    if (mode !== 'kanban' && mode !== 'compose') { url.hash = ''; }
+    // Always strip ?chat= when going to homepage, kanban, workplace, or compose
+    if (mode === 'homepage' || mode === 'kanban' || mode === 'workplace' || mode === 'compose') { url.searchParams.delete('chat'); }
     history.replaceState({}, '', url.pathname + url.search + url.hash);
   }
   const listEl = document.getElementById('session-list');
   const gridEl = document.getElementById('workforce-grid');
   const kanbanEl = document.getElementById('kanban-board');
+  const composeEl = document.getElementById('compose-board');
   const homepageEl = document.getElementById('homepage-container');
 
   // --- Clean up when LEAVING a mode ---
@@ -146,6 +147,29 @@ function _setViewModeImmediate(mode, prevMode) {
     }
   }
 
+  // Leaving compose: clean up compose board
+  if (prevMode === 'compose' && mode !== 'compose') {
+    if (liveSessionId) { if (typeof stopLivePanel === 'function') stopLivePanel(); }
+    activeId = null;
+    liveSessionId = null;
+    localStorage.removeItem('activeSessionId');
+    if (typeof resetComposeState === 'function') resetComposeState();
+    if (composeEl) { composeEl.style.display = 'none'; composeEl.innerHTML = ''; }
+    const composeSidebar = document.getElementById('compose-sidebar');
+    if (composeSidebar) { composeSidebar.style.display = 'none'; composeSidebar.innerHTML = ''; }
+    const csPermPanel = document.getElementById('sidebar-perm-panel');
+    if (csPermPanel) { csPermPanel.style.display = 'none'; csPermPanel.innerHTML = ''; }
+    document.getElementById('main-body').style.display = '';
+    if (mode !== 'homepage') document.getElementById('main-body').innerHTML = _buildDashboard();
+    document.getElementById('main-toolbar').style.display = 'none';
+    const btnAdd = document.getElementById('btn-add-agent');
+    if (btnAdd) btnAdd.style.display = '';
+    const cleanUrl = new URL(window.location);
+    cleanUrl.hash = '';
+    cleanUrl.searchParams.delete('chat');
+    history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search);
+  }
+
   // --- Set new mode state ---
   if (typeof workspaceActive !== 'undefined') workspaceActive = (mode === 'workplace');
 
@@ -170,6 +194,7 @@ function _setViewModeImmediate(mode, prevMode) {
     listEl.style.display = 'none';
     gridEl.classList.remove('visible');
     if (kanbanEl) kanbanEl.style.display = 'none';
+    if (composeEl) composeEl.style.display = 'none';
     document.getElementById('main-toolbar').style.display = 'none';
     document.getElementById('main-body').style.display = 'none';
     if (homepageEl) {
@@ -190,6 +215,7 @@ function _setViewModeImmediate(mode, prevMode) {
     if (menuWrap) menuWrap.style.display = '';
     if (sidebarPermPanel) sidebarPermPanel.style.display = 'none';
     if (kanbanEl) kanbanEl.style.display = 'none';
+    if (composeEl) composeEl.style.display = 'none';
     document.getElementById('main-body').style.display = '';
     if (!activeId) document.getElementById('main-toolbar').style.display = 'none';
     const btnAdd = document.getElementById('btn-add-agent');
@@ -215,14 +241,40 @@ function _setViewModeImmediate(mode, prevMode) {
     if (kanbanSidebar) kanbanSidebar.style.display = '';
     document.getElementById('main-body').style.display = 'none';
     document.getElementById('main-toolbar').style.display = 'none';
+    if (composeEl) composeEl.style.display = 'none';
     if (homepageEl) homepageEl.style.display = 'none';
     if (typeof initKanban === 'function') initKanban();
+
+  } else if (mode === 'compose') {
+    const cleanUrl = new URL(window.location);
+    cleanUrl.searchParams.delete('chat');
+    if (!cleanUrl.hash || !cleanUrl.hash.startsWith('#compose')) {
+      cleanUrl.hash = '#compose';
+    }
+    history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+
+    listEl.style.display = 'none';
+    gridEl.classList.remove('visible');
+    if (searchRow) searchRow.style.display = 'none';
+    if (menuWrap) menuWrap.style.display = 'none';
+    const btnAdd = document.getElementById('btn-add-agent');
+    if (btnAdd) btnAdd.style.display = 'none';
+    if (kanbanEl) kanbanEl.style.display = 'none';
+    if (composeEl) composeEl.style.display = '';
+    const composeSidebar = document.getElementById('compose-sidebar');
+    if (composeSidebar) composeSidebar.style.display = '';
+    document.getElementById('main-body').style.display = 'none';
+    document.getElementById('main-toolbar').style.display = 'none';
+    if (homepageEl) homepageEl.style.display = 'none';
+    if (typeof initCompose === 'function') initCompose();
 
   } else if (mode === 'workplace') {
     gridEl.classList.remove('visible');
     if (sidebarPermPanel) { sidebarPermPanel.style.display = 'none'; sidebarPermPanel.innerHTML = ''; }
     const btnAdd = document.getElementById('btn-add-agent');
     if (btnAdd) btnAdd.style.display = 'none';
+    if (kanbanEl) kanbanEl.style.display = 'none';
+    if (composeEl) composeEl.style.display = 'none';
     if (homepageEl) homepageEl.style.display = 'none';
     document.getElementById('main-body').style.display = '';
     document.getElementById('main-toolbar').style.display = 'none';
@@ -314,4 +366,43 @@ function renderWorkforce(sessions) {
 
 function wfCardClick(id) {
   selectSession(id);
+}
+
+// --- Compose hash-based routing: popstate handler ---
+// Handles browser back/forward when navigating into or out of compose view.
+// When compose gains sub-routes (e.g. #compose/project/{id}), extend this handler.
+window.addEventListener('popstate', (e) => {
+  const hash = window.location.hash;
+
+  // If we were in compose and navigated away (back button), switch to the target mode
+  if (typeof viewMode !== 'undefined' && viewMode === 'compose' && !hash.startsWith('#compose')) {
+    if (typeof setViewMode !== 'function') return;
+    // Determine target from the new hash
+    if (hash.startsWith('#kanban')) {
+      // Kanban's popstate guards on viewMode==='kanban', so we must switch first
+      setViewMode('kanban');
+    } else {
+      // No hash or unknown hash — fall back to sessions view
+      setViewMode('sessions');
+    }
+    return;
+  }
+
+  // If hash points to compose but we're not in compose mode, switch to it
+  if (hash.startsWith('#compose') && typeof viewMode !== 'undefined' && viewMode !== 'compose') {
+    if (typeof setViewMode === 'function') {
+      setViewMode('compose');
+    }
+  }
+});
+
+// Restore compose view from hash on initial page load (called after sessions load).
+// Similar to kanban's restoreFromHash() — ensures direct links to #compose work.
+function restoreComposeFromHash() {
+  const hash = window.location.hash;
+  if (!hash || !hash.startsWith('#compose')) return;
+
+  if (typeof viewMode !== 'undefined' && viewMode !== 'compose' && typeof setViewMode === 'function') {
+    setViewMode('compose');
+  }
 }

@@ -568,7 +568,7 @@ function _autoSendPendingInput() {
       guiOpenAdd(id);
     } else if (kind === 'question' && waitingData[id]) {
       // Permission/question response
-      const actionMap = {yes: 'y', no: 'n', always: 'a', allow: 'y', deny: 'n'};
+      const actionMap = {yes: 'y', no: 'n', always: 'a', 'almost always': 'aa', 'almost-always': 'aa', 'almostalways': 'aa', allow: 'y', deny: 'n'};
       const action = actionMap[text.toLowerCase()] || text;
       socket.emit('permission_response', {session_id: id, action: action});
       delete waitingData[id];
@@ -717,9 +717,275 @@ function renderLiveEntry(e) {
     const text = e.text || '';
     div.innerHTML = '<div class="msg-role">claude <span class="msg-time" style="color:var(--text-faint);font-size:10px;">streaming\u2026</span></div>' +
       '<div class="msg-body msg-content">' + mdParse(text) + '</div>';
+
+  } else if (e.kind === 'permission') {
+    // Auto-approval audit log entry
+    const text = e.text || '';
+    const isErr = !!e.is_error;
+    div.className = 'live-entry live-entry-permission';
+    const shieldIcon = isErr
+      ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--result-err)" stroke-width="2" stroke-linecap="round" style="vertical-align:middle;margin-right:4px;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="9" x2="12" y2="15"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'
+      : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-faint)" stroke-width="2" stroke-linecap="round" style="vertical-align:middle;margin-right:4px;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>';
+    const line = document.createElement('div');
+    line.className = isErr ? 'live-result-line live-result-err' : 'live-result-line';
+    line.style.cursor = 'pointer';
+    line.style.fontSize = '11px';
+    if (!isErr) line.style.color = 'var(--text-faint)';
+    line.innerHTML = shieldIcon + escHtml(text.split('\n')[0]);
+
+    const detail = document.createElement('div');
+    detail.className = 'live-tool-detail';
+    detail.innerHTML = '<pre style="white-space:pre-wrap;margin:0;font-size:11px;color:' + (isErr ? 'var(--result-err)' : 'var(--text-faint)') + ';">' + escHtml(text) + '</pre>';
+
+    line.onclick = () => detail.classList.toggle('open');
+    div.appendChild(line);
+    div.appendChild(detail);
+
+  } else if (e.kind === 'directive_conflict') {
+    // Directive conflict resolution card — surfaced when an ambiguous
+    // conflict is detected between two user directives.
+    div.className = 'live-entry live-directive-conflict';
+    const c = e.conflict || {};
+    const newDir = e.new_directive || {};
+    const existDir = e.existing_directive || {};
+    const projectId = e.project_id || '';
+    const conflictId = 'dc-' + (newDir.id || '') + '-' + (existDir.id || '');
+
+    const newTime = newDir.time ? _formatMsgTime(newDir.time) : '';
+    const existTime = existDir.time ? _formatMsgTime(existDir.time) : '';
+    const newScope = newDir.scope || newDir.said_to || 'unscoped';
+    const existScope = existDir.scope || existDir.said_to || 'unscoped';
+
+    // Escape for safe use inside single-quoted JS strings in onclick attrs
+    const _a = _escJsAttr;
+    const aProjId = _a(projectId), aNewId = _a(newDir.id || '');
+    const aExistId = _a(existDir.id || ''), aCid = _a(conflictId);
+    // Pre-compute scope values for "Scope Each" button
+    const aNewScope = _a(newScope), aExistScope = _a(existScope);
+
+    div.id = conflictId;
+    div.innerHTML =
+      '<div class="dc-header">' +
+        '<svg class="dc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
+          '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>' +
+          '<line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>' +
+        '</svg>' +
+        '<span class="dc-title">Directive Conflict</span>' +
+      '</div>' +
+      '<div class="dc-body">' +
+        '<div class="dc-directive dc-directive-old">' +
+          '<div class="dc-dir-meta">' +
+            '<span class="dc-dir-id">' + escHtml(existDir.id || '?') + '</span>' +
+            '<span class="dc-dir-scope">' + escHtml(existScope) + '</span>' +
+            (existTime ? '<span class="dc-dir-time">' + existTime + '</span>' : '') +
+          '</div>' +
+          '<div class="dc-dir-text">' + escHtml(existDir.directive || '') + '</div>' +
+        '</div>' +
+        '<div class="dc-vs">vs</div>' +
+        '<div class="dc-directive dc-directive-new">' +
+          '<div class="dc-dir-meta">' +
+            '<span class="dc-dir-id">' + escHtml(newDir.id || '?') + '</span>' +
+            '<span class="dc-dir-scope">' + escHtml(newScope) + '</span>' +
+            (newTime ? '<span class="dc-dir-time">' + newTime + '</span>' : '') +
+          '</div>' +
+          '<div class="dc-dir-text">' + escHtml(newDir.directive || '') + '</div>' +
+        '</div>' +
+        (c.reason ? '<div class="dc-reason">' + escHtml(c.reason) + '</div>' : '') +
+      '</div>' +
+      '<div class="dc-actions" id="' + escHtml(conflictId) + '-actions">' +
+        '<button class="dc-btn dc-btn-supersede" title="Use newer directive, retire older"' +
+          ' onclick="_resolveDirectiveConflict(\'' + aProjId + '\',\'' + aNewId + '\',\'' + aExistId + '\',\'supersede\',\'' + aCid + '\')">Use Newer</button>' +
+        '<button class="dc-btn dc-btn-supersede-old" title="Keep older directive, retire newer"' +
+          ' onclick="_resolveDirectiveConflict(\'' + aProjId + '\',\'' + aExistId + '\',\'' + aNewId + '\',\'supersede\',\'' + aCid + '\')">Keep Older</button>' +
+        '<button class="dc-btn dc-btn-scope" title="Each applies to its own scope only"' +
+          ' onclick="_resolveDirectiveConflict(\'' + aProjId + '\',\'' + aNewId + '\',\'' + aExistId + '\',\'scope\',\'' + aCid + '\',\'' + aNewScope + '\',\'' + aExistScope + '\')">Scope Each</button>' +
+        '<button class="dc-btn dc-btn-keep" title="Keep both — intentionally different"' +
+          ' onclick="_resolveDirectiveConflict(\'' + aProjId + '\',\'' + aNewId + '\',\'' + aExistId + '\',\'keep_both\',\'' + aCid + '\')">Keep Both</button>' +
+      '</div>' +
+      '<div class="dc-freeform" id="' + escHtml(conflictId) + '-freeform">' +
+        '<input type="text" class="dc-freeform-input" placeholder="Or describe how to resolve\u2026"' +
+          ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();_resolveDirectiveConflictFreeform(\'' + aProjId + '\',\'' + aNewId + '\',\'' + aExistId + '\',this.value,\'' + aCid + '\');}">' +
+      '</div>';
   }
 
   return div;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DIRECTIVE CONFLICT RESOLUTION
+// ═══════════════════════════════════════════════════════════════
+
+/** Escape a string for safe embedding inside a single-quoted JS string in an
+ *  onclick attribute.  Handles ', ", &, <, >, and backslash. */
+function _escJsAttr(s) {
+  if (!s) return '';
+  return String(s)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, '\\&#39;')
+    .replace(/"/g, '&quot;')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
+ * Resolve a directive conflict via one-click button (supersede/scope/keep_both).
+ * @param {string} winnerScope - optional, for 'scope' resolution
+ * @param {string} loserScope  - optional, for 'scope' resolution
+ */
+async function _resolveDirectiveConflict(projectId, winnerId, loserId, resolution, conflictElId, winnerScope, loserScope) {
+  const card = document.getElementById(conflictElId);
+  const actionsEl = card && card.querySelector('.dc-actions');
+  const freeformEl = card && card.querySelector('.dc-freeform');
+  // Save original buttons HTML so we can restore on error
+  const _savedActions = actionsEl ? actionsEl.innerHTML : '';
+  if (actionsEl) actionsEl.innerHTML = '<span class="dc-resolving">Resolving\u2026</span>';
+  if (freeformEl) freeformEl.style.display = 'none';
+
+  const body = {
+    winner_id: winnerId,
+    loser_id: loserId,
+    resolution: resolution,
+  };
+  // Send scope assignments for 'scope' resolution
+  if (resolution === 'scope') {
+    if (winnerScope) body.winner_scope = winnerScope;
+    if (loserScope) body.loser_scope = loserScope;
+  }
+
+  try {
+    const res = await fetch('/api/compose/projects/' + encodeURIComponent(projectId) + '/directives/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Resolution failed');
+    _markConflictResolved(conflictElId, resolution, data);
+  } catch (err) {
+    console.error('[directive-conflict] Resolution error:', err);
+    // Restore buttons so user can retry
+    if (actionsEl) actionsEl.innerHTML = '<span class="dc-error">Failed: ' + escHtml(err.message) + ' </span>' + _savedActions;
+    if (freeformEl) freeformEl.style.display = '';
+  }
+}
+
+/**
+ * Resolve a directive conflict via free-form text input.
+ * Interprets the text as a note and defaults to "supersede" resolution,
+ * letting the user describe their intent in natural language.
+ */
+async function _resolveDirectiveConflictFreeform(projectId, winnerId, loserId, text, conflictElId) {
+  if (!text || !text.trim()) return;
+  const card = document.getElementById(conflictElId);
+  const actionsEl = card && card.querySelector('.dc-actions');
+  const freeformEl = card && card.querySelector('.dc-freeform');
+  const _savedActions = actionsEl ? actionsEl.innerHTML : '';
+  if (actionsEl) actionsEl.innerHTML = '<span class="dc-resolving">Resolving\u2026</span>';
+  if (freeformEl) freeformEl.style.display = 'none';
+
+  // Heuristic: detect intent from text using word boundaries to reduce false positives
+  const lower = text.toLowerCase().trim();
+  let resolution = 'supersede';  // default
+  if (/\bkeep both\b|\bboth\b.*\bvalid\b|\bintentionally different\b|\bintentional\b/i.test(lower)) resolution = 'keep_both';
+  else if (/\bscope\b|\bseparate\b|\beach section\b|\btheir own\b/i.test(lower)) resolution = 'scope';
+
+  try {
+    const res = await fetch('/api/compose/projects/' + encodeURIComponent(projectId) + '/directives/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        winner_id: winnerId,
+        loser_id: loserId,
+        resolution: resolution,
+        note: text.trim(),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Resolution failed');
+    _markConflictResolved(conflictElId, resolution, data);
+  } catch (err) {
+    console.error('[directive-conflict] Freeform resolution error:', err);
+    if (actionsEl) actionsEl.innerHTML = '<span class="dc-error">Failed: ' + escHtml(err.message) + ' </span>' + _savedActions;
+    if (freeformEl) freeformEl.style.display = '';
+  }
+}
+
+/**
+ * Update the conflict card UI after successful resolution.
+ */
+function _markConflictResolved(conflictElId, resolution, data) {
+  const card = document.getElementById(conflictElId);
+  if (!card) return;
+  card.classList.add('dc-resolved');
+
+  const labels = {
+    supersede: 'Superseded',
+    scope: 'Scoped separately',
+    keep_both: 'Kept both',
+  };
+  const label = labels[resolution] || resolution;
+  const note = data.resolution_directive
+    ? data.resolution_directive.directive || ''
+    : '';
+
+  const actionsEl = card.querySelector('.dc-actions');
+  if (actionsEl) {
+    actionsEl.innerHTML =
+      '<div class="dc-resolved-badge">' +
+        '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg> ' +
+        '<span>' + escHtml(label) + '</span>' +
+      '</div>' +
+      (note ? '<div class="dc-resolved-note">' + escHtml(note) + '</div>' : '');
+  }
+  const freeformEl = card.querySelector('.dc-freeform');
+  if (freeformEl) freeformEl.remove();
+}
+
+/**
+ * Inject a directive conflict card into the live chat log.
+ * Called from socket event handler when compose_directive_logged fires
+ * with ambiguous conflicts.
+ */
+function _injectDirectiveConflict(data) {
+  const logEl = document.getElementById('live-log');
+  if (!logEl) return;
+
+  const directive = data.directive || {};
+  const conflicts = data.conflicts || [];
+
+  // Only surface ambiguous conflicts — global/contextual are auto-resolved
+  const ambiguous = conflicts.filter(c => c.classification === 'ambiguous');
+  if (!ambiguous.length) return;
+
+  // Fetch the existing directive details from the conflicts array
+  // (the backend includes existing_id and user_message)
+  for (const conflict of ambiguous) {
+    // Build a synthetic entry for the conflict card renderer
+    const existingStub = {
+      id: conflict.existing_id,
+      directive: conflict.existing_text || '',
+      time: conflict.existing_time || '',
+      scope: conflict.existing_scope || null,
+      said_to: conflict.existing_said_to || null,
+    };
+
+    const entry = {
+      kind: 'directive_conflict',
+      project_id: data.project_id,
+      new_directive: directive,
+      existing_directive: existingStub,
+      conflict: conflict,
+    };
+
+    const el = renderLiveEntry(entry);
+    logEl.appendChild(el);
+
+    // Auto-scroll if enabled
+    if (liveAutoScroll) {
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+  }
 }
 
 /** Build a compact context circle indicator. Clickable to trigger compact when not working. */
@@ -852,7 +1118,8 @@ function updateLiveInputBar() {
     const _chk = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="vertical-align:middle;"><polyline points="20 6 9 17 4 12"/></svg>';
     const _xic = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="vertical-align:middle;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
     const _star = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:middle;"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>';
-    const optLabels = { y: _chk + ' Yes', n: _xic + ' No', a: _star + ' Always', yes: _chk + ' Yes', no: _xic + ' No' };
+    const _shield = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:middle;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>';
+    const optLabels = { y: _chk + ' Yes', n: _xic + ' No', aa: _shield + ' Almost Always', a: _star + ' Always', yes: _chk + ' Yes', no: _xic + ' No' };
     let optBtns = '';
     if (options && options.length) {
       optBtns = '<div class="live-option-btns">' +
@@ -1087,7 +1354,7 @@ function _liveSubmitDirect(sid, text, opts) {
   const isPermission = opts && opts.isPermission;
   const wasPermission = isPermission && !!waitingData[sid];
   if (wasPermission) {
-    const actionMap = {yes: 'y', no: 'n', always: 'a', allow: 'y', deny: 'n'};
+    const actionMap = {yes: 'y', no: 'n', always: 'a', 'almost always': 'aa', 'almost-always': 'aa', 'almostalways': 'aa', allow: 'y', deny: 'n'};
     const action = actionMap[text.toLowerCase()] || text;
     socket.emit('permission_response', {session_id: sid, action: action});
     // Optimistic clear
@@ -1406,7 +1673,7 @@ function liveSubmitWaiting() {
   // Use permission_response if there's an active permission request
   if (waitingData[liveSessionId]) {
     // Map common textual responses to the accepted single-char actions
-    const actionMap = {yes: 'y', no: 'n', always: 'a', allow: 'y', deny: 'n'};
+    const actionMap = {yes: 'y', no: 'n', always: 'a', 'almost always': 'aa', 'almost-always': 'aa', 'almostalways': 'aa', allow: 'y', deny: 'n'};
     const action = actionMap[text.toLowerCase()] || text;
     socket.emit('permission_response', {session_id: liveSessionId, action: action});
     // Optimistic clear

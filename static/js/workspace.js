@@ -649,8 +649,8 @@ function navigateToFolder(folderId, skipHistory) {
 
 // Restore folder + chat from URL on load + handle back/forward
 window.addEventListener('popstate', function(e) {
-  // Don't interfere with kanban navigation
-  if (typeof viewMode !== 'undefined' && viewMode === 'kanban') return;
+  // Don't interfere with kanban or compose navigation
+  if (typeof viewMode !== 'undefined' && (viewMode === 'kanban' || viewMode === 'compose')) return;
 
   const state = e.state || {};
   const url = new URL(window.location);
@@ -719,6 +719,7 @@ function _buildPermissionPanel() {
         <div class="ws-perm-actions">
           <button class="ws-perm-btn ws-perm-allow" onclick="wsPermissionAnswer('${entry.sessionId}','y')">Allow</button>
           <button class="ws-perm-btn ws-perm-deny" onclick="wsPermissionAnswer('${entry.sessionId}','n')">Deny</button>
+          <button class="ws-perm-btn ws-perm-almost" onclick="wsPermissionAnswer('${entry.sessionId}','aa')">Almost Always</button>
           <button class="ws-perm-btn ws-perm-always" onclick="wsPermissionAnswer('${entry.sessionId}','a')">Always</button>
         </div>
       </div>`;

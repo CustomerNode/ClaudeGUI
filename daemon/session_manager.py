@@ -303,6 +303,7 @@ class SessionInfo:
     pending_tool_name: str = ""
     pending_tool_input: dict = field(default_factory=dict)
     always_allowed_tools: set = field(default_factory=set)
+    almost_always_allowed_tools: set = field(default_factory=set)
     working_since: float = 0.0  # time.time() when state last became WORKING
     substatus: str = ""  # e.g. "compacting" — sub-state shown in UI while WORKING
     usage: dict = field(default_factory=dict)  # token usage from last ResultMessage
@@ -701,7 +702,8 @@ class SessionManager:
         )
         return {"ok": True}
 
-    def resolve_permission(self, session_id: str, allow: bool, always: bool = False) -> dict:
+    def resolve_permission(self, session_id: str, allow: bool, always: bool = False,
+                           almost_always: bool = False) -> dict:
         """Resolve a pending permission request.
 
         Called from a Flask-SocketIO handler thread. Uses
@@ -729,7 +731,7 @@ class SessionManager:
 
         if isinstance(perm_tuple, tuple) and len(perm_tuple) == 2:
             perm_event, result_holder = perm_tuple
-            result_holder[0] = (result, always)
+            result_holder[0] = (result, always, almost_always)
             perm_event.set()  # threading.Event.set() is fully thread-safe
 
         return {"ok": True}
@@ -815,6 +817,65 @@ class SessionManager:
                     pass
 
         return False
+
+    # ------------------------------------------------------------------
+    # Dangerous-command detection (for "Almost Always")
+    # ------------------------------------------------------------------
+
+    # Only block IRREVERSIBLE or HARD-TO-REPAIR actions.
+    # Recoverable operations (process kills, chmod, mv /tmp, docker rm,
+    # git branch -D with reflog) are left alone to keep prompts minimal.
+    _DANGEROUS_PATTERNS = [
+        # ── Permanent file/data destruction ──
+        r'\brm\s+.*-[rRf]',              # rm -r, rm -rf, rm -f
+        r'\brm\s+.*\*',                   # rm with wildcards
+        r'\bfind\b.*\s-delete\b',         # find ... -delete
+        r'\bfind\b.*-exec\s+rm\b',       # find ... -exec rm
+        r'\bshutil\.rmtree\b',           # Python rmtree in inline scripts
+        r'>\s*/dev/',                      # redirect to devices
+        r'^\s*>\s*[\'"]?/',               # bare redirect truncating a file
+        r'\btruncate\s',                  # truncate command
+        r'\bmkfs\b',                      # format filesystem
+        r'\bdd\s+if=',                    # dd disk overwrite
+        r'\bmv\s+.*\s+/dev/null\b',       # mv to /dev/null (data gone)
+
+        # ── Git operations that rewrite shared history ──
+        r'\bgit\s+push\s+.*--force',      # force push (overwrites remote)
+        r'\bgit\s+push\s+-f\b',          # force push short flag
+        r'\bgit\s+reset\s+--hard',        # hard reset (uncommitted work gone)
+        r'\bgit\s+clean\s+-[fdxe]',       # git clean (untracked files gone forever)
+        r'\bgit\s+stash\s+clear\b',       # clear ALL stashes
+
+        # ── SQL irreversible operations ──
+        r'\bDROP\s+(TABLE|DATABASE|SCHEMA|VIEW)',
+        r'\bTRUNCATE\b',
+
+        # ── Public/irreversible deployment ──
+        r'\bnpm\s+publish\b',            # publishes to the world, can't unpublish
+
+        # ── Remote code execution (unknown impact) ──
+        r'\bcurl\b.*\|\s*(ba)?sh',        # pipe curl to shell
+        r'\bwget\b.*\|\s*(ba)?sh',        # pipe wget to shell
+        r'\bpython[3]?\s+-c\s+.*\brmtree\b',  # python -c with rmtree
+    ]
+    _DANGEROUS_RE = None  # lazily compiled
+
+    @classmethod
+    def _is_dangerous(cls, tool_name: str, tool_input) -> bool:
+        """Return True if tool_input looks destructive (used by Almost Always)."""
+        if (tool_name or "").lower() != "bash":
+            return False
+        command = ""
+        if isinstance(tool_input, dict):
+            command = tool_input.get("command", "")
+        if not command:
+            return False
+        if cls._DANGEROUS_RE is None:
+            import re as _re
+            cls._DANGEROUS_RE = _re.compile(
+                "|".join(cls._DANGEROUS_PATTERNS), _re.IGNORECASE | _re.MULTILINE
+            )
+        return bool(cls._DANGEROUS_RE.search(command))
 
     # ------------------------------------------------------------------
     # Server-side message queue
@@ -1822,17 +1883,42 @@ class SessionManager:
 
             # Auto-approve if user previously clicked "Always" for this tool
             if tool_name in info.always_allowed_tools:
+                manager._log_auto_approved(
+                    resolved_id, info, tool_name, tool_input, "always-allow"
+                )
                 return PermissionResultAllow()
+
+            # "Almost Always" — auto-approve unless the command looks dangerous
+            if tool_name in info.almost_always_allowed_tools:
+                if manager._is_dangerous(tool_name, tool_input):
+                    logger.warning(
+                        "Almost-always BLOCKED dangerous %s: %s",
+                        tool_name,
+                        (tool_input.get("command", "") if isinstance(tool_input, dict) else ""),
+                    )
+                    manager._log_auto_approved(
+                        resolved_id, info, tool_name, tool_input,
+                        "almost-always-blocked"
+                    )
+                    # Fall through to manual prompt below
+                else:
+                    manager._log_auto_approved(
+                        resolved_id, info, tool_name, tool_input, "almost-always"
+                    )
+                    return PermissionResultAllow()
 
             # Server-side policy check -- resolve without browser round-trip
             if manager._should_auto_approve(tool_name, tool_input if isinstance(tool_input, dict) else {}):
                 logger.debug("Auto-approved %s via server policy", tool_name)
+                manager._log_auto_approved(
+                    resolved_id, info, tool_name, tool_input, "server-policy"
+                )
                 return PermissionResultAllow()
 
             # Use threading.Event (fully thread-safe) with anyio.sleep polling.
             # anyio.Event + call_soon_threadsafe doesn't reliably wake the waiter.
             perm_event = threading.Event()
-            perm_result_holder = [None]  # [0] = (PermissionResult, always)
+            perm_result_holder = [None]  # [0] = (PermissionResult, always, almost_always)
             info.pending_permission = (perm_event, perm_result_holder)
             info.pending_tool_name = tool_name
             info.pending_tool_input = tool_input if isinstance(tool_input, dict) else {}
@@ -1882,12 +1968,20 @@ class SessionManager:
 
                 result_tuple = perm_result_holder[0]
                 if result_tuple is None:
-                    result_tuple = (PermissionResultDeny(message="No result"), False)
-                permission_result, always = result_tuple
+                    result_tuple = (PermissionResultDeny(message="No result"), False, False)
+                # Support both 2-tuple (legacy) and 3-tuple
+                if len(result_tuple) == 2:
+                    permission_result, always = result_tuple
+                    almost_always = False
+                else:
+                    permission_result, always, almost_always = result_tuple
 
                 # Remember "Always Allow" for this tool for the rest of the session
-                if always and isinstance(permission_result, PermissionResultAllow):
-                    info.always_allowed_tools.add(tool_name)
+                if isinstance(permission_result, PermissionResultAllow):
+                    if always:
+                        info.always_allowed_tools.add(tool_name)
+                    elif almost_always:
+                        info.almost_always_allowed_tools.add(tool_name)
 
                 # Clean up permission state
                 info.pending_permission = None
@@ -2911,6 +3005,27 @@ class SessionManager:
             t.daemon = True
             t.start()
 
+    def _log_auto_approved(self, session_id: str, info, tool_name: str,
+                           tool_input, policy: str) -> None:
+        """Log an audit entry when a tool is auto-approved (or blocked)."""
+        desc = ""
+        if isinstance(tool_input, dict):
+            desc = (tool_input.get("command", "")
+                    or tool_input.get("file_path", "")
+                    or tool_input.get("path", "")
+                    or tool_input.get("pattern", ""))
+        if policy == "almost-always-blocked":
+            text = f"Dangerous command blocked by Almost Always — prompting for manual approval\n{tool_name}: {desc}"
+            is_error = True
+        else:
+            text = f"Auto-approved ({policy})\n{tool_name}: {desc}"
+            is_error = False
+        entry = LogEntry(kind="permission", text=text, name=tool_name, is_error=is_error)
+        with info._lock:
+            info.entries.append(entry)
+            idx = len(info.entries) - 1
+        self._emit_entry(session_id, entry, idx)
+
     def _emit_entry(self, session_id: str, entry: LogEntry, index: int) -> None:
         """Push a new log entry to all connected WebSocket clients."""
         if self._push_callback:
@@ -3034,7 +3149,8 @@ class SessionManager:
     # Unified permission resolution
     # ------------------------------------------------------------------
 
-    def resolve_permission_unified(self, session_id: str, allow: bool, always: bool = False) -> dict:
+    def resolve_permission_unified(self, session_id: str, allow: bool, always: bool = False,
+                                   almost_always: bool = False) -> dict:
         """Resolve permission — auto-detects hook vs SDK callback."""
         session_id = self._resolve_id(session_id)
         with self._lock:
@@ -3050,4 +3166,5 @@ class SessionManager:
                 return {"ok": True}
             return {"ok": False, "error": "Hook permission request not found"}
         else:
-            return self.resolve_permission(session_id, allow=allow, always=always)
+            return self.resolve_permission(session_id, allow=allow, always=always,
+                                           almost_always=almost_always)

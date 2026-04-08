@@ -244,10 +244,44 @@ def register_ws_events(socketio, app):
             permission_mode = None
         session_type = (data.get('session_type') or '').strip() or ""
 
+        # --- Compose task detection: auto-inject system prompt ----
+        compose_task_id = (data.get('compose_task_id') or '').strip() or None
+        if compose_task_id:
+            try:
+                from .compose_api import (
+                    resolve_compose_system_prompt,
+                    link_session_to_compose_task,
+                )
+                cp_result = resolve_compose_system_prompt(compose_task_id)
+                if cp_result.get('ok') and cp_result.get('system_prompt'):
+                    compose_prompt = cp_result['system_prompt']
+                    # Append to any existing system prompt
+                    if system_prompt:
+                        system_prompt = system_prompt + '\n\n' + compose_prompt
+                    else:
+                        system_prompt = compose_prompt
+                    logger.info(
+                        "Injected compose system prompt for task %s "
+                        "(role=%s) into session %s",
+                        compose_task_id, cp_result.get('agent_role', '?'),
+                        session_id,
+                    )
+                else:
+                    logger.warning(
+                        "Could not resolve compose prompt for task %s: %s",
+                        compose_task_id, cp_result.get('error', 'unknown'),
+                    )
+            except Exception:
+                logger.exception(
+                    "Error resolving compose prompt for task %s", compose_task_id
+                )
+
         # Route utility sessions to a separate project so their JSONL files
         # never appear in the user's project.
         if session_type in ('planner', 'title'):
+            from pathlib import Path as _Path
             from ..config import _SYSTEM_UTILITY_CWD
+            _Path(_SYSTEM_UTILITY_CWD).mkdir(parents=True, exist_ok=True)
             cwd = _SYSTEM_UTILITY_CWD
 
         if not session_id:
@@ -270,6 +304,16 @@ def register_ws_events(socketio, app):
         )
 
         if result.get('ok'):
+            # Auto-link session to compose task after successful start
+            if compose_task_id:
+                try:
+                    from .compose_api import link_session_to_compose_task
+                    link_session_to_compose_task(compose_task_id, session_id)
+                except Exception:
+                    logger.exception(
+                        "Failed to auto-link session %s to compose task %s",
+                        session_id, compose_task_id,
+                    )
             emit('session_started', {'session_id': session_id})
         else:
             emit('error', {
@@ -328,17 +372,19 @@ def register_ws_events(socketio, app):
         if not session_id:
             emit('error', {'message': 'session_id is required'})
             return
-        if action not in ('y', 'n', 'a'):
-            emit('error', {'message': 'action must be y, n, or a'})
+        if action not in ('y', 'n', 'a', 'aa'):
+            emit('error', {'message': 'action must be y, n, a, or aa'})
             return
 
-        allow = action in ('y', 'a')
+        allow = action in ('y', 'a', 'aa')
         always = action == 'a'
+        almost_always = action == 'aa'
 
         sm = app.session_manager
 
         # Daemon handles both hook and SDK permissions via resolve_permission
-        result = sm.resolve_permission(session_id, allow=allow, always=always)
+        result = sm.resolve_permission(session_id, allow=allow, always=always,
+                                       almost_always=almost_always)
         if isinstance(result, dict) and not result.get('ok'):
             emit('error', {
                 'message': result.get('error', 'Failed to resolve permission'),

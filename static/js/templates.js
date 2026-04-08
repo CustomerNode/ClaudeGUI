@@ -100,6 +100,17 @@ function _getAllTemplates() {
 }
 
 function _renderTemplateGrid(sessionId) {
+  // ── Workflow-view shortcut: single "Implement this task" button ──
+  if (window._kanbanPendingTaskLink || window._kanbanSessionTaskId) {
+    return '<div class="template-grid template-grid-workflow" id="template-grid">' +
+      '<div class="template-card template-card-implement" onclick="_implementTaskFromCard(\'' + escHtml(sessionId) + '\')">' +
+      '<div class="template-card-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>' +
+      '<div class="template-card-body">' +
+      '<div class="template-card-label">Implement this task</div>' +
+      '<div class="template-card-desc">Start working on this task using the context already provided.</div>' +
+      '</div></div></div>';
+  }
+
   var templates = _getAllTemplates();
   var html = '<div class="template-grid" id="template-grid">';
   for (var i = 0; i < templates.length; i++) {
@@ -114,6 +125,21 @@ function _renderTemplateGrid(sessionId) {
   html += '</div>';
   html += '<div class="template-manage-link" onclick="_showManageTemplates()">Manage Templates</div>';
   return html;
+}
+
+function _implementTaskFromCard(sessionId) {
+  var ta = document.getElementById('live-input-ta');
+  if (ta) {
+    ta.value = 'Implement this task. You already have the full context of what needs to be done — go ahead and do it.';
+    ta.focus();
+  }
+  _hideTemplateGrid();
+  // Auto-submit after a brief tick so the textarea value is committed
+  setTimeout(function() {
+    if (typeof _newSessionSubmit === 'function') {
+      _newSessionSubmit(sessionId);
+    }
+  }, 100);
 }
 
 function _selectTemplate(sessionId, templateId) {

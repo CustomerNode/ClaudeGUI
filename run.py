@@ -312,36 +312,94 @@ def open_browser():
     import time
     import urllib.request
     url = "http://localhost:5050"
+    log_path = Path(__file__).resolve().parent / "logs" / "browser_open.log"
+    log_path.parent.mkdir(exist_ok=True)
+
+    def _log(msg):
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write("%s %s\n" % (time.strftime("%H:%M:%S"), msg))
+        except Exception:
+            pass
+
+    _log("Waiting for server on port 5050...")
     # Wait until the server is actually accepting connections before opening
-    for _ in range(60):
+    for attempt in range(60):
         try:
             urllib.request.urlopen(url, timeout=1)
+            _log("Server responded after %d attempts" % (attempt + 1))
             break
         except Exception:
             time.sleep(1)
     else:
+        _log("ERROR: Server never responded after 60 attempts. Aborting browser open.")
         return  # server never came up, don't open a broken tab
+
+    opened = False
     if sys.platform == "win32":
-        chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-        try:
-            subprocess.Popen([chrome, url])
-        except FileNotFoundError:
-            webbrowser.open(url)
+        # Try Chrome first, then Edge, then system default
+        browsers = [
+            ("Chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+            ("Edge", r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+        ]
+        for name, exe in browsers:
+            if Path(exe).exists():
+                try:
+                    subprocess.Popen([exe, url])
+                    _log("Opened %s: %s" % (name, exe))
+                    opened = True
+                    break
+                except Exception as e:
+                    _log("Failed to open %s: %s" % (name, e))
     elif sys.platform == "darwin":
         try:
             subprocess.Popen(["open", url])
+            opened = True
         except FileNotFoundError:
-            webbrowser.open(url)
+            pass
     elif sys.platform == "linux":
         try:
             subprocess.Popen(["xdg-open", url])
+            opened = True
         except FileNotFoundError:
+            pass
+
+    if not opened:
+        try:
             webbrowser.open(url)
-    else:
-        webbrowser.open(url)
+            _log("Opened via webbrowser.open() fallback")
+        except Exception as e:
+            _log("ERROR: All browser methods failed. Last error: %s" % e)
 
 
 if __name__ == "__main__":
+    # Log web server startup to file so we can diagnose launch failures
+    # (console output is lost when launch.bat runs minimized)
+    _web_log_path = Path(__file__).resolve().parent / "logs" / "web_server.log"
+    _web_log_path.parent.mkdir(exist_ok=True)
+    _web_log_fh = open(_web_log_path, "a", encoding="utf-8")
+    import datetime as _dt
+    _web_log_fh.write("\n--- Web server starting at %s ---\n" % _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    _web_log_fh.flush()
+    # Tee stdout/stderr to the log file (keep console output too)
+    class _TeeWriter:
+        def __init__(self, original, log_fh):
+            self._orig = original
+            self._log = log_fh
+        def write(self, s):
+            if self._orig:
+                self._orig.write(s)
+            try:
+                self._log.write(s)
+                self._log.flush()
+            except Exception:
+                pass
+        def flush(self):
+            if self._orig:
+                self._orig.flush()
+    sys.stdout = _TeeWriter(sys.stdout, _web_log_fh)
+    sys.stderr = _TeeWriter(sys.stderr, _web_log_fh)
+
     # Suppress Flask/Werkzeug request logging and startup banner
     log = logging.getLogger("werkzeug")
     log.setLevel(logging.ERROR)

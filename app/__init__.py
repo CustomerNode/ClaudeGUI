@@ -41,6 +41,7 @@ def create_app() -> Flask:
     from .routes.auth_api import bp as auth_bp
     from .routes.kanban_api import bp as kanban_bp
     from .routes.kanban_report_api import bp as kanban_reports_bp
+    from .routes.compose_api import bp as compose_bp
 
     app.register_blueprint(main_bp)
     app.register_blueprint(sessions_bp)
@@ -51,9 +52,28 @@ def create_app() -> Flask:
     app.register_blueprint(auth_bp)
     app.register_blueprint(kanban_bp)
     app.register_blueprint(kanban_reports_bp)
+    app.register_blueprint(compose_bp)
 
     # Start background git fetch at startup
     from .git_ops import start_bg_fetch
     start_bg_fetch()
+
+    # Start compose-context.json file watcher for real-time board pushes
+    from .compose_watcher import start_compose_watcher
+    start_compose_watcher(socketio, app)
+
+    # Auto cache-busting: {{ versioned_static('js/app.js') }} → /static/js/app.js?v=<mtime>
+    import os as _os
+
+    @app.context_processor
+    def _static_cache_buster():
+        def versioned_static(filename):
+            filepath = _os.path.join(app.static_folder, filename)
+            try:
+                mtime = int(_os.path.getmtime(filepath))
+            except OSError:
+                mtime = 0
+            return f"/static/{filename}?v={mtime}"
+        return dict(versioned_static=versioned_static)
 
     return app

@@ -1,6 +1,10 @@
 /* toolbar.js — toolbar session management, inline rename, message rendering, session actions */
 let _hpBoardFetching = false;
 let _hpBoardLoaded = false;
+let _hpComposeFetching = false;
+let _hpComposeLoaded = false;
+let _hpComposeTasks = [];
+let _hpComposeColumns = [];
 
 function setToolbarSession(id, titleText, isUntitled, customTitle) {
   const titleEl = document.getElementById('main-title');
@@ -364,6 +368,61 @@ function _buildHomepageContent() {
     : active > 0 ? `${working} working &middot; ${question} waiting &middot; ${idle} idle`
     : `${total} session${total !== 1 ? 's' : ''} &middot; all sleeping`;
 
+  // Compose stats — async fetch like workflow
+  if (!_hpComposeFetching && !_hpComposeLoaded) {
+    _hpComposeFetching = true;
+    fetch('/api/compose/board').then(r => r.ok ? r.json() : null).then(data => {
+      _hpComposeFetching = false;
+      _hpComposeLoaded = true;
+      if (data) {
+        _hpComposeTasks = data.tasks || [];
+        _hpComposeColumns = data.columns || [];
+        if (typeof _updateHomepageStats === 'function') _updateHomepageStats();
+      }
+    }).catch(() => { _hpComposeFetching = false; _hpComposeLoaded = true; });
+  }
+  const composeTasks = _hpComposeTasks || [];
+  const composeCols = _hpComposeColumns || [];
+  const composeTotal = composeTasks.length;
+  const _compStillLoading = !_hpComposeLoaded && composeTotal === 0;
+
+  // Compose column bar viz
+  let composeColBarsHtml = '';
+  const composeColCounts = [];
+  let compMaxCol = 0;
+  for (const col of composeCols) {
+    const cnt = composeTasks.filter(t => t.status === col.status_key).length;
+    composeColCounts.push({ name: col.name, color: col.color || 'var(--border)', count: cnt });
+    if (cnt > compMaxCol) compMaxCol = cnt;
+  }
+  if (_compStillLoading) {
+    composeColBarsHtml = '<div class="hp-col skel-shimmer" style="height:55%;"></div>'
+      + '<div class="hp-col skel-shimmer" style="height:70%;animation-delay:0.15s;"></div>'
+      + '<div class="hp-col skel-shimmer" style="height:35%;animation-delay:0.3s;"></div>'
+      + '<div class="hp-col skel-shimmer" style="height:50%;animation-delay:0.45s;"></div>';
+  } else if (composeColCounts.length && composeTotal > 0) {
+    for (const c of composeColCounts) {
+      const pct = compMaxCol > 0 ? Math.max(8, (c.count / compMaxCol) * 100) : 8;
+      composeColBarsHtml += `<div class="hp-col" style="height:${pct}%;background:${c.color};opacity:0.8;" title="${c.name}: ${c.count}"></div>`;
+    }
+  } else {
+    composeColBarsHtml = '<div class="hp-col" style="height:50%;background:var(--border);opacity:0.3;"></div>'
+      + '<div class="hp-col" style="height:70%;background:var(--border);opacity:0.3;"></div>'
+      + '<div class="hp-col" style="height:30%;background:var(--border);opacity:0.3;"></div>'
+      + '<div class="hp-col" style="height:55%;background:var(--border);opacity:0.3;"></div>';
+  }
+
+  // Compose stat line
+  let composeStatLine = '';
+  if (_compStillLoading) {
+    composeStatLine = '<span class="skel-shimmer" style="display:inline-block;width:120px;height:13px;border-radius:4px;vertical-align:middle;"></span>';
+  } else if (composeTotal > 0) {
+    const parts = composeColCounts.filter(c => c.count > 0).map(c => `${c.count} ${c.name.toLowerCase()}`);
+    composeStatLine = `${composeTotal} section${composeTotal !== 1 ? 's' : ''} &middot; ${parts.join(', ')}`;
+  } else {
+    composeStatLine = 'No sections yet';
+  }
+
   // Workforce dot grid — colored by department
   const deptColors = ['#58a6ff','#58a6ff','#58a6ff','#58a6ff',
     '#3fb950','#3fb950','#3fb950',
@@ -434,6 +493,19 @@ function _buildHomepageContent() {
         </div>
         <div class="hp-stat">${agentCount} agent${agentCount !== 1 ? 's' : ''} &middot; ${deptCount} department${deptCount !== 1 ? 's' : ''}</div>
         <div class="hp-cta">Open Workforce <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></div>
+      </div>
+
+      <div class="homepage-card hp-compose" onclick="setViewMode('compose')">
+        <div class="hp-icon-wrap">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        </div>
+        <h3>Compose</h3>
+        <p class="hp-desc">Parallel content creation — multiple AI agents drafting sections simultaneously through a shared brain.</p>
+        <div class="hp-viz">
+          <div class="hp-columns">${composeColBarsHtml}</div>
+        </div>
+        <div class="hp-stat">${composeStatLine}</div>
+        <div class="hp-cta">Open Compose <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></div>
       </div>
 
     </div>
