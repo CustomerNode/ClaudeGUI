@@ -396,6 +396,73 @@ _REGISTRY_PATH = Path.home() / ".claude" / "gui_active_sessions.json"
 _MAX_RECOVERY_AGE = 3600  # 1 hour
 
 
+# ── Stream Closed on Recovery Bug ──────────────────────────────────────
+# When the daemon process is killed (taskkill, crash, port recycle) while
+# a session is mid-response, the .jsonl file is left with an incomplete
+# assistant entry: stop_reason=null, partial content, no ResultMessage.
+#
+# On restart, _recover_sessions tries --resume on these .jsonl files.
+# The CLI sees the dangling assistant turn, can't figure out where to
+# pick up, and immediately closes the stream → "Stream closed" error.
+# The self-healing logic then reconnects and retries, but every retry
+# hits the same corrupt .jsonl → infinite reconnect loop, session stuck
+# in "working" forever.
+#
+# Fix: before any --resume (recovery or mid-session reconnect), patch the
+# last .jsonl entry so stop_reason="end_turn".  The CLI then sees a clean
+# conversation and resumes normally.  Never skip recovery — always repair.
+# ───────────────────────────────────────────────────────────────────────
+def _repair_incomplete_jsonl(jsonl_path: Path) -> bool:
+    """Patch a .jsonl that ends with an incomplete assistant turn.
+
+    When the daemon is killed mid-response, the last entry in the .jsonl
+    is an assistant message with stop_reason=null.  The CLI's --resume
+    chokes on this and immediately closes the stream.
+
+    This function detects that case and patches the last line so
+    stop_reason="end_turn" and a text block is appended saying the
+    session was interrupted.  Returns True if the file was modified.
+    """
+    try:
+        with open(jsonl_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        if not lines:
+            return False
+
+        last_line = lines[-1].strip()
+        if not last_line:
+            return False
+
+        obj = json.loads(last_line)
+        if obj.get("type") != "assistant":
+            return False
+
+        msg = obj.get("message", {})
+        if msg.get("stop_reason") is not None:
+            return False  # already complete
+
+        # Patch the incomplete assistant turn
+        logger.info("Repairing incomplete assistant turn in %s", jsonl_path.name)
+        msg["stop_reason"] = "end_turn"
+        msg["stop_sequence"] = None
+
+        # Append an interruption notice to content so the model knows
+        content = msg.get("content", [])
+        content.append({
+            "type": "text",
+            "text": "\n\n[Session interrupted — resuming from last checkpoint]",
+        })
+        msg["content"] = content
+
+        lines[-1] = json.dumps(obj) + "\n"
+        with open(jsonl_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        return True
+    except Exception as e:
+        logger.warning("_repair_incomplete_jsonl(%s) failed: %s", jsonl_path, e)
+        return False
+
+
 class SessionManager:
     """Manages all Claude Code SDK sessions on a dedicated asyncio event loop."""
 
@@ -1023,6 +1090,19 @@ class SessionManager:
             except Exception:
                 pass
             info.client = None
+
+        # Repair incomplete .jsonl before reconnecting — if the stream
+        # died mid-response, the last entry has stop_reason=null and
+        # --resume will choke on it immediately.
+        try:
+            projects_dir = Path.home() / ".claude" / "projects"
+            if info.cwd:
+                encoded = info.cwd.replace("\\", "/").replace(":", "-").replace("/", "-")
+                jsonl_candidate = projects_dir / encoded / f"{resolved}.jsonl"
+                if jsonl_candidate.exists():
+                    _repair_incomplete_jsonl(jsonl_candidate)
+        except Exception as _rep_err:
+            logger.warning("_reconnect_client: jsonl repair failed: %s", _rep_err)
 
         try:
             options = ClaudeCodeOptions(
@@ -2663,23 +2743,31 @@ class SessionManager:
 
                 # Guard: if the .jsonl file was deleted (user chose to delete
                 # the session), do NOT recover it — that would undo the delete.
-                jsonl_found = False
+                jsonl_path = None
                 projects_dir = Path.home() / ".claude" / "projects"
                 if cwd:
                     encoded = cwd.replace("\\", "/").replace(":", "-").replace("/", "-")
-                    if (projects_dir / encoded / f"{sid}.jsonl").exists():
-                        jsonl_found = True
-                if not jsonl_found and projects_dir.is_dir():
+                    candidate = projects_dir / encoded / f"{sid}.jsonl"
+                    if candidate.exists():
+                        jsonl_path = candidate
+                if not jsonl_path and projects_dir.is_dir():
                     for d in projects_dir.iterdir():
                         if d.is_dir() and not d.name.startswith("subagents"):
-                            if (d / f"{sid}.jsonl").exists():
-                                jsonl_found = True
+                            candidate = d / f"{sid}.jsonl"
+                            if candidate.exists():
+                                jsonl_path = candidate
                                 break
-                if not jsonl_found:
+                if not jsonl_path:
                     logger.info(
                         "Skipping recovery of %s — .jsonl file was deleted", sid
                     )
                     continue
+
+                # Repair incomplete assistant turns so --resume doesn't choke.
+                # If the daemon was killed mid-response, the last .jsonl entry
+                # is an assistant message with stop_reason=null — the CLI can't
+                # resume from that state and the stream dies immediately.
+                _repair_incomplete_jsonl(jsonl_path)
 
                 logger.info(
                     "Recovering session %s (%s) from registry", sid, name or "unnamed"

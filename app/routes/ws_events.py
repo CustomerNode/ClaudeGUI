@@ -450,8 +450,27 @@ def register_ws_events(socketio, app):
             # SDK-only session (no .jsonl yet)
             entries = sdk_entries
         elif sdk_entries and jsonl_entries:
-            # Both exist — use whichever has more entries (SDK is more current)
-            entries = sdk_entries if len(sdk_entries) >= len(jsonl_entries) else jsonl_entries
+            # After recovery/reconnect, SDK entries reset to only the
+            # current turn while .jsonl has full history.  Picking the
+            # longer list drops the latest user message (the SDK entry
+            # the .jsonl hasn't flushed yet).  Fix: use .jsonl as the
+            # base and append any SDK entries not yet on disk.
+            if len(sdk_entries) >= len(jsonl_entries):
+                entries = sdk_entries
+            else:
+                # Merge: .jsonl base + SDK tail that's newer
+                # SDK entries from current turn won't be in .jsonl yet.
+                # Use entry text+kind as a fingerprint to avoid dupes.
+                jsonl_tail_keys = set()
+                for e in jsonl_entries[-20:]:
+                    k = (e.get('kind', ''), (e.get('text') or '')[:200])
+                    jsonl_tail_keys.add(k)
+                merged = list(jsonl_entries)
+                for e in sdk_entries:
+                    k = (e.get('kind', ''), (e.get('text') or '')[:200])
+                    if k not in jsonl_tail_keys:
+                        merged.append(e)
+                entries = merged
         else:
             entries = []
 
