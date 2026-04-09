@@ -1746,13 +1746,242 @@ async function initCompose() {
     console.error('Failed to init compose:', e);
     _renderComposeEmpty();
   }
+
+  _renderComposeSidebar();
+  attachComposeShortcuts();
 }
 
 function _renderComposeEmpty() {
   const nameEl = document.getElementById('compose-root-name');
   if (nameEl) nameEl.textContent = 'No composition yet';
   const statusEl = document.getElementById('compose-root-status');
-  if (statusEl) statusEl.textContent = 'Create a project to start';
+  if (statusEl) statusEl.textContent = '';
+
+  // Hide header bar when no project exists
+  const header = document.getElementById('compose-root-header');
+  if (header) header.style.display = 'none';
+  const target = document.getElementById('compose-input-target');
+  if (target) target.style.display = 'none';
+
+  const board = document.getElementById('compose-sections-board');
+  if (board) {
+    board.innerHTML = `
+      <div class="compose-empty-board">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="1.5" stroke-linecap="round">
+          <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+        </svg>
+        <div style="font-size:16px;font-weight:500;color:var(--text);margin:12px 0 6px;">Welcome to Compose</div>
+        <div style="font-size:13px;color:var(--text-muted);margin-bottom:16px;">Orchestrate multiple sections with AI-powered composition.</div>
+        <button class="kanban-create-first-btn" onclick="composeCreateProject()">+ Create your first composition</button>
+      </div>`;
+  }
+
+  _renderComposeSidebar();
+}
+
+function composeCreateProject() {
+  const overlay = document.getElementById('pm-overlay');
+  if (!overlay) return;
+
+  overlay.innerHTML = `<div class="pm-card pm-enter" style="max-width:480px;">
+    <h2 class="pm-title">New Composition</h2>
+    <div class="pm-body" style="padding:0;">
+      <div class="kanban-create-section">
+        <div class="kanban-create-section-label">Project name</div>
+        <div class="kanban-create-quick-row">
+          <input type="text" id="compose-new-project-input" class="kanban-create-input" placeholder="e.g. Blog Series, Product Launch\u2026"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();_submitComposeProject();}">
+          <button class="kanban-create-submit" onclick="_submitComposeProject()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+  overlay.classList.add('show');
+  requestAnimationFrame(() => {
+    overlay.querySelector('.pm-card')?.classList.remove('pm-enter');
+    document.getElementById('compose-new-project-input')?.focus();
+  });
+  overlay.onclick = (e) => { if (e.target === overlay) _closePm(); };
+}
+
+async function _submitComposeProject() {
+  const input = document.getElementById('compose-new-project-input');
+  const name = input ? input.value.trim() : '';
+  if (!name) { if (input) input.focus(); return; }
+  _closePm();
+  try {
+    const resp = await fetch('/api/compose/projects', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name}),
+    });
+    const data = await resp.json();
+    if (data && data.ok) {
+      showToast('Created composition: ' + name);
+      initCompose();
+    } else {
+      showToast(data.error || 'Failed to create composition', 'error');
+    }
+  } catch (e) {
+    console.error('Failed to create compose project:', e);
+    showToast('Failed to create composition', 'error');
+  }
+}
+
+let _composeInsertPosition = 'top';
+
+function composeAddSection() {
+  if (!_composeProject) return;
+  const overlay = document.getElementById('pm-overlay');
+  if (!overlay) return;
+
+  overlay.innerHTML = `<div class="pm-card pm-enter" style="max-width:480px;">
+    <h2 class="pm-title" style="display:flex;align-items:center;justify-content:space-between;">
+      <span>Add Section</span>
+      <div class="kanban-create-position-row" style="margin:0;">
+        <span style="font-size:11px;color:var(--text-dim);">Insert</span>
+        <button class="kanban-create-pos-btn active" id="cs-pos-top" onclick="_setComposeInsertPos('top')">Top</button>
+        <button class="kanban-create-pos-btn" id="cs-pos-bottom" onclick="_setComposeInsertPos('bottom')">Bottom</button>
+      </div>
+    </h2>
+    <div class="pm-body" style="padding:0;">
+
+      <div class="kanban-create-section">
+        <div class="kanban-create-section-label">Quick add</div>
+        <div class="kanban-create-quick-row">
+          <input type="text" id="compose-new-section-input" class="kanban-create-input" placeholder="Section name\u2026"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();_submitComposeSection();}">
+          <button class="kanban-create-submit" onclick="_submitComposeSection()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="kanban-create-section">
+        <div class="kanban-create-section-label">Type</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button class="kanban-create-pos-btn active" data-atype="text" onclick="_setComposeArtifactType(this,'text')">Text</button>
+          <button class="kanban-create-pos-btn" data-atype="code" onclick="_setComposeArtifactType(this,'code')">Code</button>
+          <button class="kanban-create-pos-btn" data-atype="data" onclick="_setComposeArtifactType(this,'data')">Data</button>
+        </div>
+      </div>
+
+    </div>
+  </div>`;
+  overlay.classList.add('show');
+  requestAnimationFrame(() => {
+    overlay.querySelector('.pm-card')?.classList.remove('pm-enter');
+    document.getElementById('compose-new-section-input')?.focus();
+  });
+  overlay.onclick = (e) => { if (e.target === overlay) _closePm(); };
+}
+
+let _composeArtifactType = 'text';
+
+function _setComposeInsertPos(pos) {
+  _composeInsertPosition = pos;
+  const top = document.getElementById('cs-pos-top');
+  const bot = document.getElementById('cs-pos-bottom');
+  if (top) top.classList.toggle('active', pos === 'top');
+  if (bot) bot.classList.toggle('active', pos === 'bottom');
+}
+
+function _setComposeArtifactType(btn, type) {
+  _composeArtifactType = type;
+  const siblings = btn.parentElement.querySelectorAll('.kanban-create-pos-btn');
+  siblings.forEach(b => b.classList.toggle('active', b === btn));
+}
+
+async function _submitComposeSection() {
+  const input = document.getElementById('compose-new-section-input');
+  const name = input ? input.value.trim() : '';
+  if (!name) { if (input) input.focus(); return; }
+  const insertPos = _composeInsertPosition;
+  const artifactType = _composeArtifactType;
+  _closePm();
+
+  // Optimistic: insert a ghost card into the not_started column
+  const col = document.querySelector('.compose-column[data-status="not_started"] .kanban-column-body');
+  let ghostCard = null;
+  if (col) {
+    ghostCard = document.createElement('div');
+    ghostCard.className = 'kanban-card compose-card';
+    ghostCard.style.opacity = '0.5';
+    ghostCard.innerHTML = '<div class="compose-card-header"><span class="compose-card-title">' + (typeof escHtml === 'function' ? escHtml(name) : name) + '</span></div><div style="font-size:10px;color:var(--text-dim);padding:4px 12px 8px;"><span class="spinner" style="width:10px;height:10px;vertical-align:middle;margin-right:4px;"></span>Creating...</div>';
+    if (insertPos === 'top') { col.prepend(ghostCard); } else { col.appendChild(ghostCard); }
+    const countEl = col.closest('.compose-column')?.querySelector('.kanban-column-count');
+    if (countEl) countEl.textContent = col.querySelectorAll('.kanban-card').length;
+  }
+
+  try {
+    const resp = await fetch('/api/compose/projects/' + _composeProject.id + '/sections', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, artifact_type: artifactType}),
+    });
+    const data = await resp.json();
+    if (data && data.ok) {
+      showToast('Added section: ' + name);
+      initCompose();
+    } else {
+      if (ghostCard) ghostCard.remove();
+      showToast(data.error || 'Failed to add section', 'error');
+    }
+  } catch (e) {
+    console.error('Failed to add compose section:', e);
+    if (ghostCard) ghostCard.remove();
+    showToast('Failed to add section', 'error');
+  }
+}
+
+// --- Compose sidebar ---
+
+function _renderComposeSidebar() {
+  const sidebar = document.getElementById('compose-sidebar');
+  if (!sidebar) return;
+
+  let html = '<div class="kanban-sidebar-section">';
+  html += '<div class="kanban-sidebar-label">Compose</div>';
+
+  if (_composeProject) {
+    html += '<button class="kanban-sidebar-btn" onclick="composeAddSection()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> New Section</button>';
+    html += '<button class="kanban-sidebar-btn" onclick="initCompose()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Refresh</button>';
+  } else {
+    html += '<button class="kanban-sidebar-btn" onclick="composeCreateProject()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> New Composition</button>';
+  }
+
+  html += '</div>';
+  sidebar.innerHTML = html;
+
+  // Permission aggregator
+  const permPanel = document.getElementById('sidebar-perm-panel');
+  if (permPanel && typeof _buildPermissionPanel === 'function') {
+    permPanel.innerHTML = _buildPermissionPanel();
+    permPanel.style.display = '';
+  }
+}
+
+// --- Compose keyboard shortcuts ---
+
+let _composeShortcutsAttached = false;
+
+function attachComposeShortcuts() {
+  if (_composeShortcutsAttached) return;
+  _composeShortcutsAttached = true;
+
+  document.addEventListener('keydown', (e) => {
+    if (typeof viewMode !== 'undefined' && viewMode !== 'compose') return;
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
+    if (e.ctrlKey || e.metaKey || e.key === 'F5') return;
+
+    switch (e.key) {
+      case 'n': e.preventDefault(); if (_composeProject) composeAddSection(); else composeCreateProject(); break;
+      case 'r': e.preventDefault(); initCompose(); if (typeof showToast === 'function') showToast('Refreshed'); break;
+    }
+  });
 }
 
 function _updateComposeRootHeader() {
@@ -1818,7 +2047,8 @@ function _renderComposeSectionCards() {
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
         </svg>
         <div style="font-size:14px;font-weight:500;color:var(--text);margin:8px 0 4px;">No sections yet</div>
-        <div style="font-size:12px;color:var(--text-muted);">Create one to get started.</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;">Add a section to break your composition into parts.</div>
+        <button class="kanban-create-first-btn" onclick="composeAddSection()">+ Add Section</button>
       </div>`;
     return;
   }
