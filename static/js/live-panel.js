@@ -1,5 +1,35 @@
 /* live-panel.js — live terminal panel, input bar state machine, GUI session management */
 
+// ── Draft persistence: preserve unsent text across session/view switches ──
+const _drafts = {};  // { sessionId: string }
+
+function _saveDraft(sessionId, text) {
+  if (!sessionId) return;
+  if (text) {
+    _drafts[sessionId] = text;
+  } else {
+    delete _drafts[sessionId];
+  }
+}
+
+function _getDraft(sessionId) {
+  return _drafts[sessionId] || '';
+}
+
+function _clearDraft(sessionId) {
+  delete _drafts[sessionId];
+}
+
+function _saveDraftFromDOM() {
+  if (!liveSessionId) return;
+  const ta = document.getElementById('live-input-ta') || document.getElementById('live-queue-ta');
+  if (ta && ta.value.trim()) {
+    _saveDraft(liveSessionId, ta.value);
+  } else {
+    _clearDraft(liveSessionId);
+  }
+}
+
 function _updateLastMessageTimes() {
   const log = document.getElementById('live-log');
   if (!log) return;
@@ -372,7 +402,7 @@ async function openInGUI(id) {
   localStorage.setItem('activeSessionId', id || '');
   _pushChatUrl(id);
   if (runningIds.has(id)) guiOpenAdd(id);
-  if (liveSessionId && liveSessionId !== id) { _autoSendPendingInput(); stopLivePanel(); }
+  if (liveSessionId && liveSessionId !== id) { stopLivePanel(); }
   filterSessions();
 
   // Show title from sidebar data immediately (no mismatch)
@@ -522,6 +552,7 @@ function startLivePanel(id, opts) {
 }
 
 function stopLivePanel() {
+  _saveDraftFromDOM();
   if (typeof _stopActiveVoice === 'function') _stopActiveVoice();
   liveSessionId = null;
   liveBarState = null;
@@ -1119,7 +1150,7 @@ function updateLiveInputBar() {
     const _xic = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="vertical-align:middle;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
     const _star = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:middle;"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>';
     const _shield = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:middle;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>';
-    const optLabels = { y: _chk + ' Yes', n: _xic + ' No', aa: _shield + ' Almost Always', a: _star + ' Always', yes: _chk + ' Yes', no: _xic + ' No' };
+    const optLabels = { y: _chk + ' Yes', n: _xic + ' No', aa: _shield + ' Auto Most', a: _star + ' Always', yes: _chk + ' Yes', no: _xic + ' No' };
     let optBtns = '';
     if (options && options.length) {
       optBtns = '<div class="live-option-btns">' +
@@ -1242,13 +1273,12 @@ function updateLiveInputBar() {
     }
   }
 
-  // ── Restore preserved text from the previous state's textarea ──
-  // When transitioning between states (idle↔working, new-chat↔q-chat, etc.)
-  // any text the user was typing/dictating is carried across into the new textarea.
-  if (_preservedText) {
+  // ── Restore text: same-session state transition OR saved draft ──
+  const _restoreText = _preservedText || _getDraft(id);
+  if (_restoreText) {
     const _newTa = document.getElementById('live-input-ta') || document.getElementById('live-queue-ta');
     if (_newTa && !_newTa.value) {
-      _newTa.value = _preservedText;
+      _newTa.value = _restoreText;
       _autoResizeTextarea(_newTa);
     }
   }
@@ -1345,6 +1375,7 @@ function liveSubmitIdle() {
 function _liveSubmitDirect(sid, text, opts) {
   if (!sid) return;
   _liveSending = true;
+  _clearDraft(sid);
 
   // Clear stale client-side queue — message is being sent directly
   delete _sessionQueues[sid];
@@ -1624,6 +1655,7 @@ function liveSubmitContinue(fromId) {
 
   const sid = typeof fromId === 'string' ? fromId : liveSessionId;
   if (!sid) return;
+  _clearDraft(sid);
 
   // Add optimistic user bubble
   _addOptimisticBubble(sid, text);
@@ -1669,6 +1701,7 @@ function liveSubmitWaiting() {
   if (!text) return;
   ta.value = '';
   _resetTextareaHeight(ta);
+  _clearDraft(liveSessionId);
 
   // Use permission_response if there's an active permission request
   if (waitingData[liveSessionId]) {

@@ -1754,7 +1754,7 @@ class SessionManager:
                 if isinstance(perm_tuple, tuple) and len(perm_tuple) == 2:
                     perm_event, result_holder = perm_tuple
                     deny = PermissionResultDeny(message="Interrupted by user", interrupt=True)
-                    result_holder[0] = (deny, False)
+                    result_holder[0] = (deny, False, False)
                     perm_event.set()
 
             # _interrupted flag and IDLE state already set by the sync
@@ -1794,7 +1794,7 @@ class SessionManager:
                 if isinstance(perm_tuple, tuple) and len(perm_tuple) == 2:
                     perm_event, result_holder = perm_tuple
                     deny = PermissionResultDeny(message="Session closed", interrupt=True)
-                    result_holder[0] = (deny, False)
+                    result_holder[0] = (deny, False, False)
                     perm_event.set()
 
             # Cancel the driving task if running
@@ -3012,24 +3012,31 @@ class SessionManager:
 
     def _log_auto_approved(self, session_id: str, info, tool_name: str,
                            tool_input, policy: str) -> None:
-        """Log an audit entry when a tool is auto-approved (or blocked)."""
-        desc = ""
-        if isinstance(tool_input, dict):
-            desc = (tool_input.get("command", "")
-                    or tool_input.get("file_path", "")
-                    or tool_input.get("path", "")
-                    or tool_input.get("pattern", ""))
-        if policy == "almost-always-blocked":
-            text = f"Dangerous command blocked by Almost Always — prompting for manual approval\n{tool_name}: {desc}"
-            is_error = True
-        else:
-            text = f"Auto-approved ({policy})\n{tool_name}: {desc}"
-            is_error = False
-        entry = LogEntry(kind="permission", text=text, name=tool_name, is_error=is_error)
-        with info._lock:
-            info.entries.append(entry)
-            idx = len(info.entries) - 1
-        self._emit_entry(session_id, entry, idx)
+        """Log an audit entry when a tool is auto-approved (or blocked).
+
+        This must never raise — a logging failure should not break the
+        permission callback that auto-approved the tool.
+        """
+        try:
+            desc = ""
+            if isinstance(tool_input, dict):
+                desc = (tool_input.get("command", "")
+                        or tool_input.get("file_path", "")
+                        or tool_input.get("path", "")
+                        or tool_input.get("pattern", ""))
+            if policy == "almost-always-blocked":
+                text = f"Dangerous command blocked by Almost Always — prompting for manual approval\n{tool_name}: {desc}"
+                is_error = True
+            else:
+                text = f"Auto-approved ({policy})\n{tool_name}: {desc}"
+                is_error = False
+            entry = LogEntry(kind="permission", text=text, name=tool_name, is_error=is_error)
+            with info._lock:
+                info.entries.append(entry)
+                idx = len(info.entries) - 1
+            self._emit_entry(session_id, entry, idx)
+        except Exception as e:
+            logger.warning("Failed to log auto-approved permission: %s", e)
 
     def _emit_entry(self, session_id: str, entry: LogEntry, index: int) -> None:
         """Push a new log entry to all connected WebSocket clients."""

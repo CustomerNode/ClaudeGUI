@@ -2992,7 +2992,7 @@ async function _unlinkSession(taskId, sessionId) {
 }
 
 function _kanbanSessionClose(target) {
-  if (liveSessionId) { if (typeof _autoSendPendingInput === 'function') _autoSendPendingInput(); if (typeof stopLivePanel === 'function') stopLivePanel(); }
+  if (liveSessionId) { if (typeof stopLivePanel === 'function') stopLivePanel(); }
   activeId = null;
   liveSessionId = null;
   window._kanbanSessionTaskId = null;
@@ -3084,7 +3084,7 @@ function _openSessionInKanban(sessionId) {
   activeId = sessionId;
   localStorage.setItem('activeSessionId', sessionId);
   if (runningIds.has(sessionId)) guiOpenAdd(sessionId);
-  if (liveSessionId && liveSessionId !== sessionId) { _autoSendPendingInput(); stopLivePanel(); }
+  if (liveSessionId && liveSessionId !== sessionId) { stopLivePanel(); }
   filterSessions();
 
   // Enable action buttons (delete, etc.) — the Actions popup reuses these.
@@ -4449,7 +4449,6 @@ window.addEventListener('popstate', (e) => {
 
   // If a live session is active in kanban, close it first then navigate
   if (liveSessionId && window._kanbanSessionTaskId) {
-    if (typeof _autoSendPendingInput === 'function') _autoSendPendingInput();
     if (typeof stopLivePanel === 'function') stopLivePanel();
     liveSessionId = null;
     activeId = null;

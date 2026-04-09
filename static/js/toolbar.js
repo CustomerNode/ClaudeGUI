@@ -42,7 +42,7 @@ function deselectSession() {
   activeId = null;
   localStorage.removeItem('activeSessionId');
   _pushChatUrl(null);
-  if (liveSessionId) { _autoSendPendingInput(); stopLivePanel(); }
+  if (liveSessionId) { stopLivePanel(); }
   // In workspace mode, return to workspace canvas instead of dashboard
   if (workspaceActive) {
     _wsExpandedId = null;
@@ -109,9 +109,8 @@ async function selectSession(id) {
   activeId = id;
   localStorage.setItem('activeSessionId', id || '');
   _pushChatUrl(id);
-  // Auto-send any pending input, then stop live panel for a different session
+  // Save draft and stop live panel for a different session
   if (liveSessionId && liveSessionId !== id) {
-    _autoSendPendingInput();
     stopLivePanel();
   }
   filterSessions();
@@ -866,6 +865,8 @@ async function deleteSession(id) {
 
   if (deleteOk) {
     allSessions = allSessions.filter(x => x.id !== id);
+    // Clean up draft text for deleted session
+    if (typeof _clearDraft === 'function') _clearDraft(id);
     // Remove from folder tree
     if (typeof removeSessionFromAllFolders === 'function') removeSessionFromAllFolders(id);
     // Unlink from any kanban tasks (best-effort, don't block)

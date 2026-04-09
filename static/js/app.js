@@ -120,7 +120,6 @@ async function setProject(encoded, reload = true) {
     deselectSession();
   } else if (liveSessionId) {
     // Live panel open without activeId (e.g. brand-new session) — tear it down
-    _autoSendPendingInput();
     stopLivePanel();
   }
   _skipChatHistory = false;
@@ -961,6 +960,7 @@ async function _newSessionSubmit(sessionId) {
   }
   ta.value = '';  // clear immediately to prevent double-submit on key repeat
   _resetTextareaHeight(ta);
+  if (typeof _clearDraft === 'function') _clearDraft(sessionId);
 
   // NOW seed as running (session will exist on server after this emit)
   runningIds.add(sessionId);
