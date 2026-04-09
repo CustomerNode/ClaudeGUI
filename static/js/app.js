@@ -620,7 +620,7 @@ function _updateViewModeButton(mode) {
   if (!wrap) return;
   wrap.addEventListener('mouseenter', () => {
     if (_closeTimer) { clearTimeout(_closeTimer); _closeTimer = null; }
-    _openTimer = setTimeout(() => wrap.classList.add('flyout-open'), 150);
+    _openTimer = setTimeout(() => wrap.classList.add('flyout-open'), 200);
   });
   wrap.addEventListener('mouseleave', () => {
     if (_openTimer) { clearTimeout(_openTimer); _openTimer = null; }

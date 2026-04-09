@@ -559,6 +559,16 @@ class SessionManager:
     # Public API (called from Flask routes / WS handlers)
     # ------------------------------------------------------------------
 
+    async def _tracked_coro(self, info: SessionInfo, coro) -> None:
+        """Run *coro* while storing the asyncio.Task on *info* so interrupt can cancel it."""
+        info.task = asyncio.current_task()
+        try:
+            await coro
+        finally:
+            # Clear only if we're still the tracked task (a new query may have replaced us)
+            if info.task is asyncio.current_task():
+                info.task = None
+
     def _resolve_id(self, session_id: str) -> str:
         """Resolve a session ID through aliases (old_id -> new_id)."""
         return self._id_aliases.get(session_id, session_id)
@@ -631,15 +641,15 @@ class SessionManager:
             self._emit_state(info)
             return {"ok": False, "error": "Session manager event loop is not running"}
 
-        # Launch the async session driver
+        # Launch the async session driver (wrapped so info.task is set for interrupt)
         asyncio.run_coroutine_threadsafe(
-            self._drive_session(
+            self._tracked_coro(info, self._drive_session(
                 session_id, prompt, cwd, resume,
                 model=model, system_prompt=system_prompt,
                 max_turns=max_turns, allowed_tools=allowed_tools,
                 permission_mode=permission_mode,
                 extra_args=extra_args,
-            ),
+            )),
             self._loop,
         )
         return {"ok": True}
@@ -698,7 +708,7 @@ class SessionManager:
         self._emit_state(info)
 
         asyncio.run_coroutine_threadsafe(
-            self._send_query(session_id, text), self._loop
+            self._tracked_coro(info, self._send_query(session_id, text)), self._loop
         )
         return {"ok": True}
 
@@ -1771,11 +1781,20 @@ class SessionManager:
             except Exception:
                 pass
 
-            entry = LogEntry(kind="system", text="Session interrupted by user")
+            # Add interrupt marker unless the CLI stream already delivered one
+            # (the SDK sends "[Request interrupted by user]" which gets
+            # converted to "Session interrupted by user" by _process_message).
             with info._lock:
-                info.entries.append(entry)
-                entry_index = len(info.entries) - 1
-            self._emit_entry(session_id, entry, entry_index)
+                already = any(
+                    getattr(e, 'text', '') == "Session interrupted by user"
+                    for e in info.entries[-3:]  # only check tail
+                ) if info.entries else False
+            if not already:
+                entry = LogEntry(kind="system", text="Session interrupted by user")
+                with info._lock:
+                    info.entries.append(entry)
+                    entry_index = len(info.entries) - 1
+                self._emit_entry(session_id, entry, entry_index)
         except Exception as e:
             logger.exception("Interrupt error for %s: %s", session_id, e)
 

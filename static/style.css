@@ -4639,12 +4639,13 @@ mark.find-match.current { background: var(--accent); color:#fff; }
 }
 .template-manage-link:hover { color: var(--accent); }
 
-/* Workflow-view: single centered "Implement this task" card */
+/* Workflow-view: two workflow cards side by side */
 .template-grid-workflow {
-  grid-template-columns: 1fr !important;
-  max-width: 340px;
+  grid-template-columns: 1fr 1fr !important;
+  max-width: 520px;
   margin-left: auto;
   margin-right: auto;
+  gap: 10px;
 }
 .template-card-implement {
   border-color: var(--accent);
@@ -4652,6 +4653,12 @@ mark.find-match.current { background: var(--accent); color:#fff; }
 }
 .template-card-implement .template-card-icon { color: var(--accent); }
 .template-card-implement .template-card-label { font-size: 13px; }
+.template-card-validate {
+  border-color: var(--warning, #e0a030);
+  background: color-mix(in srgb, var(--warning, #e0a030) 6%, var(--bg-card));
+}
+.template-card-validate .template-card-icon { color: var(--warning, #e0a030); }
+.template-card-validate .template-card-label { font-size: 13px; }
 .template-manage-link.template-grid-hidden {
   opacity: 0;
   max-height: 0;

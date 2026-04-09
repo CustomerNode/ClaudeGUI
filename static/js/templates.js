@@ -100,15 +100,24 @@ function _getAllTemplates() {
 }
 
 function _renderTemplateGrid(sessionId) {
-  // ── Workflow-view shortcut: single "Implement this task" button ──
+  // ── Workflow-view: two workflow cards ──
   if (window._kanbanPendingTaskLink || window._kanbanSessionTaskId) {
     return '<div class="template-grid template-grid-workflow" id="template-grid">' +
+      // Card 1: Quick Implement
       '<div class="template-card template-card-implement" onclick="_implementTaskFromCard(\'' + escHtml(sessionId) + '\')">' +
       '<div class="template-card-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>' +
       '<div class="template-card-body">' +
-      '<div class="template-card-label">Implement this task</div>' +
-      '<div class="template-card-desc">Start working on this task using the context already provided.</div>' +
-      '</div></div></div>';
+      '<div class="template-card-label">Quick Implement</div>' +
+      '<div class="template-card-desc">Start working immediately using the context already provided.</div>' +
+      '</div></div>' +
+      // Card 2: Implement + Validate
+      '<div class="template-card template-card-validate" onclick="_implementWithValidation(\'' + escHtml(sessionId) + '\')">' +
+      '<div class="template-card-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg></div>' +
+      '<div class="template-card-body">' +
+      '<div class="template-card-label">Implement + Validate</div>' +
+      '<div class="template-card-desc">Implement then auto-spawn a QA agent to review. Iterates until approved.</div>' +
+      '</div></div>' +
+      '</div>';
   }
 
   var templates = _getAllTemplates();
@@ -135,6 +144,28 @@ function _implementTaskFromCard(sessionId) {
   }
   _hideTemplateGrid();
   // Auto-submit after a brief tick so the textarea value is committed
+  setTimeout(function() {
+    if (typeof _newSessionSubmit === 'function') {
+      _newSessionSubmit(sessionId);
+    }
+  }, 100);
+}
+
+function _implementWithValidation(sessionId) {
+  var ta = document.getElementById('live-input-ta');
+  if (ta) {
+    ta.value = 'Implement this task. You already have the full context of what needs to be done — go ahead and do it.\n\n' +
+      'After you finish the implementation, spin up an independent stickler QA agent (using the Agent tool) whose sole job is to evaluate your work against the task requirements. ' +
+      'The QA agent should:\n' +
+      '1. Review all changes made against the original task spec\n' +
+      '2. Send a report to the human with a recommended APPROVE or DENY\n' +
+      '3. Categorize any identified issues as Critical, High, Medium, or Low risk\n' +
+      '4. Give a realistic, honest recommendation — not a rubber stamp\n\n' +
+      'If the QA agent identifies issues and recommends DENY, iterate on its feedback and fix the problems, then have it review again. ' +
+      'Keep iterating until the QA agent approves your work.';
+    ta.focus();
+  }
+  _hideTemplateGrid();
   setTimeout(function() {
     if (typeof _newSessionSubmit === 'function') {
       _newSessionSubmit(sessionId);
