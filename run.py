@@ -271,8 +271,6 @@ def _check_dependencies():
         ("flask", "flask"),
         ("flask_socketio", "flask-socketio"),
         ("anthropic", "anthropic"),
-        ("supabase", "supabase"),
-        ("pg8000", "pg8000"),
     ]
     missing = []
     for import_name, pip_name in required:
