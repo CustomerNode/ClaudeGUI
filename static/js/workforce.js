@@ -57,10 +57,46 @@ function _viewTransition(prevMode, mode) {
   }, 150);
 }
 
+// --- Per-project, per-view state persistence ---
+// Saves the navigation position within a view so it can be restored when the
+// user switches away and comes back (within the same project or across projects).
+
+function _saveViewPosition(proj, view) {
+  if (!proj) return;
+  const prefix = 'pvs_' + proj + '_';
+  if (view === 'sessions') {
+    // Track active session (also updated live in openInGUI)
+    if (activeId) localStorage.setItem(prefix + 'sessions', activeId);
+  } else if (view === 'kanban') {
+    const h = window.location.hash || '';
+    if (h.startsWith('#kanban')) {
+      // Strip /session/ suffix — session IDs are view-local state
+      localStorage.setItem(prefix + 'kanban', h.replace(/\/session\/.*$/, ''));
+    }
+  } else if (view === 'compose') {
+    const h = window.location.hash || '';
+    if (h.startsWith('#compose')) {
+      localStorage.setItem(prefix + 'compose', h);
+    }
+  }
+}
+
+function _restoreViewPosition(proj, view) {
+  if (!proj) return null;
+  return localStorage.getItem('pvs_' + proj + '_' + view) || null;
+}
+
 function _setViewModeImmediate(mode, prevMode) {
   prevMode = prevMode != null ? prevMode : null;
+
+  // Save navigation position of the view we're LEAVING before cleanup destroys it
+  const _proj = localStorage.getItem('activeProject');
+  if (prevMode && prevMode !== mode) _saveViewPosition(_proj, prevMode);
+
   viewMode = mode;
   localStorage.setItem('viewMode', mode);
+  // Keep per-project view memory in sync so project switches restore it
+  if (_proj) localStorage.setItem('projectView_' + _proj, mode);
   if (typeof _updateViewModeButton === 'function') _updateViewModeButton(mode);
 
   // Clean stale URL state when switching modes
@@ -222,13 +258,29 @@ function _setViewModeImmediate(mode, prevMode) {
     if (btnAdd) btnAdd.style.display = '';
     if (homepageEl) homepageEl.style.display = 'none';
 
+    // Restore last-open session for this project (if any) when returning to sessions view
+    if (!activeId && prevMode && prevMode !== 'sessions') {
+      const _savedSid = _restoreViewPosition(_proj, 'sessions');
+      if (_savedSid && typeof allSessions !== 'undefined' && allSessions.find(s => s.id === _savedSid)) {
+        // Defer so the view finishes rendering first
+        setTimeout(() => { if (typeof openInGUI === 'function') openInGUI(_savedSid); }, 0);
+      }
+    }
+
   } else if (mode === 'kanban') {
+    // Restore saved drill-down hash (if any) before initKanban → restoreFromHash()
+    const _savedKHash = _restoreViewPosition(_proj, 'kanban');
     const cleanUrl = new URL(window.location);
     cleanUrl.searchParams.delete('chat');
-    if (!cleanUrl.hash || !cleanUrl.hash.startsWith('#kanban')) {
+    if (_savedKHash && _savedKHash.startsWith('#kanban')) {
+      cleanUrl.hash = '';  // clear first so replaceState is clean
+      history.replaceState({ view: 'kanban', taskId: null }, '', cleanUrl.pathname + cleanUrl.search + _savedKHash);
+    } else if (!cleanUrl.hash || !cleanUrl.hash.startsWith('#kanban')) {
       cleanUrl.hash = '#kanban';
+      history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+    } else {
+      history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
     }
-    history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
 
     listEl.style.display = 'none';
     gridEl.classList.remove('visible');
@@ -246,12 +298,19 @@ function _setViewModeImmediate(mode, prevMode) {
     if (typeof initKanban === 'function') initKanban();
 
   } else if (mode === 'compose') {
+    // Restore saved compose sub-route hash (if any) before initCompose
+    const _savedCHash = _restoreViewPosition(_proj, 'compose');
     const cleanUrl = new URL(window.location);
     cleanUrl.searchParams.delete('chat');
-    if (!cleanUrl.hash || !cleanUrl.hash.startsWith('#compose')) {
+    if (_savedCHash && _savedCHash.startsWith('#compose')) {
+      cleanUrl.hash = '';
+      history.replaceState({ view: 'compose' }, '', cleanUrl.pathname + cleanUrl.search + _savedCHash);
+    } else if (!cleanUrl.hash || !cleanUrl.hash.startsWith('#compose')) {
       cleanUrl.hash = '#compose';
+      history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+    } else {
+      history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
     }
-    history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
 
     listEl.style.display = 'none';
     gridEl.classList.remove('visible');

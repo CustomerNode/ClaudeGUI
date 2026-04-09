@@ -400,6 +400,12 @@ async function openInGUI(id) {
   if (typeof _ensureMainBodyVisible === 'function') _ensureMainBodyVisible();
   activeId = id;
   localStorage.setItem('activeSessionId', id || '');
+  // Track most-recent session per project so view/project switches can restore it
+  const _proj = localStorage.getItem('activeProject');
+  if (_proj && id) {
+    localStorage.setItem('projectSession_' + _proj, id);
+    localStorage.setItem('pvs_' + _proj + '_sessions', id);
+  }
   _pushChatUrl(id);
   if (runningIds.has(id)) guiOpenAdd(id);
   if (liveSessionId && liveSessionId !== id) { stopLivePanel(); }
@@ -425,7 +431,7 @@ async function openInGUI(id) {
         '<div class="conversation live-log" id="live-log">' +
         '<div class="empty-state" style="padding:60px 0;text-align:center;">' +
         '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-faint)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:12px;opacity:0.4;"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>' +
-        '<div style="color:var(--text-faint);font-size:13px;">What will we VibeNode today?</div>' +
+        '<div class="vibenode-greeting">What will we VibeNode today?</div>' +
         (typeof _renderTemplateGrid === 'function' ? _renderTemplateGrid(id) : '') +
         '</div></div>' +
         '<div class="live-output-shelf" id="live-output-shelf"></div>' +

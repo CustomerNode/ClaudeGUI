@@ -19,16 +19,16 @@ function restartServer() {
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center';
   overlay.innerHTML = `
     <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px;padding:24px 28px;min-width:340px;max-width:420px;color:var(--text-primary);font-family:inherit">
-      <h3 style="margin:0 0 14px;font-size:16px;color:var(--text-heading)">Restart — choose scope</h3>
+      <h3 style="margin:0 0 14px;font-size:16px;color:var(--text-heading)">Restart Server</h3>
       <div style="display:flex;flex-direction:column;gap:8px">
         <button class="restart-opt" data-scope="web" style="padding:10px 14px;border-radius:6px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);cursor:pointer;text-align:left">
-          <strong>Web Server</strong> (port 5050)<br><span style="font-size:12px;color:var(--text-muted)">Reloads Python code. Running agents stay alive.</span>
+          <strong>Application</strong><br><span style="font-size:12px;color:var(--text-muted)">Quick refresh. Your running sessions stay alive.</span>
         </button>
         <button class="restart-opt" data-scope="daemon" style="padding:10px 14px;border-radius:6px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);cursor:pointer;text-align:left">
-          <strong>Session Daemon</strong> (port 5051)<br><span style="font-size:12px;color:var(--text-muted)">Restarts Claude SDK daemon. All running sessions will be killed.</span>
+          <strong>Session Engine</strong><br><span style="font-size:12px;color:var(--text-muted)">Restarts the AI session engine. All running sessions will stop.</span>
         </button>
         <button class="restart-opt" data-scope="both" style="padding:10px 14px;border-radius:6px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);cursor:pointer;text-align:left">
-          <strong>Both</strong> (5050 + 5051)<br><span style="font-size:12px;color:var(--text-muted)">Full restart. All sessions will be killed.</span>
+          <strong>Everything</strong><br><span style="font-size:12px;color:var(--text-muted)">Full restart. All running sessions will stop.</span>
         </button>
       </div>
       <button id="restart-cancel" style="margin-top:14px;padding:6px 16px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text-primary);cursor:pointer;float:right">Cancel</button>
@@ -50,24 +50,88 @@ function restartServer() {
 }
 
 async function _doRestart(scope) {
-  const labels = { web: 'web server', daemon: 'session daemon', both: 'web server + daemon' };
+  const labels = { web: 'Application', daemon: 'Session Engine', both: 'Everything' };
+  const label = labels[scope] || scope;
+
+  // Show full-page reboot overlay
+  const overlay = document.createElement('div');
+  overlay.id = 'restart-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:var(--bg-primary);z-index:99999;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px;opacity:0;transition:opacity .3s ease';
+  overlay.innerHTML = `
+    <div style="text-align:center">
+      <div id="restart-spinner" style="width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px"></div>
+      <h2 style="margin:0 0 6px;font-size:18px;color:var(--text-heading);font-weight:600">Restarting ${label}</h2>
+      <p id="restart-status" style="margin:0;font-size:13px;color:var(--text-muted)">Shutting down…</p>
+    </div>
+    <style>@keyframes spin{to{transform:rotate(360deg)}}</style>`;
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => { overlay.style.opacity = '1'; });
+
+  const statusEl = overlay.querySelector('#restart-status');
+
+  // Elapsed timer so the user knows it's not frozen
+  const _t0 = Date.now();
+  const _timerEl = document.createElement('p');
+  _timerEl.style.cssText = 'margin:6px 0 0;font-size:12px;color:var(--text-muted);font-variant-numeric:tabular-nums';
+  statusEl.parentElement.appendChild(_timerEl);
+  const _timer = setInterval(() => {
+    const s = Math.floor((Date.now() - _t0) / 1000);
+    _timerEl.textContent = `${s}s`;
+  }, 1000);
+
   try {
-    if (typeof showToast === 'function') showToast('Restarting ' + (labels[scope] || scope) + '...');
     await fetch('/api/restart', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scope: scope }),
     });
-  } catch (e) { /* expected — server is shutting down */ }
-  // Wait for the server to come back, then reload
+  } catch (e) { /* expected — server is going down */ }
+
+  // Phase 1: Wait for the old server to actually go down.
+  // Without this, the poll below catches the still-alive old process.
+  statusEl.textContent = 'Shutting down…';
+  let sawDown = false;
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    try {
+      const r = await fetch('/', { method: 'HEAD', cache: 'no-store', signal: AbortSignal.timeout(2000) });
+      // Still responding — keep waiting
+    } catch (e) {
+      sawDown = true;
+      break;
+    }
+  }
+  // If we never saw it go down after 15s, proceed anyway (maybe it restarted instantly)
+
+  // Phase 2: Wait for the new server to be fully ready.
+  statusEl.textContent = 'Starting up…';
   let attempts = 0;
   const check = setInterval(async () => {
     attempts++;
+    if (attempts > 8) statusEl.textContent = 'Almost there…';
     try {
-      const r = await fetch('/', { method: 'HEAD' });
-      if (r.ok) { clearInterval(check); window.location.reload(); }
+      const r = await fetch('/', { method: 'GET', cache: 'no-store', signal: AbortSignal.timeout(3000) });
+      if (r.ok) {
+        const html = await r.text();
+        // Make sure we got a real, fully-rendered page
+        if (html.includes('</html>')) {
+          clearInterval(check);
+          clearInterval(_timer);
+          statusEl.textContent = 'Back online — reloading';
+          const s = Math.floor((Date.now() - _t0) / 1000);
+          _timerEl.textContent = `${s}s`;
+          overlay.querySelector('#restart-spinner').style.borderTopColor = 'var(--success, #3fb950)';
+          setTimeout(() => window.location.reload(), 500);
+          return;
+        }
+      }
     } catch (e) { /* still down */ }
-    if (attempts > 30) { clearInterval(check); window.location.reload(); }
+    if (attempts > 45) {
+      clearInterval(check);
+      clearInterval(_timer);
+      statusEl.textContent = 'Taking longer than expected — reloading';
+      setTimeout(() => window.location.reload(), 800);
+    }
   }, 1000);
 }
 

@@ -44,6 +44,7 @@ let _waitingPolledOnce = true;  // WebSocket push means we always have state
 
 // Browser URL navigation for chats (mirrors folder navigation pattern)
 let _skipChatHistory = false;
+let _suppressSessionRestore = false;  // set during project switch to prevent loadSessions from auto-opening a saved session
 function _pushChatUrl(chatId) {
   if (_skipChatHistory) return;
   // Don't push chat URLs in kanban mode — kanban manages its own history
@@ -100,16 +101,21 @@ function _projectShortName(project) {
 
 function _updateProjectLabel(project) {
   const label = document.getElementById('project-label');
-  if (!project) { label.textContent = 'Select project'; return; }
-  label.textContent = _projectShortName(project);
+  if (!project) { label.innerHTML = 'Select project <span class="sidebar-mini-label">project</span>'; return; }
+  const name = document.createElement('span');
+  name.textContent = _projectShortName(project);
+  label.innerHTML = name.innerHTML + ' <span class="sidebar-mini-label">project</span>';
 }
 
 async function setProject(encoded, reload = true) {
-  // Save the currently active session for the OLD project so we can restore
-  // it when the user switches back later.
+  // Save the current view mode and active session for the OLD project so we
+  // can restore them when the user switches back later.
   const prevProject = localStorage.getItem('activeProject');
-  if (prevProject && activeId) {
-    localStorage.setItem('projectSession_' + prevProject, activeId);
+  if (prevProject) {
+    if (activeId) localStorage.setItem('projectSession_' + prevProject, activeId);
+    if (viewMode) localStorage.setItem('projectView_' + prevProject, viewMode);
+    // Save per-view navigation position (drill-down, active session, etc.)
+    if (typeof _saveViewPosition === 'function') _saveViewPosition(prevProject, viewMode);
   }
   // Tear down any active session/live-panel from the old project.
   // Use _skipChatHistory so deselectSession() doesn't push a history entry,
@@ -210,7 +216,15 @@ async function setProject(encoded, reload = true) {
     // Re-sync live session states from daemon (working_since, sessionKinds, etc.)
     if (socket.connected) socket.emit('request_state_snapshot', {project: encoded});
   }
-  if (reload) loadSessions();
+  if (reload) {
+    // Restore the last-open session only if the target view is sessions;
+    // in every other view, suppress restore so the view resets to base state.
+    // Use the saved per-project view (if any) to decide, since viewMode
+    // hasn't been updated to the target yet at this point.
+    const _targetView = localStorage.getItem('projectView_' + encoded) || viewMode;
+    _suppressSessionRestore = (_targetView !== 'sessions');
+    loadSessions();
+  }
 }
 
 // --- Project Overlay ---
@@ -274,8 +288,13 @@ async function selectProjectFromOverlay(encoded) {
 
   await setProject(encoded, true);
 
-  // Navigate to homepage after switch
-  if (typeof setViewMode === 'function') setViewMode('homepage');
+  // Restore the view the user was last using in this project, or fall back
+  // to the current view.  Re-entering the mode re-initialises it at its
+  // base state with saved drill-down / session position restored by
+  // _setViewModeImmediate via _restoreViewPosition().
+  const _savedView = localStorage.getItem('projectView_' + encoded);
+  const _targetView = _savedView || viewMode || 'homepage';
+  if (typeof setViewMode === 'function') setViewMode(_targetView);
 
   // Wait for minimum display time before dismissing
   await _minDisplay;
@@ -569,15 +588,45 @@ function openViewModeSelector() {
   setViewMode('homepage');
 }
 
+const _viewNames = { homepage: 'Home', sessions: 'Sessions', kanban: 'Workflow', workplace: 'Workforce', compose: 'Compose' };
+const _viewIcons = {
+  homepage: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10" fill="var(--bg-body)"/></svg>',
+  sessions: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
+  kanban: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="3" y="3" width="5" height="18" rx="1"/><rect x="10" y="3" width="5" height="12" rx="1"/><rect x="17" y="3" width="5" height="15" rx="1"/></svg>',
+  workplace: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="2" y="3" width="20" height="14" rx="2"/><rect x="8" y="20" width="8" height="2" rx="1"/><rect x="11" y="17" width="2" height="4"/><circle cx="7" cy="10" r="1.5" fill="var(--bg-body)"/><circle cx="17" cy="10" r="1.5" fill="var(--bg-body)"/><rect x="10" y="9.5" width="4" height="1.5" rx="0.5" fill="var(--bg-body)"/></svg>',
+  compose: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/><rect x="12" y="19" width="9" height="2" rx="1"/></svg>'
+};
+
 function _updateViewModeButton(mode) {
-  // Highlight the active nav button in the sidebar nav bar
-  const nav = document.getElementById('sidebar-nav');
-  if (nav) {
-    nav.querySelectorAll('.sidebar-nav-btn').forEach(btn => {
+  // Update trigger label and icon
+  const label = document.getElementById('sidebar-view-label');
+  const icon = document.getElementById('sidebar-view-icon');
+  if (label) label.textContent = _viewNames[mode] || mode;
+  if (icon && _viewIcons[mode]) icon.outerHTML = '<svg id="sidebar-view-icon" ' + _viewIcons[mode].slice(5);
+  // Highlight active flyout option
+  const flyout = document.getElementById('sidebar-view-flyout');
+  if (flyout) {
+    flyout.querySelectorAll('.sidebar-view-opt').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.view === mode);
     });
   }
 }
+
+// View flyout hover with delayed open (100ms) and delayed collapse (300ms)
+(function() {
+  let _openTimer = null;
+  let _closeTimer = null;
+  const wrap = document.querySelector('.sidebar-view-wrap');
+  if (!wrap) return;
+  wrap.addEventListener('mouseenter', () => {
+    if (_closeTimer) { clearTimeout(_closeTimer); _closeTimer = null; }
+    _openTimer = setTimeout(() => wrap.classList.add('flyout-open'), 200);
+  });
+  wrap.addEventListener('mouseleave', () => {
+    if (_openTimer) { clearTimeout(_openTimer); _openTimer = null; }
+    _closeTimer = setTimeout(() => wrap.classList.remove('flyout-open'), 300);
+  });
+})();
 
 // Hydrate view mode button on load
 _updateViewModeButton(viewMode);
@@ -859,7 +908,7 @@ async function addNewAgent() {
     '<div class="conversation live-log" id="live-log">' +
     '<div class="empty-state" style="padding:60px 0;text-align:center;">' +
     '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-faint)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:12px;opacity:0.4;"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>' +
-    '<div style="color:var(--text-faint);font-size:13px;">What will we VibeNode today?</div>' +
+    '<div class="vibenode-greeting">What will we VibeNode today?</div>' +
     (typeof _renderTemplateGrid === 'function' ? _renderTemplateGrid(newId) : '') +
     '</div></div>' +
     '<div class="live-input-bar" id="live-input-bar"></div></div>';
@@ -1317,10 +1366,14 @@ async function loadSessions() {
   // Skip session restore entirely when the URL hash points to a kanban or compose view —
   // restoreFromHash handles navigation there; restoring a stale activeSessionId
   // would hijack the view and open a session from a different task/subtree.
+  // Also skip during project switches — the user wants to stay in the current
+  // view at its base state (no session selected).
   const _hashIsKanban = window.location.hash.startsWith('#kanban');
   const _hashIsCompose = window.location.hash.startsWith('#compose');
+  const _skipRestore = _suppressSessionRestore;
+  _suppressSessionRestore = false;
   const _activeProj = localStorage.getItem('activeProject');
-  let _restoreId = (_hashIsKanban || _hashIsCompose) ? null : (
+  let _restoreId = (_hashIsKanban || _hashIsCompose || _skipRestore) ? null : (
     _urlChatId || localStorage.getItem('activeSessionId')
     || (_activeProj && localStorage.getItem('projectSession_' + _activeProj))
   );
@@ -1349,6 +1402,13 @@ async function loadSessions() {
     _skipChatHistory = true;
     openInGUI(_restoreId);
     _skipChatHistory = false;
+    // Ensure URL reflects the restored session (replaceState, not push,
+    // so we don't create a stale back-button entry).
+    const _restoreUrl = new URL(window.location);
+    if (!_restoreUrl.searchParams.has('chat') || _restoreUrl.searchParams.get('chat') !== _restoreId) {
+      _restoreUrl.searchParams.set('chat', _restoreId);
+      history.replaceState({ folder: null, chat: _restoreId }, '', _restoreUrl);
+    }
   } else {
     document.getElementById('main-body').innerHTML = _buildDashboard();
   }
