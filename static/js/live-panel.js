@@ -400,6 +400,12 @@ async function openInGUI(id) {
   if (typeof _ensureMainBodyVisible === 'function') _ensureMainBodyVisible();
   activeId = id;
   localStorage.setItem('activeSessionId', id || '');
+  // Track most-recent session per project so view/project switches can restore it
+  const _proj = localStorage.getItem('activeProject');
+  if (_proj && id) {
+    localStorage.setItem('projectSession_' + _proj, id);
+    localStorage.setItem('pvs_' + _proj + '_sessions', id);
+  }
   _pushChatUrl(id);
   if (runningIds.has(id)) guiOpenAdd(id);
   if (liveSessionId && liveSessionId !== id) { stopLivePanel(); }
