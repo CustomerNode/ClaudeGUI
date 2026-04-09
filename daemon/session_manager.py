@@ -742,7 +742,7 @@ class SessionManager:
             if self._policy_path.exists():
                 data = json.loads(self._policy_path.read_text())
                 policy = data.get("policy", "manual")
-                if policy in ("manual", "auto", "custom"):
+                if policy in ("manual", "auto", "almost_always", "custom"):
                     logger.info("Loaded persisted permission policy: %s", policy)
                     return policy, data.get("custom_rules", {})
         except Exception as e:
@@ -769,7 +769,7 @@ class SessionManager:
 
     def set_permission_policy(self, policy: str, custom_rules: dict = None) -> None:
         """Update the permission policy (synced from browser)."""
-        if policy not in ("manual", "auto", "custom"):
+        if policy not in ("manual", "auto", "almost_always", "custom"):
             return
         self._permission_policy = policy
         self._custom_rules = custom_rules or {}
@@ -783,6 +783,11 @@ class SessionManager:
         if policy == "manual":
             return False
         if policy == "auto":
+            return True
+        if policy == "almost_always":
+            # Auto-approve everything EXCEPT dangerous commands
+            if self._is_dangerous(tool_name, tool_input):
+                return False
             return True
         if policy == "custom":
             rules = self._custom_rules

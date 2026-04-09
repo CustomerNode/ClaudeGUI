@@ -89,7 +89,7 @@ socket.on('connect', () => {
 
 // Restore persisted permission policy from backend on connect
 socket.on('permission_policy_loaded', (data) => {
-    if (data && data.policy && ['manual', 'auto', 'custom'].includes(data.policy)) {
+    if (data && data.policy && ['manual', 'auto', 'almost_always', 'custom'].includes(data.policy)) {
         permissionPolicy = data.policy;
         localStorage.setItem('permPolicy', data.policy);
         if (data.custom_rules && typeof data.custom_rules === 'object') {
