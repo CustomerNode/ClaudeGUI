@@ -190,6 +190,22 @@ VibeNode was developed and primarily tested on Windows. macOS and Linux support 
 
 If you run into a platform-specific bug, please submit a pull request with the fix — or ask your Claude to submit one — so we can support everyone. See [CONTRIBUTING.md](CONTRIBUTING.md) or open an issue.
 
+## Architecture
+
+VibeNode runs as two processes on your machine: a Flask web server (port 5050) serving the UI, and a session daemon (port 5051) that owns all Claude sessions. The daemon survives web server restarts so active sessions are never interrupted. Each Claude session is an asyncio task on a single shared event loop, with its own CLI subprocess communicating via stdio. The web server proxies all session operations to the daemon over a TCP/JSON-lines IPC channel.
+
+This separation means **VibeNode can code itself** — multiple Claude sessions can edit VibeNode's own source files simultaneously, restart the web server to pick up changes, and keep working without interrupting each other. The daemon holds all active sessions in memory while the web server restarts around it. Most of VibeNode was built this way: from inside VibeNode.
+
+![VibeNode system architecture diagram](docs/architecture.svg)
+
+**Key design decisions:**
+
+- **One event loop, N sessions.** Claude sessions are I/O-bound (waiting for CLI stdout), so asyncio cooperative scheduling gives us unlimited concurrency on a single thread with no inter-session threading bugs.
+- **Daemon separation.** The daemon is a detached subprocess. Web server restarts (code changes, crashes) don't kill running sessions. Crash recovery restores sessions from a registry file on disk.
+- **Three-thread IPC bridge.** The DaemonClient uses a reader thread (TCP socket), an emitter thread (SocketIO broadcasts), and a queue between them. This prevents slow WebSocket writes from blocking IPC response processing.
+- **Heavy I/O offloaded.** File snapshots, JSONL parsing, and directory scans run in a ThreadPoolExecutor so they don't block the event loop and stall other sessions.
+- **Four SDK monkey-patches.** The Claude Code SDK was designed for single-turn CLI usage. VibeNode patches it at runtime for multi-turn sessions (keep stdin open), permission protocol compatibility (CLI 2.x format), unknown message tolerance, and Windows no-window subprocess spawning.
+
 ## Notes
 
 - Sessions are read from `~/.claude/projects/`
