@@ -587,6 +587,14 @@ class SessionManager:
         if info.state == SessionState.STOPPED:
             return {"ok": False, "error": "Session already stopped"}
 
+        # Set IDLE synchronously so send_message sees it immediately.
+        # Without this, there's a race: the async _interrupt_session hasn't
+        # run yet, state is still WORKING, and send_message queues instead
+        # of sending — or a second stop kills a newly started interaction.
+        info._interrupted = True
+        info.state = SessionState.IDLE
+        self._emit_state(info)
+
         asyncio.run_coroutine_threadsafe(
             self._interrupt_session(session_id), self._loop
         )
@@ -813,22 +821,34 @@ class SessionManager:
                     result_holder[0] = (deny, False)
                     perm_event.set()
 
+            # _interrupted flag and IDLE state already set by the sync
+            # interrupt_session() before this coroutine was dispatched.
+
+            # Cancel the driving task — this is what actually stops the
+            # coroutine. client.interrupt() alone just signals the CLI
+            # but the coroutine keeps running and can set WORKING again.
+            if info.task and not info.task.done():
+                info.task.cancel()
+
             try:
                 await info.client.interrupt()
-            except Exception as int_err:
-                logger.warning("interrupt() failed for %s: %s, forcing disconnect", session_id, int_err)
-                try:
-                    await info.client.disconnect()
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
-            info.state = SessionState.IDLE
-            entry = LogEntry(kind="system", text="Session interrupted by user")
+            # Add interrupt marker unless the CLI stream already delivered one
+            # (the SDK sends "[Request interrupted by user]" which gets
+            # converted to "Session interrupted by user" by _process_message).
             with info._lock:
-                info.entries.append(entry)
-                entry_index = len(info.entries) - 1
-            self._emit_entry(session_id, entry, entry_index)
-            self._emit_state(info)
+                already = any(
+                    getattr(e, 'text', '') == "Session interrupted by user"
+                    for e in info.entries[-3:]  # only check tail
+                ) if info.entries else False
+            if not already:
+                entry = LogEntry(kind="system", text="Session interrupted by user")
+                with info._lock:
+                    info.entries.append(entry)
+                    entry_index = len(info.entries) - 1
+                self._emit_entry(session_id, entry, entry_index)
         except Exception as e:
             logger.exception("Interrupt error for %s: %s", session_id, e)
 

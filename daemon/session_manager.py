@@ -686,9 +686,19 @@ class SessionManager:
                 if hasattr(info, '_stream_heal_count'):
                     info._stream_heal_count = 0
                 info._stream_heal_needed = False
-            # Clear interrupted flag so queue dispatch resumes normally
+            # Read (but do NOT clear) the interrupted flag. Clearing it
+            # here races: the old task's CancelledError/finally handler
+            # runs on the event loop and checks _interrupted — if we clear
+            # it from this Flask thread first, the old task thinks it's a
+            # non-interrupt cancel and sets state back to IDLE.
+            # _send_query clears it on the event loop AFTER the old task exits.
             _was_interrupted = getattr(info, '_interrupted', False)
-            info._interrupted = False
+            # Flag for _send_query: drain stale messages from the
+            # interrupted turn's SDK buffer before sending the new query.
+            # See the "Drain stale messages" block in _send_query for
+            # the full explanation of the SDK shared-buffer bug.
+            if _was_interrupted:
+                info._drain_stale = True
             # Add user entry to history. Normally the frontend shows it
             # optimistically so we skip the emit. But after an interrupt the
             # optimistic bubble was cleared, so emit to avoid a gap.
@@ -1063,10 +1073,15 @@ class SessionManager:
         # of sending.
         info._interrupted = True
         info.state = SessionState.IDLE
+        # Capture the task NOW so _interrupt_session cancels the right one.
+        # Without this, if the user sends a new message before
+        # _interrupt_session runs, info.task gets replaced by the new
+        # query's task, and the interrupt kills the wrong coroutine.
+        task_to_cancel = info.task
         self._emit_state(info)
 
         asyncio.run_coroutine_threadsafe(
-            self._interrupt_session(session_id), self._loop
+            self._interrupt_session(session_id, task_to_cancel), self._loop
         )
         return {"ok": True}
 
@@ -1295,6 +1310,10 @@ class SessionManager:
             _first_msg_logged = False
             if prompt:
                 async for message in client.receive_response():
+                    # If a newer task has replaced us, stop processing —
+                    # our stream is stale and we must not touch state.
+                    if info.task is not asyncio.current_task():
+                        break
                     if message is not None:
                         if not _first_msg_logged:
                             _profile_log("first_stream_message (%s)" % type(message).__name__)
@@ -1323,16 +1342,21 @@ class SessionManager:
             # Safety net: if the stream ended without a ResultMessage,
             # force IDLE so the session isn't stuck.  Skip if we already
             # got a ResultMessage (which handles IDLE + queue dispatch).
-            if not got_result and info.state == SessionState.WORKING:
+            # Also skip if superseded — the new task owns state.
+            if not got_result and info.state == SessionState.WORKING \
+                    and info.task is asyncio.current_task():
                 logger.warning("_drive_session for %s: stream ended without "
                                "ResultMessage, forcing IDLE", session_id)
                 info.state = SessionState.IDLE
                 self._emit_state(info)
 
         except asyncio.CancelledError:
-            if getattr(info, '_interrupted', False):
-                # User interrupt — stay IDLE (already set by _interrupt_session)
-                logger.info("Session %s interrupted (task cancelled)", session_id)
+            # Defense-in-depth for the stop→follow-up race (see "Drain
+            # stale messages" comment in _send_query).
+            _superseded = info.task is not asyncio.current_task()
+            if _superseded or getattr(info, '_interrupted', False):
+                if not _superseded:
+                    logger.info("Session %s interrupted (task cancelled)", session_id)
             else:
                 # Close/shutdown — go to STOPPED
                 logger.info("Session %s cancelled", session_id)
@@ -1406,6 +1430,13 @@ class SessionManager:
                         self._emit_entry(session_id, entry, entry_index)
                         self._emit_state(info)
         finally:
+            # Defense-in-depth for the stop→follow-up race (see "Drain
+            # stale messages" comment in _send_query).  Superseded or
+            # interrupted tasks must not touch state.
+            _superseded = info and info.task is not asyncio.current_task()
+            if _superseded or (info and getattr(info, '_interrupted', False)):
+                return
+
             # Catch-all: force IDLE if stuck in WORKING. Skip if
             # ResultMessage was processed -- _try_dispatch_queue may
             # have legitimately set WORKING for the next queued msg.
@@ -1517,14 +1548,21 @@ class SessionManager:
 
     async def _send_query(self, session_id: str, text: str) -> None:
         """Send a follow-up query to an already-connected session."""
+        # Yield once so any pending CancelledError from the old task is
+        # delivered BEFORE we clear _interrupted.  Without this, the old
+        # task's handler may see _interrupted=False and clobber state.
+        await asyncio.sleep(0)
+        # Now safe to clear the flag — the old task has processed its cancel.
+        with self._lock:
+            info = self._sessions.get(session_id)
+        if info:
+            info._interrupted = False
+
         _t0 = time.perf_counter()
         _profile_log = (lambda label: logger.info(
             "PROFILE _send_query [%s] %s: %.3fs elapsed",
             session_id[:12], label, time.perf_counter() - _t0)
         ) if self._PROFILE_PIPELINE else lambda _: None
-
-        with self._lock:
-            info = self._sessions.get(session_id)
         if not info:
             return
         if not info.client:
@@ -1566,6 +1604,60 @@ class SessionManager:
         await loop.run_in_executor(None, self._record_pre_turn_mtimes, info)
         _profile_log("record_pre_turn_mtimes")
 
+        # ── Drain stale messages from interrupted turn ──────────────
+        #
+        # BUG: "Stop then follow-up shows IDLE immediately"
+        #
+        # The Claude SDK (claude-code-sdk) uses a single shared anyio
+        # MemoryObjectStream (100-msg capacity) as its message buffer.
+        # This buffer persists for the entire ClaudeSDKClient lifetime
+        # and is NOT flushed by interrupt().  Here's the race:
+        #
+        #   1. User clicks Stop → interrupt_session() sets IDLE, cancels
+        #      the old task, schedules _interrupt_session().
+        #   2. _interrupt_session() calls client.interrupt() → the CLI
+        #      acknowledges and emits a ResultMessage for the old turn.
+        #   3. The old task was reading receive_response() but got
+        #      CancelledError — it never consumed that ResultMessage.
+        #      The stale ResultMessage sits in the SDK's shared buffer.
+        #   4. User sends a follow-up → send_message() sets WORKING,
+        #      schedules _send_query().
+        #   5. _send_query() calls receive_response() → immediately
+        #      gets the STALE ResultMessage from step 2.
+        #   6. _process_message(ResultMessage) sets state to IDLE.
+        #   7. UI flashes WORKING for a split second then goes IDLE.
+        #      The new query was sent but its response loop terminated
+        #      early because of the stale message.
+        #
+        # Fix: when send_message() detects it's sending after an
+        # interrupt (_was_interrupted), it sets info._drain_stale=True.
+        # Here we consume one full receive_response() cycle to eat the
+        # stale ResultMessage before sending the new query.  This
+        # naturally synchronises with _interrupt_session() because
+        # receive_response() blocks until the stale ResultMessage
+        # arrives (which happens after interrupt() completes).
+        #
+        # Defense in depth: the CancelledError handlers and finally
+        # blocks in both _send_query and _drive_session also check
+        # info.task identity (superseded check) so that even if a
+        # stale task somehow touches state, it bails out when it
+        # detects a newer task has replaced it.
+        if getattr(info, '_drain_stale', False):
+            info._drain_stale = False
+            try:
+                async def _drain():
+                    async for _msg in info.client.receive_response():
+                        logger.debug("Drained stale msg after interrupt for %s: %s",
+                                     session_id, type(_msg).__name__)
+                await asyncio.wait_for(_drain(), timeout=5.0)
+                _profile_log("drained_stale_messages")
+            except asyncio.TimeoutError:
+                logger.warning("_send_query %s: stale drain timed out (5s)", session_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as drain_err:
+                logger.warning("_send_query %s: stale drain error: %s", session_id, drain_err)
+
         got_result = False
         result_handled = False
         _first_msg_logged = False
@@ -1577,6 +1669,10 @@ class SessionManager:
             info.usage.pop('_per_call', None)  # clear stale per-call marker from previous turn
             info._stream_evt_logged = False  # re-enable diagnostic log for this turn
             async for message in info.client.receive_response():
+                # If a newer task has replaced us, stop processing —
+                # our stream is stale and we must not touch state.
+                if info.task is not asyncio.current_task():
+                    break
                 if message is not None:
                     if not _first_msg_logged:
                         _profile_log("first_stream_message (%s)" % type(message).__name__)
@@ -1601,18 +1697,24 @@ class SessionManager:
             # force IDLE so the session isn't stuck forever.  Skip if we
             # got a ResultMessage — _process_message already handled the
             # IDLE transition (and may have dispatched a queued message
-            # which set state back to WORKING).
-            if not got_result and info.state == SessionState.WORKING:
+            # which set state back to WORKING).  Also skip if superseded.
+            if not got_result and info.state == SessionState.WORKING \
+                    and info.task is asyncio.current_task():
                 logger.warning("_send_query for %s: stream ended without "
                                "ResultMessage, forcing IDLE", session_id)
                 info.state = SessionState.IDLE
                 self._emit_state(info)
 
         except asyncio.CancelledError:
-            # User interrupt — _interrupt_session already set IDLE, don't re-emit
-            if getattr(info, '_interrupted', False):
+            # Defense-in-depth for the stop→follow-up race (see "Drain
+            # stale messages" comment above).  If a newer task replaced
+            # us, bail without touching state.
+            _superseded = info.task is not asyncio.current_task()
+            if _superseded or getattr(info, '_interrupted', False):
+                if not _superseded:
+                    logger.info("_send_query %s: interrupted (CancelledError)", session_id)
                 return
-            # Non-interrupt cancel — set IDLE so session isn't stuck
+            # Non-interrupt, non-superseded cancel — set IDLE so session isn't stuck
             if info.state == SessionState.WORKING:
                 info.state = SessionState.IDLE
                 self._emit_state(info)
@@ -1678,6 +1780,13 @@ class SessionManager:
                         info.state = SessionState.IDLE
                         self._emit_state(info)
         finally:
+            # Defense-in-depth for the stop→follow-up race (see "Drain
+            # stale messages" comment in _send_query).  Superseded or
+            # interrupted tasks must not touch state.
+            _superseded = info and info.task is not asyncio.current_task()
+            if _superseded or (info and getattr(info, '_interrupted', False)):
+                return
+
             # Catch-all: force IDLE if stuck in WORKING. Skip if
             # ResultMessage was processed -- _try_dispatch_queue may
             # have legitimately set WORKING for the next queued msg.
@@ -1779,8 +1888,14 @@ class SessionManager:
             except Exception as snap_err:
                 logger.warning("Snapshot in finally for %s failed: %s", session_id, snap_err)
 
-    async def _interrupt_session(self, session_id: str) -> None:
-        """Interrupt a running session."""
+    async def _interrupt_session(self, session_id: str,
+                                task_to_cancel: "asyncio.Task | None" = None) -> None:
+        """Interrupt a running session.
+
+        task_to_cancel: the asyncio.Task captured at interrupt time so we
+        cancel the correct coroutine even if a new query replaced info.task
+        before this coroutine ran.
+        """
         with self._lock:
             info = self._sessions.get(session_id)
         if not info or not info.client:
@@ -1803,13 +1918,25 @@ class SessionManager:
             # Cancel the driving task — this is what actually stops the
             # coroutine. client.interrupt() alone just signals the CLI
             # but the coroutine keeps running and can set WORKING again.
-            if info.task and not info.task.done():
-                info.task.cancel()
+            # Use the captured task reference, NOT info.task, because a
+            # new send_message may have replaced info.task already.
+            _task = task_to_cancel or info.task
+            if _task and not _task.done():
+                _task.cancel()
 
-            try:
-                await info.client.interrupt()
-            except Exception:
-                pass
+            # Only send the SDK interrupt signal if no new query has started.
+            # If info.task has been replaced by a new _tracked_coro, calling
+            # interrupt() would kill the NEW query instead of the old one.
+            _new_task_started = (
+                task_to_cancel is not None
+                and info.task is not None
+                and info.task is not task_to_cancel
+            )
+            if not _new_task_started:
+                try:
+                    await info.client.interrupt()
+                except Exception:
+                    pass
 
             # Add interrupt marker unless the CLI stream already delivered one
             # (the SDK sends "[Request interrupted by user]" which gets
@@ -2216,6 +2343,16 @@ class SessionManager:
                         logger.debug("Rendering SDK system content as system entry (len=%d)", len(stripped))
                         # Extract a short human-readable label
                         label = _system_content_label(stripped)
+                        # Deduplicate: don't emit if an identical system entry
+                        # already exists in the tail (e.g. _interrupt_session
+                        # already added "Session interrupted by user").
+                        with info._lock:
+                            already = any(
+                                getattr(e, 'text', '') == label
+                                for e in info.entries[-3:]
+                            ) if info.entries else False
+                        if already:
+                            continue
                         entry = LogEntry(kind="system", text=label)
                         with info._lock:
                             info.entries.append(entry)

@@ -1079,7 +1079,7 @@ header h1:hover { opacity: 0.7; }
 }
 
 .main-toolbar {
-  padding: 10px 20px;
+  padding: 10px 15px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-sidebar);
   display: flex;
@@ -4571,6 +4571,14 @@ mark.find-match.current { background: var(--accent); color:#fff; }
   letter-spacing: 0.3px;
 }
 
+/* ===== VibeNode greeting ===== */
+.vibenode-greeting {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-faint);
+  letter-spacing: 0.01em;
+}
+
 /* ===== Template picker grid ===== */
 .template-grid {
   display: grid;
@@ -4597,16 +4605,17 @@ mark.find-match.current { background: var(--accent); color:#fff; }
   align-items: flex-start;
   gap: 8px;
   padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-card);
+  border: 1px solid var(--border-secondary);
+  border-radius: 12px;
+  background: transparent;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
+  transition: all .2s cubic-bezier(.4,0,.2,1);
   text-align: left;
 }
 .template-card:hover {
-  border-color: var(--accent);
-  background: var(--bg-hover);
+  background: var(--bg-wf-hover);
+  border-color: var(--border-light);
+  transform: translateY(-1px);
 }
 .template-card-icon {
   flex-shrink: 0;

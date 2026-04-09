@@ -1,5 +1,3 @@
-# this comment means nothing
-# this comment also means nothing
 """
 Entry point for the VibeNode Flask application.
 Run with: python run.py

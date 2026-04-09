@@ -2,8 +2,6 @@
 Configuration, path helpers, and session-name persistence.
 """
 
-# this comment means nothing
-
 import json
 import time
 from pathlib import Path
