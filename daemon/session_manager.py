@@ -1222,6 +1222,12 @@ class SessionManager:
         if not info:
             return
 
+        _t0 = time.perf_counter()
+        _profile_log = (lambda label: logger.info(
+            "PROFILE _drive_session [%s] %s: %.3fs elapsed",
+            session_id[:12], label, time.perf_counter() - _t0)
+        ) if self._PROFILE_PIPELINE else lambda _: None
+
         got_result = False
         result_handled = False
         try:
@@ -1237,6 +1243,7 @@ class SessionManager:
                 include_partial_messages=True,
                 extra_args=extra_args or {},
             )
+            _profile_log("options_built")
             client = ClaudeSDKClient(options=options)
             info.client = client
 
@@ -1244,6 +1251,7 @@ class SessionManager:
             # when can_use_tool is set. Prompt=None becomes _empty_stream() which is an
             # AsyncIterator, so the streaming mode check passes.
             await client.connect()
+            _profile_log("client_connected")
 
             info.state = SessionState.WORKING
             self._emit_state(info)
@@ -1261,6 +1269,7 @@ class SessionManager:
             info._turn_had_direct_edit = False
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, self._record_pre_turn_mtimes, info)
+            _profile_log("pre_turn_mtimes_done")
 
             # Add user's message to the log and send
             if prompt:
@@ -1270,6 +1279,7 @@ class SessionManager:
                     entry_index = len(info.entries) - 1
                 self._emit_entry(session_id, entry, entry_index)
                 await client.query(prompt)
+                _profile_log("query_sent")
 
             # Process messages (None = unknown types, skipped via monkey-patch)
             #
@@ -1282,11 +1292,16 @@ class SessionManager:
             # stream — causing ResultMessages to be consumed by the wrong
             # handler and leaving sessions stuck in WORKING forever.
             info._stream_evt_logged = False
+            _first_msg_logged = False
             if prompt:
                 async for message in client.receive_response():
                     if message is not None:
+                        if not _first_msg_logged:
+                            _profile_log("first_stream_message (%s)" % type(message).__name__)
+                            _first_msg_logged = True
                         if isinstance(message, ResultMessage):
                             got_result = True
+                            _profile_log("result_message")
                         try:
                             await self._process_message(session_id, message)
                             if isinstance(message, ResultMessage):
@@ -1502,6 +1517,12 @@ class SessionManager:
 
     async def _send_query(self, session_id: str, text: str) -> None:
         """Send a follow-up query to an already-connected session."""
+        _t0 = time.perf_counter()
+        _profile_log = (lambda label: logger.info(
+            "PROFILE _send_query [%s] %s: %.3fs elapsed",
+            session_id[:12], label, time.perf_counter() - _t0)
+        ) if self._PROFILE_PIPELINE else lambda _: None
+
         with self._lock:
             info = self._sessions.get(session_id)
         if not info:
@@ -1530,30 +1551,39 @@ class SessionManager:
         # Runs in a thread so large JSONL parses don't block the event loop.
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._prepopulate_tracked_files, info)
+        _profile_log("prepopulate_tracked_files")
 
         # Pre-turn snapshot (isSnapshotUpdate=false, linked to user UUID)
         # Safe here because the SDK remap has already happened by the time
         # _send_query is called (remap occurs on first turn's ResultMessage).
         # Runs in a thread — reads JSONL tail + file contents + writes backups.
         await loop.run_in_executor(None, self._write_file_snapshot, session_id, False)
+        _profile_log("write_file_snapshot")
 
         # Reset per-turn state and record mtimes for fallback detection
         # rglob over the project directory runs in a thread to avoid blocking.
         info._turn_had_direct_edit = False
         await loop.run_in_executor(None, self._record_pre_turn_mtimes, info)
+        _profile_log("record_pre_turn_mtimes")
 
         got_result = False
         result_handled = False
+        _first_msg_logged = False
         try:
             await info.client.query(text)
+            _profile_log("query_sent")
 
             # Process response messages (None = unknown types, skipped)
             info.usage.pop('_per_call', None)  # clear stale per-call marker from previous turn
             info._stream_evt_logged = False  # re-enable diagnostic log for this turn
             async for message in info.client.receive_response():
                 if message is not None:
+                    if not _first_msg_logged:
+                        _profile_log("first_stream_message (%s)" % type(message).__name__)
+                        _first_msg_logged = True
                     if isinstance(message, ResultMessage):
                         got_result = True
+                        _profile_log("result_message")
                     try:
                         await self._process_message(session_id, message)
                         if isinstance(message, ResultMessage):
@@ -2446,13 +2476,43 @@ class SessionManager:
                   '.tox', '.mypy_cache', '.pytest_cache', 'dist', 'build',
                   '.next', '.nuxt', '.claude'}
 
+    # Set True to log per-step timing in _drive_session / _send_query
+    _PROFILE_PIPELINE = False
+
+    def _git_ls_files(self, cwd_path: Path) -> list:
+        """Use `git ls-files` to get tracked files, respecting .gitignore.
+
+        Returns a list of absolute Path objects, or None if git is unavailable
+        or the directory is not a git repo.
+        """
+        import subprocess as _sp
+        try:
+            result = _sp.run(
+                ["git", "ls-files", "-z"],
+                cwd=str(cwd_path),
+                capture_output=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return None
+            raw = result.stdout
+            if not raw:
+                return []
+            paths = []
+            for rel in raw.split(b'\x00'):
+                if rel:
+                    paths.append(cwd_path / rel.decode('utf-8', errors='replace'))
+            return paths
+        except Exception:
+            return None
+
     def _record_pre_turn_mtimes(self, info: SessionInfo) -> None:
         """Snapshot mtimes of source files in the working directory.
 
         Only used as a fallback when the streaming message handler doesn't
         see direct Edit/Write tool uses (e.g. Agent sub-agent edits).
-        The scan is deferred: we always record here (it's cheap enough)
-        so the baseline is ready if _detect_changed_files needs it later.
+        Uses `git ls-files` when available (fast, respects .gitignore),
+        falls back to os.walk with directory pruning.
         """
         cwd = info.cwd
         if not cwd:
@@ -2463,17 +2523,28 @@ class SessionManager:
 
         mtimes = {}
         try:
-            for f in cwd_path.rglob('*'):
-                if f.is_dir():
-                    continue
-                if self._SKIP_DIRS & set(f.relative_to(cwd_path).parts):
-                    continue
-                if f.suffix.lower() not in self._SOURCE_EXTS:
-                    continue
-                try:
-                    mtimes[str(f)] = f.stat().st_mtime
-                except OSError:
-                    pass
+            # Fast path: use git ls-files (respects .gitignore)
+            git_files = self._git_ls_files(cwd_path)
+            if git_files is not None:
+                for f in git_files:
+                    if f.suffix.lower() not in self._SOURCE_EXTS:
+                        continue
+                    try:
+                        mtimes[str(f)] = f.stat().st_mtime
+                    except OSError:
+                        pass
+            else:
+                # Fallback: os.walk with directory pruning
+                for dirpath, dirnames, filenames in os.walk(cwd_path):
+                    dirnames[:] = [d for d in dirnames if d not in self._SKIP_DIRS]
+                    for fname in filenames:
+                        f = Path(dirpath) / fname
+                        if f.suffix.lower() not in self._SOURCE_EXTS:
+                            continue
+                        try:
+                            mtimes[str(f)] = f.stat().st_mtime
+                        except OSError:
+                            pass
         except Exception as e:
             logger.warning("_record_pre_turn_mtimes failed: %s", e)
         info._pre_turn_mtimes = mtimes
@@ -2484,6 +2555,7 @@ class SessionManager:
 
         Returns absolute paths of files that were created or modified
         since _record_pre_turn_mtimes was called.
+        Uses `git ls-files` when available, falls back to os.walk with pruning.
         """
         cwd = info.cwd
         if not cwd:
@@ -2495,20 +2567,34 @@ class SessionManager:
         pre = info._pre_turn_mtimes
         changed = set()
         try:
-            for f in cwd_path.rglob('*'):
-                if f.is_dir():
-                    continue
-                if self._SKIP_DIRS & set(f.relative_to(cwd_path).parts):
-                    continue
-                if f.suffix.lower() not in self._SOURCE_EXTS:
-                    continue
-                fpath = str(f)
-                try:
-                    current_mtime = f.stat().st_mtime
-                except OSError:
-                    continue
-                if fpath not in pre or pre[fpath] != current_mtime:
-                    changed.add(fpath)
+            # Fast path: use git ls-files
+            git_files = self._git_ls_files(cwd_path)
+            if git_files is not None:
+                for f in git_files:
+                    if f.suffix.lower() not in self._SOURCE_EXTS:
+                        continue
+                    fpath = str(f)
+                    try:
+                        current_mtime = f.stat().st_mtime
+                    except OSError:
+                        continue
+                    if fpath not in pre or pre[fpath] != current_mtime:
+                        changed.add(fpath)
+            else:
+                # Fallback: os.walk with directory pruning
+                for dirpath, dirnames, filenames in os.walk(cwd_path):
+                    dirnames[:] = [d for d in dirnames if d not in self._SKIP_DIRS]
+                    for fname in filenames:
+                        f = Path(dirpath) / fname
+                        if f.suffix.lower() not in self._SOURCE_EXTS:
+                            continue
+                        fpath = str(f)
+                        try:
+                            current_mtime = f.stat().st_mtime
+                        except OSError:
+                            continue
+                        if fpath not in pre or pre[fpath] != current_mtime:
+                            changed.add(fpath)
         except Exception as e:
             logger.warning("_detect_changed_files failed: %s", e)
         return changed

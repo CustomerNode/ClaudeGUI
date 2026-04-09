@@ -335,9 +335,27 @@ def open_browser():
 
     opened = False
     if sys.platform == "win32":
-        # Try Chrome first, then Edge, then system default
-        browsers = [
-            ("Chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+        # Try Chrome first (multiple known install locations), then Edge
+        chrome_paths = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        ]
+        # Also check the Windows registry for Chrome's install path
+        # Exclude "Chrome SxS" (Canary) — it's an unstable nightly build
+        try:
+            import winreg
+            for _root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                try:
+                    with winreg.OpenKey(_root, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe") as _k:
+                        _reg_path = winreg.QueryValue(_k, None)
+                        if _reg_path and _reg_path not in chrome_paths and "Chrome SxS" not in _reg_path:
+                            chrome_paths.insert(0, _reg_path)
+                except OSError:
+                    pass
+        except ImportError:
+            pass
+        browsers = [("Chrome", p) for p in chrome_paths] + [
             ("Edge", r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
         ]
         for name, exe in browsers:

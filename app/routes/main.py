@@ -39,9 +39,10 @@ def restart_server():
         if not ports:
             ports = [5050]
 
-        run_py = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "run.py")
-        run_py = os.path.abspath(run_py)
-        project_dir = os.path.dirname(run_py)
+        # Launch via session_manager.py (not run.py) so the boot splash shows
+        entry_script = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "session_manager.py")
+        entry_script = os.path.abspath(entry_script)
+        project_dir = os.path.dirname(entry_script)
 
         # When doing a web-only restart, tell run.py to preserve the daemon
         # so active sessions and their CLI subprocesses are not killed.
@@ -68,7 +69,7 @@ def restart_server():
                 "Remove-Item -Recurse -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Seconds 1; "
                 f"{env_set}"
-                f"Start-Process -FilePath '{pythonw}' -ArgumentList '\"{run_py}\"' "
+                f"Start-Process -FilePath '{pythonw}' -ArgumentList '\"{entry_script}\"' "
                 f"-WorkingDirectory '{project_dir}'"
                 "\""
             )
@@ -88,7 +89,7 @@ def restart_server():
                 f"for i in $(seq 1 10); do {kill_cmds} sleep 0.5; done; "
                 f"find \"{project_dir}\" -type d -name __pycache__ -exec rm -rf {{}} + 2>/dev/null; "
                 f"sleep 1; "
-                f"nohup {env_prefix}\"{sys.executable}\" \"{run_py}\" "
+                f"nohup {env_prefix}\"{sys.executable}\" \"{entry_script}\" "
                 f"> /dev/null 2>&1 &'"
             )
             subprocess.Popen(restart_cmd, shell=True)
@@ -103,7 +104,7 @@ def restart_server():
                 f"for i in $(seq 1 10); do {kill_cmds} sleep 0.5; done; "
                 f"find \"{project_dir}\" -type d -name __pycache__ -exec rm -rf {{}} + 2>/dev/null; "
                 f"sleep 1; "
-                f"nohup {env_prefix}\"{sys.executable}\" \"{run_py}\" "
+                f"nohup {env_prefix}\"{sys.executable}\" \"{entry_script}\" "
                 f"> /dev/null 2>&1 &'"
             )
             subprocess.Popen(restart_cmd, shell=True)
