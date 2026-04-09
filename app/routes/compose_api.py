@@ -420,7 +420,65 @@ def update_section_status(project_id, section_id):
 
 
 # ---------------------------------------------------------------------------
-# Conflict resolution (Step 6 will implement fully)
+# Directives
+# ---------------------------------------------------------------------------
+
+@bp.route('/projects/<project_id>/directives', methods=['POST'])
+def create_directive(project_id):
+    """Add a new directive and run conflict detection.
+
+    JSON body: { "content": "...", "scope": "global"|section_id, "source": "user" }
+
+    Emits compose_directive_logged with the directive and any conflicts found.
+    """
+    from ..compose.context_manager import add_directive
+    from ..compose.conflict_detector import detect_conflicts
+
+    project = get_project(project_id)
+    if not project:
+        return jsonify({'ok': False, 'error': 'Project not found'}), 404
+
+    data = request.get_json(force=True, silent=True) or {}
+    content = (data.get('content') or '').strip()
+    if not content:
+        return jsonify({'ok': False, 'error': 'content is required'}), 400
+
+    scope = data.get('scope', 'global')
+    source = data.get('source', 'user')
+
+    directive = ComposeDirective.create(scope=scope, content=content, source=source)
+    directive = add_directive(project_id, directive)
+
+    # Run conflict detection against existing directives
+    conflicts = detect_conflicts(project_id, directive)
+
+    # Build conflict payload for the frontend
+    conflict_payloads = []
+    for c in conflicts:
+        conflict_payloads.append({
+            'id': c.id,
+            'classification': 'ambiguous',
+            'existing_id': c.directive_a_id,
+            'existing_text': c.directive_a_content,
+            'recommendation': c.recommendation,
+        })
+
+    # Emit socket event so the frontend can show conflict cards
+    _emit('compose_directive_logged', {
+        'project_id': project_id,
+        'directive': directive.to_dict(),
+        'conflicts': conflict_payloads,
+    })
+
+    return jsonify({
+        'ok': True,
+        'directive': directive.to_dict(),
+        'conflicts': [c.to_dict() for c in conflicts],
+    }), 201
+
+
+# ---------------------------------------------------------------------------
+# Conflict resolution
 # ---------------------------------------------------------------------------
 
 @bp.route('/projects/<project_id>/directives/resolve', methods=['POST'])

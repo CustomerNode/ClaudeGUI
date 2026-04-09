@@ -151,6 +151,27 @@ Full end-to-end flow verified:
 | NB-10 | ~~Sidebar session grouping defined but not wired into renderList.~~ **RESOLVED** — renderList calls getComposeSessionGroups in compose mode. | ~~Medium~~ Done |
 | NB-11 | ~~initCompose doesn't populate section cards in the board yet.~~ **RESOLVED** — _renderComposeSectionCards() renders cards in status columns. | ~~Medium~~ Done |
 
+## Conflict Resolution Frontend-Backend Wiring Fix
+**Files modified:** `app/routes/compose_api.py`, `static/js/live-panel.js`, `static/js/socket.js`
+**Status:** COMPLETE
+
+### What was broken
+1. **No socket event for conflicts.** Frontend listened for `compose_directive_logged` but no backend code emitted it. Conflict cards never appeared.
+2. **Payload mismatch.** Frontend sent `{ winner_id, loser_id, resolution }` but backend expected `{ conflict_id, action }`.
+3. **Data shape mismatch.** Frontend expected `classification`, `existing_text`, `existing_id` from conflict objects but backend ComposeConflict has `directive_a_id`, `directive_a_content`, etc.
+4. **Resolved event mismatch.** socket.js handler looked for `winner_id`/`loser_id` to match cards but backend emits `conflict_id`/`action`.
+
+### What was fixed
+1. **Added `POST /api/compose/projects/{id}/directives` endpoint** in compose_api.py. Creates directive via `add_directive()`, runs `detect_conflicts()`, emits `compose_directive_logged` with directive data and conflict payloads shaped for the frontend.
+2. **Rewired conflict card buttons** in live-panel.js to call `_resolveDirectiveConflict(projectId, conflictId, action, conflictElId)` matching the backend's `{ conflict_id, action }` contract.
+3. **Rewired freeform resolver** to send `{ conflict_id, action }` instead of `{ winner_id, loser_id, resolution }`.
+4. **Updated conflict card renderer** to read `content` (from directive.to_dict()), `directive_a_content` (from ComposeConflict), and `recommendation` in addition to legacy field names.
+5. **Updated `compose_directive_conflict_resolved` handler** in socket.js to match cards by `data-conflict-id` attribute or element id `dc-{conflict_id}`.
+6. **Card element IDs** now use backend conflict UUID (`dc-{conflict.id}`) and store `data-conflict-id` for reliable resolution matching.
+
+### End-to-end code path
+Directive added via POST `/api/compose/projects/{id}/directives` -> `add_directive()` stores it -> `detect_conflicts()` finds ambiguous conflicts -> endpoint emits `compose_directive_logged` with conflict data -> socket.js handler calls `_injectDirectiveConflict()` -> `renderLiveEntry()` builds conflict card -> user clicks Supersede/Scope/Keep Both -> `_resolveDirectiveConflict()` POSTs `{ conflict_id, action }` to `/directives/resolve` -> backend `resolve_conflict()` resolves it -> backend emits `compose_directive_conflict_resolved` -> socket.js handler finds card by conflict_id and marks resolved.
+
 ## Files Created/Modified
 
 ### Created
@@ -165,10 +186,12 @@ Full end-to-end flow verified:
 - `tests/test_compose_api.py` - 26 API endpoint tests
 
 ### Modified
-- `app/routes/compose_api.py` - Replaced stub with 15 real endpoints; NB-7: added root session auto-creation in create_project()
+- `app/routes/compose_api.py` - Replaced stub with 15 real endpoints; NB-7: added root session auto-creation in create_project(); added POST /directives endpoint with conflict detection and socket emit
 - `app/compose_watcher.py` - Replaced stub with real file watcher
 - `templates/index.html` - Added root header bar, input target HTML, NB-11: compose-sections-board container
 - `static/js/app.js` - Added initCompose, compose state management, socket handlers; NB-11: _renderComposeSectionCards()
 - `static/js/sessions.js` - NB-10: extracted _renderSessionRow(), added compose grouping to renderList()
+- `static/js/live-panel.js` - Rewired conflict card renderer and resolve functions to use backend conflict_id/action contract
+- `static/js/socket.js` - Fixed compose_directive_conflict_resolved handler to match cards by conflict_id
 - `static/style.css` - Added root header, input target, sidebar grouping styles; NB-11: compose-sections-board, compose-card-selected
 - `tests/test_compose_deferred.py` - 5 NB-7 tests for root session auto-creation

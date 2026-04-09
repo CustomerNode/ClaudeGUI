@@ -1256,19 +1256,17 @@ socket.on('compose_context_updated', (data) => {
 });
 
 // Directive conflict resolved: update any open conflict cards in the chat.
+// Backend emits { project_id, conflict_id, action }. Match cards by
+// data-conflict-id attribute or by element id 'dc-{conflict_id}'.
 socket.on('compose_directive_conflict_resolved', (data) => {
-    if (!data) return;
-    // Find and mark resolved any conflict cards matching the winner/loser pair.
-    // Use exact id matching to avoid substring false positives (e.g. d1 vs d12).
+    if (!data || !data.conflict_id) return;
     const cards = document.querySelectorAll('.live-directive-conflict:not(.dc-resolved)');
-    const candidateIds = [
-        'dc-' + data.winner_id + '-' + data.loser_id,
-        'dc-' + data.loser_id + '-' + data.winner_id,
-    ];
     cards.forEach(card => {
-        if (candidateIds.indexOf(card.id) !== -1) {
+        const cardConflictId = card.dataset.conflictId || '';
+        const matchById = card.id === 'dc-' + data.conflict_id;
+        if (cardConflictId === data.conflict_id || matchById) {
             if (typeof _markConflictResolved === 'function') {
-                _markConflictResolved(card.id, data.resolution, data);
+                _markConflictResolved(card.id, data.action, data);
             }
         }
     });

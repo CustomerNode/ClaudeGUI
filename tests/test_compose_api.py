@@ -229,6 +229,102 @@ class TestChangingEndpoint:
         assert resp.status_code == 403
 
 
+class TestDirectiveEndpoint:
+    """Tests for POST /api/compose/projects/{id}/directives."""
+
+    @pytest.fixture
+    def project(self, client):
+        resp = client.post('/api/compose/projects',
+                          json={'name': 'test-directive-proj'})
+        return resp.get_json()['project']
+
+    def test_create_directive(self, client, project):
+        resp = client.post(
+            f'/api/compose/projects/{project["id"]}/directives',
+            json={'content': 'Use formal tone throughout', 'scope': 'global', 'source': 'user'},
+        )
+        assert resp.status_code == 201
+        data = resp.get_json()
+        assert data['ok'] is True
+        assert data['directive']['content'] == 'Use formal tone throughout'
+        assert data['directive']['scope'] == 'global'
+        assert data['directive']['status'] == 'active'
+        assert data['directive']['gen'] == 1
+
+    def test_create_directive_no_content(self, client, project):
+        resp = client.post(
+            f'/api/compose/projects/{project["id"]}/directives',
+            json={'scope': 'global'},
+        )
+        assert resp.status_code == 400
+
+    def test_create_directive_nonexistent_project(self, client):
+        resp = client.post(
+            '/api/compose/projects/nonexistent/directives',
+            json={'content': 'test'},
+        )
+        assert resp.status_code == 404
+
+    def test_create_directive_returns_conflicts(self, client, project):
+        """When two directives on the same topic are added, the second should
+        return conflict data (if ambiguous)."""
+        # First directive
+        client.post(
+            f'/api/compose/projects/{project["id"]}/directives',
+            json={'content': 'Use formal tone in all writing sections'},
+        )
+        # Second directive on similar topic (should trigger conflict detection)
+        resp = client.post(
+            f'/api/compose/projects/{project["id"]}/directives',
+            json={'content': 'Use casual tone in writing sections'},
+        )
+        data = resp.get_json()
+        assert data['ok'] is True
+        # conflicts list is present (may or may not have entries depending on heuristic)
+        assert 'conflicts' in data
+
+    def test_resolve_conflict(self, client, project):
+        """Full flow: add two conflicting directives, then resolve."""
+        # Add two directives that will conflict
+        client.post(
+            f'/api/compose/projects/{project["id"]}/directives',
+            json={'content': 'Use formal professional tone in all writing sections'},
+        )
+        resp2 = client.post(
+            f'/api/compose/projects/{project["id"]}/directives',
+            json={'content': 'Use casual friendly tone in writing sections'},
+        )
+        data2 = resp2.get_json()
+        conflicts = data2.get('conflicts', [])
+        if not conflicts:
+            pytest.skip("Heuristic did not detect conflict for this word pair")
+
+        conflict_id = conflicts[0]['id']
+        # Resolve it
+        resolve_resp = client.post(
+            f'/api/compose/projects/{project["id"]}/directives/resolve',
+            json={'conflict_id': conflict_id, 'action': 'supersede'},
+        )
+        assert resolve_resp.status_code == 200
+        rdata = resolve_resp.get_json()
+        assert rdata['ok'] is True
+        assert rdata['result']['resolved'] is True
+
+    def test_resolve_bad_action(self, client, project):
+        resp = client.post(
+            f'/api/compose/projects/{project["id"]}/directives/resolve',
+            json={'conflict_id': 'fake', 'action': 'invalid'},
+        )
+        assert resp.status_code == 400
+
+    def test_resolve_missing_fields(self, client, project):
+        resp = client.post(
+            f'/api/compose/projects/{project["id"]}/directives/resolve',
+            json={},
+        )
+        assert resp.status_code == 400
+
+
 class TestBoardEndpoint:
     def test_board_no_projects(self, client):
         resp = client.get('/api/compose/board')

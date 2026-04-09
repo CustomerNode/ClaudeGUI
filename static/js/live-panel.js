@@ -786,21 +786,23 @@ function renderLiveEntry(e) {
     const newDir = e.new_directive || {};
     const existDir = e.existing_directive || {};
     const projectId = e.project_id || '';
-    const conflictId = 'dc-' + (newDir.id || '') + '-' + (existDir.id || '');
+    // Use backend conflict id for the card element; fall back to composite id
+    const backendConflictId = c.id || '';
+    const conflictElId = 'dc-' + (backendConflictId || (newDir.id || '') + '-' + (existDir.id || ''));
 
-    const newTime = newDir.time ? _formatMsgTime(newDir.time) : '';
-    const existTime = existDir.time ? _formatMsgTime(existDir.time) : '';
+    const newTime = newDir.time || newDir.created_at ? _formatMsgTime(newDir.time || newDir.created_at) : '';
+    const existTime = existDir.time || existDir.created_at ? _formatMsgTime(existDir.time || existDir.created_at) : '';
     const newScope = newDir.scope || newDir.said_to || 'unscoped';
     const existScope = existDir.scope || existDir.said_to || 'unscoped';
 
     // Escape for safe use inside single-quoted JS strings in onclick attrs
     const _a = _escJsAttr;
-    const aProjId = _a(projectId), aNewId = _a(newDir.id || '');
-    const aExistId = _a(existDir.id || ''), aCid = _a(conflictId);
-    // Pre-compute scope values for "Scope Each" button
-    const aNewScope = _a(newScope), aExistScope = _a(existScope);
+    const aProjId = _a(projectId), aBackendCid = _a(backendConflictId);
+    const aCid = _a(conflictElId);
 
-    div.id = conflictId;
+    div.id = conflictElId;
+    // Store backend conflict_id as a data attribute for resolution lookups
+    div.dataset.conflictId = backendConflictId;
     div.innerHTML =
       '<div class="dc-header">' +
         '<svg class="dc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
@@ -816,7 +818,7 @@ function renderLiveEntry(e) {
             '<span class="dc-dir-scope">' + escHtml(existScope) + '</span>' +
             (existTime ? '<span class="dc-dir-time">' + existTime + '</span>' : '') +
           '</div>' +
-          '<div class="dc-dir-text">' + escHtml(existDir.directive || '') + '</div>' +
+          '<div class="dc-dir-text">' + escHtml(existDir.directive || existDir.content || '') + '</div>' +
         '</div>' +
         '<div class="dc-vs">vs</div>' +
         '<div class="dc-directive dc-directive-new">' +
@@ -825,23 +827,22 @@ function renderLiveEntry(e) {
             '<span class="dc-dir-scope">' + escHtml(newScope) + '</span>' +
             (newTime ? '<span class="dc-dir-time">' + newTime + '</span>' : '') +
           '</div>' +
-          '<div class="dc-dir-text">' + escHtml(newDir.directive || '') + '</div>' +
+          '<div class="dc-dir-text">' + escHtml(newDir.directive || newDir.content || '') + '</div>' +
         '</div>' +
+        (c.recommendation ? '<div class="dc-reason">' + escHtml(c.recommendation) + '</div>' : '') +
         (c.reason ? '<div class="dc-reason">' + escHtml(c.reason) + '</div>' : '') +
       '</div>' +
-      '<div class="dc-actions" id="' + escHtml(conflictId) + '-actions">' +
-        '<button class="dc-btn dc-btn-supersede" title="Use newer directive, retire older"' +
-          ' onclick="_resolveDirectiveConflict(\'' + aProjId + '\',\'' + aNewId + '\',\'' + aExistId + '\',\'supersede\',\'' + aCid + '\')">Use Newer</button>' +
-        '<button class="dc-btn dc-btn-supersede-old" title="Keep older directive, retire newer"' +
-          ' onclick="_resolveDirectiveConflict(\'' + aProjId + '\',\'' + aExistId + '\',\'' + aNewId + '\',\'supersede\',\'' + aCid + '\')">Keep Older</button>' +
-        '<button class="dc-btn dc-btn-scope" title="Each applies to its own scope only"' +
-          ' onclick="_resolveDirectiveConflict(\'' + aProjId + '\',\'' + aNewId + '\',\'' + aExistId + '\',\'scope\',\'' + aCid + '\',\'' + aNewScope + '\',\'' + aExistScope + '\')">Scope Each</button>' +
-        '<button class="dc-btn dc-btn-keep" title="Keep both — intentionally different"' +
-          ' onclick="_resolveDirectiveConflict(\'' + aProjId + '\',\'' + aNewId + '\',\'' + aExistId + '\',\'keep_both\',\'' + aCid + '\')">Keep Both</button>' +
+      '<div class="dc-actions" id="' + escHtml(conflictElId) + '-actions">' +
+        '<button class="dc-btn dc-btn-supersede" title="New directive (B) replaces old (A)"' +
+          ' onclick="_resolveDirectiveConflict(\'' + aProjId + '\',\'' + aBackendCid + '\',\'supersede\',\'' + aCid + '\')">Supersede</button>' +
+        '<button class="dc-btn dc-btn-scope" title="Both apply to different sections"' +
+          ' onclick="_resolveDirectiveConflict(\'' + aProjId + '\',\'' + aBackendCid + '\',\'scope\',\'' + aCid + '\')">Scope</button>' +
+        '<button class="dc-btn dc-btn-keep" title="Keep both active"' +
+          ' onclick="_resolveDirectiveConflict(\'' + aProjId + '\',\'' + aBackendCid + '\',\'keep_both\',\'' + aCid + '\')">Keep Both</button>' +
       '</div>' +
-      '<div class="dc-freeform" id="' + escHtml(conflictId) + '-freeform">' +
+      '<div class="dc-freeform" id="' + escHtml(conflictElId) + '-freeform">' +
         '<input type="text" class="dc-freeform-input" placeholder="Or describe how to resolve\u2026"' +
-          ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();_resolveDirectiveConflictFreeform(\'' + aProjId + '\',\'' + aNewId + '\',\'' + aExistId + '\',this.value,\'' + aCid + '\');}">' +
+          ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();_resolveDirectiveConflictFreeform(\'' + aProjId + '\',\'' + aBackendCid + '\',this.value,\'' + aCid + '\');}">' +
       '</div>';
   }
 
@@ -867,10 +868,9 @@ function _escJsAttr(s) {
 
 /**
  * Resolve a directive conflict via one-click button (supersede/scope/keep_both).
- * @param {string} winnerScope - optional, for 'scope' resolution
- * @param {string} loserScope  - optional, for 'scope' resolution
+ * Sends { conflict_id, action } to match the backend contract.
  */
-async function _resolveDirectiveConflict(projectId, winnerId, loserId, resolution, conflictElId, winnerScope, loserScope) {
+async function _resolveDirectiveConflict(projectId, conflictId, action, conflictElId) {
   const card = document.getElementById(conflictElId);
   const actionsEl = card && card.querySelector('.dc-actions');
   const freeformEl = card && card.querySelector('.dc-freeform');
@@ -880,15 +880,9 @@ async function _resolveDirectiveConflict(projectId, winnerId, loserId, resolutio
   if (freeformEl) freeformEl.style.display = 'none';
 
   const body = {
-    winner_id: winnerId,
-    loser_id: loserId,
-    resolution: resolution,
+    conflict_id: conflictId,
+    action: action,
   };
-  // Send scope assignments for 'scope' resolution
-  if (resolution === 'scope') {
-    if (winnerScope) body.winner_scope = winnerScope;
-    if (loserScope) body.loser_scope = loserScope;
-  }
 
   try {
     const res = await fetch('/api/compose/projects/' + encodeURIComponent(projectId) + '/directives/resolve', {
@@ -898,7 +892,7 @@ async function _resolveDirectiveConflict(projectId, winnerId, loserId, resolutio
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Resolution failed');
-    _markConflictResolved(conflictElId, resolution, data);
+    _markConflictResolved(conflictElId, action, data);
   } catch (err) {
     console.error('[directive-conflict] Resolution error:', err);
     // Restore buttons so user can retry
@@ -909,10 +903,10 @@ async function _resolveDirectiveConflict(projectId, winnerId, loserId, resolutio
 
 /**
  * Resolve a directive conflict via free-form text input.
- * Interprets the text as a note and defaults to "supersede" resolution,
- * letting the user describe their intent in natural language.
+ * Interprets the text to determine action, then sends { conflict_id, action }
+ * to match the backend contract.
  */
-async function _resolveDirectiveConflictFreeform(projectId, winnerId, loserId, text, conflictElId) {
+async function _resolveDirectiveConflictFreeform(projectId, conflictId, text, conflictElId) {
   if (!text || !text.trim()) return;
   const card = document.getElementById(conflictElId);
   const actionsEl = card && card.querySelector('.dc-actions');
@@ -923,24 +917,22 @@ async function _resolveDirectiveConflictFreeform(projectId, winnerId, loserId, t
 
   // Heuristic: detect intent from text using word boundaries to reduce false positives
   const lower = text.toLowerCase().trim();
-  let resolution = 'supersede';  // default
-  if (/\bkeep both\b|\bboth\b.*\bvalid\b|\bintentionally different\b|\bintentional\b/i.test(lower)) resolution = 'keep_both';
-  else if (/\bscope\b|\bseparate\b|\beach section\b|\btheir own\b/i.test(lower)) resolution = 'scope';
+  let action = 'supersede';  // default
+  if (/\bkeep both\b|\bboth\b.*\bvalid\b|\bintentionally different\b|\bintentional\b/i.test(lower)) action = 'keep_both';
+  else if (/\bscope\b|\bseparate\b|\beach section\b|\btheir own\b/i.test(lower)) action = 'scope';
 
   try {
     const res = await fetch('/api/compose/projects/' + encodeURIComponent(projectId) + '/directives/resolve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        winner_id: winnerId,
-        loser_id: loserId,
-        resolution: resolution,
-        note: text.trim(),
+        conflict_id: conflictId,
+        action: action,
       }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Resolution failed');
-    _markConflictResolved(conflictElId, resolution, data);
+    _markConflictResolved(conflictElId, action, data);
   } catch (err) {
     console.error('[directive-conflict] Freeform resolution error:', err);
     if (actionsEl) actionsEl.innerHTML = '<span class="dc-error">Failed: ' + escHtml(err.message) + ' </span>' + _savedActions;
@@ -995,16 +987,15 @@ function _injectDirectiveConflict(data) {
   const ambiguous = conflicts.filter(c => c.classification === 'ambiguous');
   if (!ambiguous.length) return;
 
-  // Fetch the existing directive details from the conflicts array
-  // (the backend includes existing_id and user_message)
   for (const conflict of ambiguous) {
-    // Build a synthetic entry for the conflict card renderer
+    // Build a synthetic entry for the conflict card renderer.
+    // Map backend ComposeConflict fields to what renderLiveEntry expects.
     const existingStub = {
-      id: conflict.existing_id,
-      directive: conflict.existing_text || '',
+      id: conflict.existing_id || conflict.directive_a_id || '',
+      directive: conflict.existing_text || conflict.directive_a_content || '',
+      content: conflict.existing_text || conflict.directive_a_content || '',
       time: conflict.existing_time || '',
       scope: conflict.existing_scope || null,
-      said_to: conflict.existing_said_to || null,
     };
 
     const entry = {
