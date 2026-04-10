@@ -154,10 +154,19 @@ def build_compose_prompt(compose_task_id: str) -> dict:
 
     elif role == "section":
         section_id = parsed["section_id"]
-        section = get_section(project_id, section_id)
+        # Read context once and find the section in it to avoid double file read
+        try:
+            ctx = read_context(project_id)
+        except Exception:
+            ctx = {"sections": []}
+        section = None
+        for s_dict in ctx.get("sections", []):
+            if s_dict.get("id") == section_id:
+                section = ComposeSection.from_dict(s_dict)
+                break
         if not section:
             return {'ok': False, 'error': f'Section not found: {section_id}'}
-        prompt = _build_section_prompt(project, section)
+        prompt = _build_section_prompt(project, section, ctx=ctx)
         return {'ok': True, 'system_prompt': prompt, 'agent_role': 'section'}
 
     return {'ok': False, 'error': f'Unknown role: {role}'}
@@ -275,12 +284,13 @@ def _build_root_prompt(project: ComposeProject) -> str:
     )
 
 
-def _build_section_prompt(project: ComposeProject, section: ComposeSection) -> str:
+def _build_section_prompt(project: ComposeProject, section: ComposeSection, ctx=None) -> str:
     """Build the section agent system prompt with project context."""
-    try:
-        ctx = read_context(project.id)
-    except Exception:
-        ctx = {"sections": [], "facts": {}, "directives": []}
+    if ctx is None:
+        try:
+            ctx = read_context(project.id)
+        except Exception:
+            ctx = {"sections": [], "facts": {}, "directives": []}
 
     # Project context: other sections + facts
     other_sections = [

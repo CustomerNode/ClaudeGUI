@@ -304,7 +304,9 @@ def register_ws_events(socketio, app):
         )
 
         if result.get('ok'):
-            # Auto-link session to compose task after successful start
+            # Emit immediately so the client isn't blocked
+            emit('session_started', {'session_id': session_id})
+            # Link session to compose task after emitting (non-blocking)
             if compose_task_id:
                 try:
                     from .compose_api import link_session_to_compose_task
@@ -314,7 +316,6 @@ def register_ws_events(socketio, app):
                         "Failed to auto-link session %s to compose task %s",
                         session_id, compose_task_id,
                     )
-            emit('session_started', {'session_id': session_id})
         else:
             emit('error', {
                 'message': result.get('error', 'Failed to start session'),

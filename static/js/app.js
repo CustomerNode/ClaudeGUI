@@ -1031,7 +1031,9 @@ async function _newSessionSubmit(sessionId) {
   }
 
   // Ensure agent catalog temp file is written, then inject compact index
-  if (typeof FOLDER_SUPERSET === 'object' && FOLDER_SUPERSET) {
+  // Skip for compose sessions — their prompt is built entirely server-side
+  const _isCompose = viewMode === 'compose' && typeof composeDetailTaskId !== 'undefined' && composeDetailTaskId;
+  if (!_isCompose && typeof FOLDER_SUPERSET === 'object' && FOLDER_SUPERSET) {
     await _ensureAgentCatalog();
     const agentBlock = _buildAgentDefinitions();
     if (agentBlock) {
