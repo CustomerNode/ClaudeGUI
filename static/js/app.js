@@ -1718,6 +1718,11 @@ let _composeSelectedSection = null; // currently selected section id (null = roo
 let _activeComposeProjectId = null; // selected composition ID (null = auto-select most recent)
 let _composeProjectsList = [];     // all compositions for the active project
 let _composeInitToken = 0;         // concurrency guard for initCompose()
+let _composeSelected = new Set();  // multi-select: set of composition IDs
+let _composeLastClickedId = null;  // for shift-click range selection
+let _composeSearchFilter = '';     // sidebar search filter text
+let _composePendingDeletes = [];   // [{ids: [...], timer: timeoutId, toastEl: el}]
+let _composeFocusedId = null;      // keyboard-focused composition ID
 
 /**
  * Initialize the compose board — fetch project data and render header.
@@ -1734,9 +1739,12 @@ async function initCompose() {
     }
 
     // Single fetch — board endpoint returns sibling_projects for the sidebar
+    // Always pass &project= so the sidebar stays rooted in the active VibeNode
+    // project even when viewing a cross-project pinned composition.
     let query = '';
     if (_activeComposeProjectId) {
       query = '?project_id=' + encodeURIComponent(_activeComposeProjectId);
+      if (_proj) query += '&project=' + encodeURIComponent(_proj);
     } else if (_proj) {
       query = '?project=' + encodeURIComponent(_proj);
     }
@@ -1749,6 +1757,8 @@ async function initCompose() {
 
     if (!data || !data.project) {
       _activeComposeProjectId = null;
+      _composeSelectedSection = null;
+      _composeProject = null;
       _renderComposeEmpty();
       _renderComposeSidebar();
       attachComposeShortcuts();
@@ -1996,13 +2006,70 @@ function _renderComposeSidebar() {
   let html = '<div class="kanban-sidebar-section">';
   html += '<div class="kanban-sidebar-label">Compositions</div>';
 
+  // Search filter
+  if (_composeProjectsList.length > 3) {
+    html += '<input type="text" id="compose-sidebar-search" class="compose-sidebar-search" placeholder="Filter\u2026" value="' + (typeof escHtml === 'function' ? escHtml(_composeSearchFilter) : _composeSearchFilter) + '" oninput="_composeFilterSidebar(this.value)">';
+  }
+
+  // Bulk action bar (shown when items are selected)
+  if (_composeSelected.size > 0) {
+    html += '<div class="compose-bulk-bar">';
+    html += '<span class="compose-bulk-count">' + _composeSelected.size + ' selected</span>';
+    html += '<button class="compose-bulk-btn" onclick="_composeBulkPin()" title="Pin selected">Pin</button>';
+    html += '<button class="compose-bulk-btn compose-bulk-danger" onclick="_composeBulkDelete()" title="Delete selected">Delete</button>';
+    html += '<button class="compose-bulk-btn" onclick="_composeBulkClear()" title="Clear selection">\u2715</button>';
+    html += '</div>';
+  }
+
   if (_composeProjectsList.length > 0) {
+    html += '<div id="compose-sidebar-list" class="compose-sidebar-list">';
+    const _activeProj = localStorage.getItem('activeProject') || '';
+    const filterLower = _composeSearchFilter.toLowerCase();
     for (const cp of _composeProjectsList) {
+      // Skip pending deletes and search filter
+      if (_composeIsPendingDelete(cp.id)) continue;
+      if (filterLower && cp.name.toLowerCase().indexOf(filterLower) === -1) continue;
+
       const isActive = cp.id === _activeComposeProjectId;
-      const cls = 'kanban-sidebar-btn' + (isActive ? ' compose-sidebar-active' : '');
+      const isPinned = cp.pinned;
+      const isSelected = _composeSelected.has(cp.id);
+      const isFocused = cp.id === _composeFocusedId;
+      const isCrossProject = isPinned && cp.parent_project && cp.parent_project !== _activeProj;
+      const cls = 'kanban-sidebar-btn' + (isActive ? ' compose-sidebar-active' : '') + (isPinned ? ' compose-sidebar-pinned' : '');
       const name = typeof escHtml === 'function' ? escHtml(cp.name) : cp.name;
-      html += '<button class="' + cls + '" onclick="switchComposition(\'' + cp.id + '\')" oncontextmenu="event.preventDefault();_composeCtxMenu(event,\'' + cp.id + '\')">' + _penIcon + ' ' + name + '</button>';
+      const pinDot = isPinned ? '<span class="compose-pin-dot" title="Pinned' + (isCrossProject ? ' (from another project)' : '') + '"></span>' : '';
+      const checkbox = '<input type="checkbox" class="compose-select-cb" ' + (isSelected ? 'checked' : '') + ' onclick="event.stopPropagation();_composeToggleSelect(event,\'' + cp.id + '\')" title="Select">';
+      const canDrag = !isCrossProject && !_composeSearchFilter;
+      html += '<div class="compose-sidebar-item' + (isSelected ? ' compose-sidebar-selected' : '') + (isFocused ? ' compose-sidebar-focused' : '') + '" draggable="' + (canDrag ? 'true' : 'false') + '" data-compose-id="' + cp.id + '"' + (isCrossProject ? ' data-cross-project="1"' : '') + '>';
+      html += checkbox;
+      html += '<button class="' + cls + '" onclick="switchComposition(\'' + cp.id + '\')" oncontextmenu="event.preventDefault();_composeCtxMenu(event,\'' + cp.id + '\')">' + _penIcon + ' ' + name + pinDot + '</button>';
+      // Status indicator
+      const st = cp.status;
+      if (st) {
+        let dotCls = 'compose-status-dot';
+        let dotTitle = '';
+        if (cp.has_conflicts) {
+          dotCls += ' compose-status-conflict';
+          dotTitle = 'Has conflicts';
+        } else if (st.total_sections === 0) {
+          dotCls += ' compose-status-empty';
+          dotTitle = 'No sections';
+        } else if (st.complete === st.total_sections) {
+          dotCls += ' compose-status-done';
+          dotTitle = 'All complete';
+        } else if (st.in_progress > 0) {
+          dotCls += ' compose-status-active';
+          dotTitle = st.in_progress + ' in progress';
+        } else {
+          dotCls += ' compose-status-idle';
+          dotTitle = st.not_started + ' not started';
+        }
+        const fraction = st.total_sections > 0 ? st.complete + '/' + st.total_sections : '';
+        html += '<span class="compose-status-badge" title="' + dotTitle + '"><span class="' + dotCls + '"></span>' + fraction + '</span>';
+      }
+      html += '</div>';
     }
+    html += '</div>';
   }
 
   html += '<button class="kanban-sidebar-btn" onclick="composeCreateProject()">' + _plusIcon + ' New Composition</button>';
@@ -2019,6 +2086,9 @@ function _renderComposeSidebar() {
 
   sidebar.innerHTML = html;
 
+  // Attach drag-and-drop to composition list
+  _attachComposeDragDrop();
+
   // Permission aggregator
   const permPanel = document.getElementById('sidebar-perm-panel');
   if (permPanel && typeof _buildPermissionPanel === 'function') {
@@ -2027,11 +2097,90 @@ function _renderComposeSidebar() {
   }
 }
 
+// --- Drag-and-drop reorder for sidebar compositions ---
+
+function _attachComposeDragDrop() {
+  const list = document.getElementById('compose-sidebar-list');
+  if (!list) return;
+
+  let _dragItem = null;
+
+  list.addEventListener('dragstart', (e) => {
+    // Disable drag-reorder while search filter is active — the filtered DOM
+    // only contains a subset of items, so reorder would send an incomplete list.
+    if (_composeSearchFilter) { e.preventDefault(); return; }
+    _dragItem = e.target.closest('.compose-sidebar-item');
+    if (!_dragItem) return;
+    _dragItem.classList.add('compose-dragging');
+    e.dataTransfer.effectAllowed = 'move';
+  });
+
+  list.addEventListener('dragend', () => {
+    if (_dragItem) _dragItem.classList.remove('compose-dragging');
+    _dragItem = null;
+    // Remove any lingering drag-over indicators
+    list.querySelectorAll('.compose-drag-over').forEach(el => el.classList.remove('compose-drag-over'));
+  });
+
+  list.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const target = e.target.closest('.compose-sidebar-item');
+    if (!target || target === _dragItem || target.dataset.crossProject) return;
+    // Add visual indicator
+    list.querySelectorAll('.compose-drag-over').forEach(el => el.classList.remove('compose-drag-over'));
+    target.classList.add('compose-drag-over');
+  });
+
+  list.addEventListener('dragleave', (e) => {
+    const target = e.target.closest('.compose-sidebar-item');
+    if (target) target.classList.remove('compose-drag-over');
+  });
+
+  list.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const target = e.target.closest('.compose-sidebar-item');
+    if (!target || !_dragItem || target === _dragItem || target.dataset.crossProject) return;
+    target.classList.remove('compose-drag-over');
+
+    // Reorder DOM
+    const items = [...list.querySelectorAll('.compose-sidebar-item')];
+    const fromIdx = items.indexOf(_dragItem);
+    const toIdx = items.indexOf(target);
+    if (fromIdx < toIdx) {
+      target.after(_dragItem);
+    } else {
+      target.before(_dragItem);
+    }
+
+    // Collect new order and send to backend (exclude cross-project pinned items)
+    const newOrder = [...list.querySelectorAll('.compose-sidebar-item')]
+      .filter(el => !el.dataset.crossProject)
+      .map(el => el.dataset.composeId);
+    // Update local list to match new order, preserving cross-project pinned items at the end
+    const idMap = {};
+    _composeProjectsList.forEach(p => { idMap[p.id] = p; });
+    const reordered = newOrder.map(id => idMap[id]).filter(Boolean);
+    const crossProjectItems = _composeProjectsList.filter(p => {
+      const el = list.querySelector('[data-compose-id="' + p.id + '"]');
+      return el && el.dataset.crossProject;
+    });
+    _composeProjectsList = reordered.concat(crossProjectItems);
+
+    fetch('/api/compose/projects/reorder', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({order: newOrder}),
+    }).catch(err => console.error('Failed to save composition order:', err));
+  });
+}
+
 // --- Switch composition ---
 
 function switchComposition(projectId) {
   if (projectId === _activeComposeProjectId) return;
   _activeComposeProjectId = projectId;
+  _composeFocusedId = projectId;
   _composeSelectedSection = null;
   // Persist selection
   const _proj = localStorage.getItem('activeProject') || '';
@@ -2047,10 +2196,17 @@ function switchComposition(projectId) {
 
 // --- Compose context menu (right-click on composition) ---
 
+function _composeCtxMenuClose() {
+  const el = document.getElementById('compose-ctx-menu');
+  if (el) {
+    if (el._closeHandler) document.removeEventListener('click', el._closeHandler, true);
+    el.remove();
+  }
+}
+
 function _composeCtxMenu(event, projectId) {
-  // Remove any existing context menu
-  const existing = document.getElementById('compose-ctx-menu');
-  if (existing) existing.remove();
+  // Remove any existing context menu (and its listener)
+  _composeCtxMenuClose();
 
   const menu = document.createElement('div');
   menu.id = 'compose-ctx-menu';
@@ -2059,13 +2215,29 @@ function _composeCtxMenu(event, projectId) {
   menu.style.top = event.clientY + 'px';
 
   const renameIcon = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
+  const dupeIcon = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+  const pinIcon = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v8l4 4H8l4-4z"/><line x1="12" y1="22" x2="12" y2="14"/></svg>';
   const deleteIcon = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+
+  // Check if composition is pinned
+  const cp = _composeProjectsList.find(p => p.id === projectId);
+  const isPinned = cp && cp.pinned;
+  const pinLabel = isPinned ? 'Unpin' : 'Pin';
 
   menu.innerHTML =
     '<div class="compose-ctx-item" onclick="_composeRename(\'' + projectId + '\')">' + renameIcon + ' Rename</div>' +
+    '<div class="compose-ctx-item" onclick="_composeDuplicate(\'' + projectId + '\')">' + dupeIcon + ' Duplicate</div>' +
+    '<div class="compose-ctx-item" onclick="_composeTogglePin(\'' + projectId + '\')">' + pinIcon + ' ' + pinLabel + '</div>' +
     '<div class="compose-ctx-item compose-ctx-danger" onclick="_composeDelete(\'' + projectId + '\')">' + deleteIcon + ' Delete</div>';
 
   document.body.appendChild(menu);
+
+  // Clamp position so menu doesn't overflow viewport
+  requestAnimationFrame(() => {
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) menu.style.left = Math.max(0, window.innerWidth - rect.width - 4) + 'px';
+    if (rect.bottom > window.innerHeight) menu.style.top = Math.max(0, window.innerHeight - rect.height - 4) + 'px';
+  });
 
   // Close on click anywhere else
   const _close = (e) => {
@@ -2074,12 +2246,12 @@ function _composeCtxMenu(event, projectId) {
       document.removeEventListener('click', _close, true);
     }
   };
+  menu._closeHandler = _close;
   setTimeout(() => document.addEventListener('click', _close, true), 0);
 }
 
 async function _composeRename(projectId) {
-  const existing = document.getElementById('compose-ctx-menu');
-  if (existing) existing.remove();
+  _composeCtxMenuClose();
 
   const cp = _composeProjectsList.find(p => p.id === projectId);
   const oldName = cp ? cp.name : '';
@@ -2106,42 +2278,254 @@ async function _composeRename(projectId) {
   }
 }
 
-async function _composeDelete(projectId) {
-  const existing = document.getElementById('compose-ctx-menu');
-  if (existing) existing.remove();
+function _composeIsPendingDelete(id) {
+  return _composePendingDeletes.some(pd => pd.ids.includes(id));
+}
+
+function _composeFlushPendingDeletes() {
+  for (const pd of _composePendingDeletes) {
+    clearTimeout(pd.timer);
+    if (pd.toastEl && pd.toastEl.parentNode) pd.toastEl.remove();
+    _composeExecuteDeletes(pd.ids);
+  }
+  _composePendingDeletes = [];
+}
+
+async function _composeExecuteDeletes(ids) {
+  for (const pid of ids) {
+    try {
+      await fetch('/api/compose/projects/' + pid, {method: 'DELETE'});
+    } catch (e) {
+      console.error('Failed to delete composition ' + pid, e);
+    }
+  }
+}
+
+function _composeRestackToasts() {
+  _composePendingDeletes.forEach((pd, i) => {
+    if (pd.toastEl) pd.toastEl.style.bottom = (24 + i * 52) + 'px';
+  });
+}
+
+function _composeScheduleDelete(ids, label) {
+  // If active composition is being deleted, remember it for undo and clear selection
+  const wasActive = ids.includes(_activeComposeProjectId) ? _activeComposeProjectId : null;
+  if (wasActive) {
+    _activeComposeProjectId = null;
+    _composeSelectedSection = null;
+    const _proj = localStorage.getItem('activeProject') || '';
+    if (_proj) localStorage.removeItem('activeComposition:' + _proj);
+  }
+
+  // Build undo toast — offset vertically when multiple toasts are active
+  const toast = document.createElement('div');
+  toast.className = 'compose-undo-toast';
+  toast.style.bottom = (24 + _composePendingDeletes.length * 52) + 'px';
+  toast.innerHTML = '<span>' + (typeof escHtml === 'function' ? escHtml(label) : label) + '</span>' +
+    '<button class="compose-undo-btn">Undo</button>';
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('show'));
+
+  const pd = {ids: ids, timer: null, toastEl: toast};
+
+  // Undo button
+  toast.querySelector('.compose-undo-btn').onclick = () => {
+    clearTimeout(pd.timer);
+    toast.remove();
+    _composePendingDeletes = _composePendingDeletes.filter(x => x !== pd);
+    _composeRestackToasts();
+    // Restore previously-active composition if it was the one deleted
+    if (wasActive) {
+      _activeComposeProjectId = wasActive;
+      const _projKey = localStorage.getItem('activeProject') || '';
+      if (_projKey) localStorage.setItem('activeComposition:' + _projKey, wasActive);
+    }
+    initCompose();
+  };
+
+  // Timer: execute deletes after 5 seconds
+  pd.timer = setTimeout(() => {
+    toast.remove();
+    _composePendingDeletes = _composePendingDeletes.filter(x => x !== pd);
+    _composeRestackToasts();
+    _composeExecuteDeletes(ids);
+    // Refresh after last pending delete completes
+    if (_composePendingDeletes.length === 0) {
+      initCompose();
+    }
+  }, 5000);
+
+  _composePendingDeletes.push(pd);
+
+  // Hide items immediately from sidebar
+  _renderComposeSidebar();
+  // If active was deleted, load next composition
+  if (!_activeComposeProjectId) {
+    initCompose();
+  }
+}
+
+function _composeDelete(projectId) {
+  _composeCtxMenuClose();
 
   const cp = _composeProjectsList.find(p => p.id === projectId);
   const name = cp ? cp.name : 'this composition';
-  if (!confirm('Delete "' + name + '"? This cannot be undone.')) return;
+
+  _composeScheduleDelete([projectId], 'Deleted "' + name + '"');
+}
+
+async function _composeDuplicate(projectId) {
+  _composeCtxMenuClose();
+
+  const cp = _composeProjectsList.find(p => p.id === projectId);
+  const defaultName = cp ? 'Copy of ' + cp.name : 'Copy';
+  const name = prompt('Name for the duplicate:', defaultName);
+  if (!name || !name.trim()) return;
 
   try {
-    const resp = await fetch('/api/compose/projects/' + projectId, {
-      method: 'DELETE',
+    const resp = await fetch('/api/compose/projects/' + projectId + '/clone', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: name.trim()}),
     });
-    if (!resp.ok) throw new Error('Delete failed');
+    if (!resp.ok) throw new Error('Clone failed');
     const data = await resp.json();
     if (data && data.ok) {
-      showToast('Deleted "' + name + '"');
-      // If we deleted the active composition, clear selection
-      if (_activeComposeProjectId === projectId) {
-        _activeComposeProjectId = null;
-        _composeSelectedSection = null;
-        const _proj = localStorage.getItem('activeProject') || '';
-        if (_proj) localStorage.removeItem('activeComposition:' + _proj);
+      showToast('Duplicated as "' + name.trim() + '"');
+      // Switch to the clone
+      if (data.project && data.project.id) {
+        _activeComposeProjectId = data.project.id;
       }
       initCompose();
     } else {
-      showToast(data.error || 'Delete failed', 'error');
+      showToast(data.error || 'Duplicate failed', 'error');
     }
   } catch (e) {
-    console.error('Failed to delete composition:', e);
-    showToast('Failed to delete composition', 'error');
+    console.error('Failed to duplicate composition:', e);
+    showToast('Failed to duplicate composition', 'error');
+  }
+}
+
+async function _composeTogglePin(projectId) {
+  _composeCtxMenuClose();
+
+  const cp = _composeProjectsList.find(p => p.id === projectId);
+  const newPinned = !(cp && cp.pinned);
+
+  try {
+    const resp = await fetch('/api/compose/projects/' + projectId, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({pinned: newPinned}),
+    });
+    if (!resp.ok) throw new Error('Pin toggle failed');
+    const data = await resp.json();
+    if (data && data.ok) {
+      showToast(newPinned ? 'Pinned' : 'Unpinned');
+      initCompose();
+    } else {
+      showToast(data.error || 'Failed', 'error');
+    }
+  } catch (e) {
+    console.error('Failed to toggle pin:', e);
+    showToast('Failed to update pin state', 'error');
+  }
+}
+
+// --- Compose bulk selection ---
+
+function _composeToggleSelect(event, projectId) {
+  if (event.shiftKey && _composeLastClickedId) {
+    // Shift-click: select range
+    const ids = _composeProjectsList.map(p => p.id);
+    const from = ids.indexOf(_composeLastClickedId);
+    const to = ids.indexOf(projectId);
+    if (from !== -1 && to !== -1) {
+      const start = Math.min(from, to);
+      const end = Math.max(from, to);
+      for (let i = start; i <= end; i++) {
+        _composeSelected.add(ids[i]);
+      }
+    }
+  } else {
+    // Single click: toggle
+    if (_composeSelected.has(projectId)) {
+      _composeSelected.delete(projectId);
+    } else {
+      _composeSelected.add(projectId);
+    }
+  }
+  _composeLastClickedId = projectId;
+  _renderComposeSidebar();
+}
+
+function _composeBulkClear() {
+  _composeSelected = new Set();
+  _composeLastClickedId = null;
+  _renderComposeSidebar();
+}
+
+function _composeBulkDelete() {
+  const count = _composeSelected.size;
+  if (!count) return;
+
+  const ids = [..._composeSelected];
+  _composeSelected = new Set();
+  const label = 'Deleted ' + count + ' composition' + (count > 1 ? 's' : '');
+  _composeScheduleDelete(ids, label);
+}
+
+async function _composeBulkPin() {
+  const ids = [..._composeSelected];
+  if (!ids.length) return;
+
+  // Determine action: if all selected are pinned, unpin. Otherwise pin.
+  const allPinned = ids.every(id => {
+    const cp = _composeProjectsList.find(p => p.id === id);
+    return cp && cp.pinned;
+  });
+  const newPinned = !allPinned;
+
+  let updated = 0;
+  for (const pid of ids) {
+    try {
+      const resp = await fetch('/api/compose/projects/' + pid, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({pinned: newPinned}),
+      });
+      if (resp.ok) updated++;
+    } catch (e) {
+      console.error('Failed to update pin for ' + pid, e);
+    }
+  }
+  showToast((newPinned ? 'Pinned ' : 'Unpinned ') + updated + ' composition' + (updated > 1 ? 's' : ''));
+  _composeSelected = new Set();
+  initCompose();
+}
+
+function _composeFilterSidebar(value) {
+  _composeSearchFilter = value || '';
+  _renderComposeSidebar();
+  // Restore focus to the search input after re-render
+  const input = document.getElementById('compose-sidebar-search');
+  if (input) {
+    input.focus();
+    input.selectionStart = input.selectionEnd = input.value.length;
   }
 }
 
 // --- Compose keyboard shortcuts ---
 
 let _composeShortcutsAttached = false;
+
+function _composeVisibleIds() {
+  const filterLower = _composeSearchFilter.toLowerCase();
+  return _composeProjectsList
+    .filter(cp => !_composeIsPendingDelete(cp.id))
+    .filter(cp => !filterLower || cp.name.toLowerCase().indexOf(filterLower) !== -1)
+    .map(cp => cp.id);
+}
 
 function attachComposeShortcuts() {
   if (_composeShortcutsAttached) return;
@@ -2156,7 +2540,54 @@ function attachComposeShortcuts() {
     switch (e.key) {
       case 'n': e.preventDefault(); if (_composeProject) composeAddSection(); else composeCreateProject(); break;
       case 'r': e.preventDefault(); initCompose(); if (typeof showToast === 'function') showToast('Refreshed'); break;
-      case 'Escape': if (_composeSelectedSection) { e.preventDefault(); navigateToComposeBoard(); } break;
+      case 'Escape':
+        if (_composeSelected.size > 0) { e.preventDefault(); _composeBulkClear(); }
+        else if (_composeFocusedId) { e.preventDefault(); _composeFocusedId = null; _renderComposeSidebar(); }
+        else if (_composeSelectedSection) { e.preventDefault(); navigateToComposeBoard(); }
+        break;
+      case 'ArrowUp':
+      case 'ArrowDown': {
+        e.preventDefault();
+        const visIds = _composeVisibleIds();
+        if (!visIds.length) break;
+        const curIdx = _composeFocusedId ? visIds.indexOf(_composeFocusedId) : -1;
+        let nextIdx;
+        if (e.key === 'ArrowDown') {
+          nextIdx = curIdx < visIds.length - 1 ? curIdx + 1 : curIdx;
+        } else {
+          nextIdx = curIdx > 0 ? curIdx - 1 : 0;
+        }
+        _composeFocusedId = visIds[nextIdx];
+        if (e.shiftKey) _composeSelected.add(_composeFocusedId);
+        _renderComposeSidebar();
+        break;
+      }
+      case 'Enter':
+        if (_composeFocusedId) { e.preventDefault(); switchComposition(_composeFocusedId); }
+        break;
+      case ' ':
+        if (_composeFocusedId) {
+          e.preventDefault();
+          _composeToggleSelect(e, _composeFocusedId);
+        }
+        break;
+      case 'Delete':
+        if (_composeFocusedId) {
+          e.preventDefault();
+          const _delCp = _composeProjectsList.find(p => p.id === _composeFocusedId);
+          const _delName = _delCp ? _delCp.name : 'this composition';
+          // Move focus to next visible item (or previous if at end)
+          const _delVis = _composeVisibleIds();
+          const _delIdx = _delVis.indexOf(_composeFocusedId);
+          const _delId = _composeFocusedId;
+          if (_delVis.length > 1) {
+            _composeFocusedId = _delVis[_delIdx < _delVis.length - 1 ? _delIdx + 1 : _delIdx - 1];
+          } else {
+            _composeFocusedId = null;
+          }
+          _composeScheduleDelete([_delId], 'Deleted "' + _delName + '"');
+        }
+        break;
     }
   });
 }
@@ -2741,6 +3172,11 @@ function resetComposeState() {
   _activeComposeProjectId = null;
   _composeProjectsList = [];
   _composeInitToken++;  // cancel any in-flight initCompose()
+  _composeSelected = new Set();
+  _composeLastClickedId = null;
+  _composeSearchFilter = '';
+  _composeFlushPendingDeletes();
+  _composeFocusedId = null;
   const header = document.getElementById('compose-root-header');
   const target = document.getElementById('compose-input-target');
   if (header) header.style.display = 'none';

@@ -86,16 +86,49 @@ def get_board():
         except Exception:
             conflicts = []
 
-        # Include sibling compositions for the sidebar picker
+        # Include sibling compositions + pinned compositions for the sidebar
+        # Each entry includes a status summary for sidebar indicators
+        def _project_with_status(proj):
+            d = proj.to_dict()
+            # Read compose-context.json once for both sections and conflicts
+            try:
+                ctx = read_context(proj.id)
+            except Exception:
+                ctx = {}
+            try:
+                secs = [ComposeSection.from_dict(s) for s in ctx.get('sections', [])]
+                t = len(secs)
+                c = sum(1 for s in secs if s.status == SectionStatus.COMPLETE)
+                w = sum(1 for s in secs if s.status == SectionStatus.WORKING)
+                d['status'] = {
+                    'total_sections': t, 'complete': c,
+                    'in_progress': w, 'not_started': t - c - w,
+                }
+            except Exception:
+                d['status'] = {'total_sections': 0, 'complete': 0, 'in_progress': 0, 'not_started': 0}
+            d['has_conflicts'] = any(
+                cf.get('status') == 'pending' for cf in ctx.get('conflicts', [])
+            )
+            return d
+
         sibling_projects = []
         effective_parent = parent or (project.parent_project if project else None)
+        if all_projects is None:
+            all_projects = list_projects()
+        seen_ids = set()
         if effective_parent:
-            if all_projects is None:
-                all_projects = list_projects()
-            sibling_projects = [p.to_dict() for p in all_projects
-                                if p.parent_project == effective_parent]
+            for p in all_projects:
+                if p.parent_project == effective_parent:
+                    sibling_projects.append(_project_with_status(p))
+                    seen_ids.add(p.id)
         else:
-            sibling_projects = [project.to_dict()]
+            sibling_projects.append(_project_with_status(project))
+            seen_ids.add(project.id)
+        # Append pinned compositions from other projects
+        for p in all_projects:
+            if p.pinned and p.id not in seen_ids:
+                sibling_projects.append(_project_with_status(p))
+                seen_ids.add(p.id)
 
         return jsonify({
             'project': project.to_dict(),
@@ -192,7 +225,7 @@ def list_all_projects():
     projects = list_projects()
     parent = request.args.get('project', '').strip()
     if parent:
-        projects = [p for p in projects if p.parent_project == parent]
+        projects = [p for p in projects if p.parent_project == parent or p.pinned]
     return jsonify({'ok': True, 'projects': [p.to_dict() for p in projects]})
 
 
@@ -235,11 +268,61 @@ def update_project(project_id):
         project.shared_prompts_enabled = bool(data['shared_prompts_enabled'])
     if 'root_session_id' in data:
         project.root_session_id = data['root_session_id']
+    if 'position' in data:
+        project.position = int(data['position'])
+    if 'pinned' in data:
+        project.pinned = bool(data['pinned'])
 
     save_project(project)
     _emit('compose_board_refresh', {'project_id': project_id})
 
     return jsonify({'ok': True, 'project': project.to_dict()})
+
+
+@bp.route('/projects/reorder', methods=['POST'])
+def reorder_projects():
+    """Batch-update composition positions.
+
+    JSON body: { "order": ["id1", "id2", ...] }
+    Assigns position = index * 1000 using gap numbering.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    order = data.get('order', [])
+    if not isinstance(order, list):
+        return jsonify({'ok': False, 'error': 'order must be a list'}), 400
+
+    for i, pid in enumerate(order):
+        project = get_project(pid)
+        if project:
+            project.position = i * 1000
+            save_project(project)
+
+    return jsonify({'ok': True})
+
+
+@bp.route('/projects/<project_id>/clone', methods=['POST'])
+def clone_project_endpoint(project_id):
+    """Clone a composition project with new IDs.
+
+    JSON body: { "name": "Clone Name" }  (optional — defaults to "Copy of ...")
+    """
+    from ..compose.models import clone_project as do_clone
+
+    source = get_project(project_id)
+    if not source:
+        return jsonify({'ok': False, 'error': 'Project not found'}), 404
+
+    data = request.get_json(force=True, silent=True) or {}
+    name = (data.get('name') or '').strip() or ('Copy of ' + source.name)
+
+    new_project = do_clone(project_id, name)
+    if not new_project:
+        return jsonify({'ok': False, 'error': 'Clone failed'}), 500
+
+    logger.info("Cloned compose project %s -> %s", project_id, new_project.id)
+    _emit('compose_board_refresh', {'project_id': new_project.id})
+
+    return jsonify({'ok': True, 'project': new_project.to_dict()}), 201
 
 
 @bp.route('/projects/<project_id>', methods=['DELETE'])

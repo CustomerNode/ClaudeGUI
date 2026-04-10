@@ -6748,6 +6748,165 @@ mark.find-match.current { background: var(--accent); color:#fff; }
   color: var(--accent);
   font-weight: 600;
 }
+.compose-sidebar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.compose-sidebar-item {
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.compose-sidebar-item > .kanban-sidebar-btn {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1 1 0;
+}
+.compose-sidebar-item[data-cross-project] {
+  cursor: default;
+}
+.compose-sidebar-item.compose-sidebar-selected {
+  background: var(--bg-hover);
+  border-radius: 6px;
+}
+.compose-sidebar-item.compose-sidebar-focused {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  border-radius: 6px;
+}
+.compose-status-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--text-faint);
+  margin-left: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.compose-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.compose-status-done { background: #4caf50; }
+.compose-status-active { background: #f59e0b; }
+.compose-status-idle { background: var(--text-faint); }
+.compose-status-empty { background: var(--border); }
+.compose-status-conflict { background: #ef4444; }
+.compose-select-cb {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin: 0;
+}
+.compose-sidebar-search {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+}
+.compose-sidebar-search:focus {
+  border-color: var(--accent);
+}
+.compose-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  flex-wrap: wrap;
+}
+.compose-bulk-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-right: auto;
+}
+.compose-bulk-btn {
+  font-size: 11px;
+  font-family: inherit;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-btn);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.compose-bulk-btn:hover {
+  background: var(--bg-btn-hover);
+  color: var(--text);
+}
+.compose-bulk-danger:hover {
+  color: var(--result-err);
+  border-color: var(--result-err);
+}
+.compose-undo-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  z-index: 9999;
+  opacity: 0;
+  transition: opacity 0.2s, transform 0.2s;
+}
+.compose-undo-toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+.compose-undo-btn {
+  font-size: 12px;
+  font-family: inherit;
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 0.1s;
+}
+.compose-undo-btn:hover {
+  background: var(--accent);
+  color: var(--bg-card);
+}
+.compose-sidebar-item.compose-dragging {
+  opacity: 0.4;
+}
+.compose-sidebar-item.compose-drag-over {
+  border-top: 2px solid var(--accent);
+}
+.compose-sidebar-pinned {
+  position: relative;
+}
+.compose-pin-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: 4px;
+  vertical-align: middle;
+}
 .compose-ctx-menu {
   position: fixed;
   z-index: 9999;

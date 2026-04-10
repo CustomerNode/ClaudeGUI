@@ -78,6 +78,8 @@ class ComposeProject:
     root_session_id: Optional[str] = None
     shared_prompts_enabled: bool = True
     parent_project: Optional[str] = None  # VibeNode project path this belongs to
+    position: int = 0                     # sidebar sort order (lower = higher)
+    pinned: bool = False                  # show in sidebar regardless of active project
 
     def to_dict(self):
         return asdict(self)
@@ -91,6 +93,8 @@ class ComposeProject:
             root_session_id=d.get("root_session_id"),
             shared_prompts_enabled=d.get("shared_prompts_enabled", True),
             parent_project=d.get("parent_project"),
+            position=d.get("position", 0),
+            pinned=d.get("pinned", False),
         )
 
     @classmethod
@@ -402,6 +406,120 @@ def delete_project_folder(project_id: str) -> bool:
     return False
 
 
+def clone_project(source_id: str, new_name: str) -> Optional[ComposeProject]:
+    """Deep-copy a composition project with new IDs.
+
+    Copies the entire folder, then rewrites project.json and all
+    section.json files with fresh UUIDs.
+    """
+    src_dir = project_dir(source_id)
+    if not src_dir.is_dir():
+        return None
+
+    source = get_project(source_id)
+    if not source:
+        return None
+
+    # Create new project object
+    new_project = ComposeProject.create(new_name, parent_project=source.parent_project)
+    new_project.shared_prompts_enabled = source.shared_prompts_enabled
+    new_project.position = source.position
+    new_project.pinned = False  # clones should not inherit pinned state
+    new_project.root_session_id = None  # cloned project has no running session
+
+    # Copy folder
+    base = COMPOSE_PROJECTS_DIR
+    folder_name = _sanitize_folder_name(new_name)
+    dest_dir = base / f"{folder_name}-{new_project.id[:8]}"
+    shutil.copytree(src_dir, dest_dir)
+
+    # Rewrite project.json with new ID
+    (dest_dir / "project.json").write_text(
+        json.dumps(new_project.to_dict(), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    # Rewrite section IDs: two-pass to handle parent_id forward references
+    section_id_map = {}  # old_id -> new_id
+    section_files = []   # (path, parsed_data)
+    sections_dir = dest_dir / "sections"
+    if sections_dir.is_dir():
+        # Pass 1: read all sections and assign new IDs
+        for sdir in sections_dir.iterdir():
+            sf = sdir / "section.json"
+            if sf.is_file():
+                try:
+                    sdata = json.loads(sf.read_text(encoding="utf-8"))
+                    old_id = sdata.get("id", "")
+                    new_id = str(uuid.uuid4())
+                    section_id_map[old_id] = new_id
+                    section_files.append((sf, sdata, new_id))
+                except Exception:
+                    pass
+        # Pass 2: rewrite with remapped IDs
+        for sf, sdata, new_id in section_files:
+            try:
+                sdata["id"] = new_id
+                sdata["project_id"] = new_project.id
+                old_parent = sdata.get("parent_id")
+                if old_parent and old_parent in section_id_map:
+                    sdata["parent_id"] = section_id_map[old_parent]
+                sdata["session_id"] = None  # cloned sections have no running session
+                sf.write_text(
+                    json.dumps(sdata, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+
+    # Update compose-context.json with new project ID and remapped section IDs
+    ctx_file = dest_dir / "compose-context.json"
+    if ctx_file.is_file():
+        try:
+            ctx = json.loads(ctx_file.read_text(encoding="utf-8"))
+            ctx["project_id"] = new_project.id
+            ctx["project_name"] = new_name
+            # Remap section IDs and project_ids in the context sections array
+            for sec in ctx.get("sections", []):
+                old_sid = sec.get("id", "")
+                if old_sid in section_id_map:
+                    sec["id"] = section_id_map[old_sid]
+                sec["project_id"] = new_project.id
+                # Remap parent_id references
+                old_parent = sec.get("parent_id")
+                if old_parent and old_parent in section_id_map:
+                    sec["parent_id"] = section_id_map[old_parent]
+                # Clear session_id — cloned sections have no running sessions
+                sec["session_id"] = None
+            # Remap directive scope/source fields that reference section IDs
+            directive_id_map = {}
+            for d in ctx.get("directives", []):
+                old_did = d.get("id", "")
+                new_did = str(uuid.uuid4())
+                directive_id_map[old_did] = new_did
+                d["id"] = new_did
+                if d.get("scope") in section_id_map:
+                    d["scope"] = section_id_map[d["scope"]]
+                if d.get("source") in section_id_map:
+                    d["source"] = section_id_map[d["source"]]
+            # Remap conflict references
+            for c in ctx.get("conflicts", []):
+                c["id"] = str(uuid.uuid4())
+                c["project_id"] = new_project.id
+                if c.get("directive_a_id") in directive_id_map:
+                    c["directive_a_id"] = directive_id_map[c["directive_a_id"]]
+                if c.get("directive_b_id") in directive_id_map:
+                    c["directive_b_id"] = directive_id_map[c["directive_b_id"]]
+            ctx_file.write_text(
+                json.dumps(ctx, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    return new_project
+
+
 def delete_section_folder(project_id: str, section_name: str) -> bool:
     """Delete a section folder. Returns True if deleted."""
     pdir = project_dir(project_id)
@@ -429,6 +547,8 @@ def list_projects() -> list:
                 projects.append(ComposeProject.from_dict(data))
             except Exception:
                 pass
+    # Sort by position (lower first), then by created_at as tiebreaker
+    projects.sort(key=lambda p: (p.position, p.created_at))
     return projects
 
 
