@@ -247,9 +247,13 @@ def create_section(project_id):
     if not name:
         return jsonify({'ok': False, 'error': 'name is required'}), 400
 
-    # Determine order (append to end)
+    # Determine order
     existing = get_sections(project_id)
-    order = max((s.order for s in existing), default=-1) + 1
+    insert_pos = (data.get('insert_position') or 'bottom').lower()
+    if insert_pos == 'top' and existing:
+        order = min((s.order for s in existing), default=0) - 1
+    else:
+        order = max((s.order for s in existing), default=-1) + 1
 
     section = ComposeSection.create(
         project_id=project_id,

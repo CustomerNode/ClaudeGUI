@@ -1719,11 +1719,6 @@ let _composeSelectedSection = null; // currently selected section id (null = roo
  * Called by setViewMode('compose') in workforce.js.
  */
 async function initCompose() {
-  const header = document.getElementById('compose-root-header');
-  const target = document.getElementById('compose-input-target');
-  if (header) header.style.display = 'flex';
-  if (target) target.style.display = 'flex';
-
   try {
     const resp = await fetch('/api/compose/board');
     const data = await resp.json();
@@ -1735,12 +1730,21 @@ async function initCompose() {
     _composeSections = data.sections || [];
     _composeConflicts = (data.conflicts || []).filter(c => c.status === 'pending');
 
-    _updateComposeRootHeader();
-    _updateComposeInputTarget();
-    _renderComposeSectionCards();
-
-    // Set default compose_task_id to root
-    composeDetailTaskId = 'root:' + _composeProject.id;
+    // Check if we should restore a section drill-down from URL hash
+    if (_restoreComposeSectionFromHash()) {
+      // drill-down restored — header stays hidden, keep section's composeDetailTaskId
+    } else {
+      // Show header and input target for board view
+      const header = document.getElementById('compose-root-header');
+      const target = document.getElementById('compose-input-target');
+      if (header) header.style.display = 'flex';
+      if (target) target.style.display = 'flex';
+      _updateComposeRootHeader();
+      _updateComposeInputTarget();
+      _renderComposeSectionCards();
+      // Set default compose_task_id to root (only when showing board, not drill-down)
+      composeDetailTaskId = 'root:' + _composeProject.id;
+    }
 
   } catch (e) {
     console.error('Failed to init compose:', e);
@@ -1817,6 +1821,7 @@ async function _submitComposeProject() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({name}),
     });
+    if (!resp.ok) throw new Error('Server error (' + resp.status + ')');
     const data = await resp.json();
     if (data && data.ok) {
       showToast('Created composition: ' + name);
@@ -1836,6 +1841,8 @@ function composeAddSection() {
   if (!_composeProject) return;
   const overlay = document.getElementById('pm-overlay');
   if (!overlay) return;
+  _composeInsertPosition = 'top';
+  _composeArtifactType = 'text';
 
   overlay.innerHTML = `<div class="pm-card pm-enter" style="max-width:480px;">
     <h2 class="pm-title" style="display:flex;align-items:center;justify-content:space-between;">
@@ -1919,8 +1926,9 @@ async function _submitComposeSection() {
     const resp = await fetch('/api/compose/projects/' + _composeProject.id + '/sections', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({name, artifact_type: artifactType}),
+      body: JSON.stringify({name, artifact_type: artifactType, insert_position: insertPos}),
     });
+    if (!resp.ok) throw new Error('Server error (' + resp.status + ')');
     const data = await resp.json();
     if (data && data.ok) {
       showToast('Added section: ' + name);
@@ -1980,6 +1988,7 @@ function attachComposeShortcuts() {
     switch (e.key) {
       case 'n': e.preventDefault(); if (_composeProject) composeAddSection(); else composeCreateProject(); break;
       case 'r': e.preventDefault(); initCompose(); if (typeof showToast === 'function') showToast('Refreshed'); break;
+      case 'Escape': if (_composeSelectedSection) { e.preventDefault(); navigateToComposeBoard(); } break;
     }
   });
 }
@@ -2075,13 +2084,16 @@ function _renderComposeSectionCards() {
         : '';
       const selectedClass = (_composeSelectedSection === sec.id) ? ' compose-card-selected' : '';
 
-      html += `<div class="kanban-card compose-card${selectedClass}" data-section-id="${sec.id}" onclick="composeSelectSection('${sec.id}')">
+      html += `<div class="kanban-card compose-card${selectedClass}" data-section-id="${sec.id}"
+                   onclick="navigateToSection('${sec.id}')"
+                   oncontextmenu="event.preventDefault();event.stopPropagation();_composeCardContextMenu('${sec.id}', event)">
         <div class="compose-card-header">
           <span class="compose-card-artifact-icon">${artifactIcon}</span>
           <div class="compose-card-title-row">
             <span class="compose-card-title">${typeof escHtml === 'function' ? escHtml(sec.name) : sec.name}</span>
             ${changingDot}
           </div>
+          <span class="kanban-context-btn" onclick="event.stopPropagation();_composeCardContextMenu('${sec.id}', event)" title="Actions">&#8943;</span>
         </div>
         <div class="compose-card-meta">
           <span class="compose-card-status" style="background:${col.color}22;color:${col.color};">${col.label}</span>
@@ -2099,6 +2111,432 @@ function _renderComposeSectionCards() {
 }
 
 // --- End NB-11 ---
+
+// ═══════════════════════════════════════════════════════════════
+// COMPOSE SECTION DETAIL — Drill-down view (mirrors kanban task detail)
+// ═══════════════════════════════════════════════════════════════
+
+const COMPOSE_STATUS_OPTIONS = [
+  { key: 'not_started', label: 'Not Started', color: '#8b949e' },
+  { key: 'working',     label: 'Working',     color: '#4ecdc4' },
+  { key: 'complete',    label: 'Complete',     color: '#3fb950' },
+];
+
+function _composeSectionSkeleton() {
+  return `
+    <div class="kanban-drill-titlebar">
+      <div class="kanban-drill-breadcrumb">
+        <div class="skel-shimmer" style="width:50px;height:13px;border-radius:4px;"></div>
+        <div class="skel-shimmer" style="width:6px;height:13px;border-radius:2px;margin:0 4px;"></div>
+        <div class="skel-shimmer" style="width:100px;height:13px;border-radius:4px;"></div>
+      </div>
+    </div>
+    <div class="kanban-drill-body">
+      <div class="kanban-drill-split">
+        <div class="kanban-drill-left">
+          <div class="skel-shimmer" style="width:80px;height:24px;border-radius:6px;margin-bottom:16px;"></div>
+          <div class="skel-shimmer" style="width:70%;height:22px;border-radius:5px;margin-bottom:8px;"></div>
+          <div class="skel-shimmer" style="width:40%;height:11px;border-radius:3px;margin-bottom:20px;"></div>
+          <div class="skel-shimmer" style="width:100%;height:72px;border-radius:8px;"></div>
+        </div>
+        <div class="kanban-drill-right">
+          <div class="skel-shimmer" style="width:120px;height:12px;border-radius:3px;margin-bottom:14px;"></div>
+          <div style="border:1px solid var(--border);border-radius:10px;padding:6px 8px;">
+            <div class="skel-shimmer" style="width:100%;height:38px;border-radius:8px;margin-bottom:4px;"></div>
+            <div class="skel-shimmer" style="width:100%;height:38px;border-radius:8px;"></div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function navigateToSection(sectionId) {
+  const content = document.getElementById('compose-sections-board');
+  if (!content) return;
+  // Hide the header and input target during drill-down
+  const header = document.getElementById('compose-root-header');
+  const target = document.getElementById('compose-input-target');
+  if (header) header.style.display = 'none';
+  if (target) target.style.display = 'none';
+  content.innerHTML = _composeSectionSkeleton();
+  const state = { view: 'compose', sectionId };
+  history.pushState(state, '', window.location.pathname + '#compose/section/' + sectionId);
+  renderSectionDetail(sectionId);
+}
+
+function _renderComposeBoard() {
+  _composeSelectedSection = null;
+  const header = document.getElementById('compose-root-header');
+  const target = document.getElementById('compose-input-target');
+  if (header) header.style.display = 'flex';
+  if (target) target.style.display = 'flex';
+  _updateComposeRootHeader();
+  _updateComposeInputTarget();
+  _renderComposeSectionCards();
+}
+
+function navigateToComposeBoard() {
+  const state = { view: 'compose', sectionId: null };
+  history.pushState(state, '', window.location.pathname + '#compose');
+  _renderComposeBoard();
+}
+
+function renderSectionDetail(sectionId) {
+  const board = document.getElementById('compose-sections-board');
+  if (!board) return;
+
+  // Hide header/target during drill-down
+  const _hdr = document.getElementById('compose-root-header');
+  const _tgt = document.getElementById('compose-input-target');
+  if (_hdr) _hdr.style.display = 'none';
+  if (_tgt) _tgt.style.display = 'none';
+
+  const section = _composeSections.find(s => s.id === sectionId);
+  if (!section) {
+    board.innerHTML = '<div class="kanban-empty-state"><div style="font-size:15px;font-weight:500;margin-bottom:6px;">Section not found</div><button class="kanban-create-first-btn" onclick="navigateToComposeBoard()">Back to Board</button></div>';
+    return;
+  }
+
+  // Update selection state
+  _composeSelectedSection = sectionId;
+  composeDetailTaskId = 'section:' + _composeProject.id + ':' + sectionId;
+
+  const statusOpt = COMPOSE_STATUS_OPTIONS.find(o => o.key === section.status) || COMPOSE_STATUS_OPTIONS[0];
+  const artifactIcon = COMPOSE_ARTIFACT_ICONS[section.artifact_type] || COMPOSE_ARTIFACT_ICONS.default;
+  const projectName = _composeProject ? _composeProject.name : 'Composition';
+
+  // ── Breadcrumb ──
+  let html = '<div class="kanban-drill-titlebar">';
+  html += '<div class="kanban-drill-breadcrumb">';
+  html += '<span class="kanban-drill-crumb kanban-board-crumb" onclick="navigateToComposeBoard()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg> Board</span>';
+  html += '<span class="kanban-drill-sep"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></span>';
+  html += '<span class="kanban-drill-crumb current">' + (typeof escHtml === 'function' ? escHtml(section.name) : section.name) + '</span>';
+  html += '</div></div>';
+
+  // ── Detail body — left/right split ──
+  html += '<div class="kanban-drill-body">';
+  html += '<div class="kanban-drill-split">';
+
+  // ════════════ LEFT: Section info ════════════
+  html += '<div class="kanban-drill-left">';
+
+  // Status badge (clickable)
+  html += '<div class="kanban-drill-status kanban-status-clickable" style="background:' + statusOpt.color + '26;color:' + statusOpt.color + ';cursor:pointer;" onclick="event.stopPropagation();_composeStatusMenu(\'' + section.id + '\', \'' + section.status + '\', event)" title="Click to change status">' + statusOpt.label + ' <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>';
+
+  // Title (click to edit)
+  html += '<div class="kanban-drill-title" id="compose-drill-title" onclick="_composeStartTitleEdit(\'' + section.id + '\', this)" title="Click to edit">' + (typeof escHtml === 'function' ? escHtml(section.name) : section.name) + '</div>';
+
+  // Artifact type badge
+  html += '<div style="display:flex;align-items:center;gap:6px;margin:4px 0 16px;font-size:12px;color:var(--text-dim);">';
+  html += '<span>' + artifactIcon + '</span>';
+  html += '<span>' + (section.artifact_type || 'text') + '</span>';
+  if (section.changing) {
+    html += '<span style="color:var(--warning);margin-left:8px;" title="' + (typeof escHtml === 'function' ? escHtml(section.change_note || 'Change in progress') : (section.change_note || 'Change in progress')) + '">&#9679; changing</span>';
+  }
+  html += '</div>';
+
+  // Summary / description area
+  html += '<div class="kanban-drill-desc-wrap">';
+  if (section.summary) {
+    html += '<div class="kanban-drill-desc" style="min-height:60px;">' + (typeof escHtml === 'function' ? escHtml(section.summary) : section.summary) + '</div>';
+  } else {
+    html += '<div class="kanban-drill-desc" style="min-height:60px;color:var(--text-dim);font-style:italic;">No summary yet. The AI agent will update this as it works.</div>';
+  }
+  html += '</div>';
+
+  html += '</div>'; // drill-left
+
+  // ════════════ RIGHT: Session panel ════════════
+  html += '<div class="kanban-drill-right">';
+
+  if (section.session_id) {
+    // Session exists — show it
+    const sess = (typeof allSessions !== 'undefined') ? allSessions.find(s => s.id === section.session_id) : null;
+    const sessTitle = sess ? (sess.custom_title || sess.display_title || 'Session') : 'Session';
+    const isRunning = (typeof runningIds !== 'undefined') ? runningIds.has(section.session_id) : false;
+
+    html += '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-dim);margin-bottom:8px;">Session</div>';
+    html += '<div class="kanban-drill-panel"><div class="kanban-drill-panel-body">';
+    html += '<div class="kanban-drill-subtask-row" style="cursor:pointer;" onclick="_composeOpenSession(\'' + section.session_id + '\')">';
+    html += '<span class="kanban-drill-subtask-status" style="background:' + (isRunning ? 'var(--green)26' : 'var(--bg-subtle)') + ';color:' + (isRunning ? 'var(--green)' : 'var(--text-dim)') + ';">' + (isRunning ? 'running' : 'idle') + '</span>';
+    html += '<span class="kanban-drill-subtask-title">' + (typeof escHtml === 'function' ? escHtml(sessTitle) : sessTitle) + '</span>';
+    html += '<span class="kanban-drill-subtask-chevron"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></span>';
+    html += '</div>';
+    html += '</div></div>';
+  } else {
+    // No session yet — show chooser
+    html += '<div class="kanban-drill-chooser">';
+    html += '<div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">How to proceed</div>';
+
+    html += '<div class="kanban-drill-chooser-card" onclick="_composeSpawnSession(\'' + section.id + '\')">';
+    html += '<div class="kanban-drill-chooser-icon" style="color:var(--green);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>';
+    html += '<div><div class="kanban-drill-chooser-title">Spawn session</div>';
+    html += '<div class="kanban-drill-chooser-desc">Start an AI agent scoped to this section. It will read the shared context and work on ' + (section.artifact_type || 'text') + ' output.</div></div>';
+    html += '</div>';
+
+    html += '</div>';
+  }
+
+  html += '</div>'; // drill-right
+  html += '</div>'; // drill-split
+  html += '</div>'; // drill-body
+
+  board.innerHTML = html;
+}
+
+// --- Compose status menu (mirrors kanban showStatusMenu) ---
+function _composeStatusMenu(sectionId, currentStatus, event) {
+  // Remove existing menu
+  const old = document.querySelector('.kanban-status-dropdown');
+  if (old) old.remove();
+
+  const menu = document.createElement('div');
+  menu.className = 'kanban-status-dropdown';
+  menu.style.position = 'fixed';
+  menu.style.left = event.clientX + 'px';
+  menu.style.top = event.clientY + 'px';
+  menu.style.zIndex = '9999';
+
+  for (const opt of COMPOSE_STATUS_OPTIONS) {
+    const item = document.createElement('div');
+    item.className = 'kanban-status-option' + (opt.key === currentStatus ? ' active' : '');
+    item.innerHTML = '<span class="kanban-status-dot" style="background:' + opt.color + ';"></span> ' + opt.label;
+    item.onclick = async () => {
+      menu.remove();
+      try {
+        await fetch('/api/compose/projects/' + _composeProject.id + '/sections/' + sectionId + '/status', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({status: opt.key}),
+        });
+        // Update local state and re-render
+        const sec = _composeSections.find(s => s.id === sectionId);
+        if (sec) sec.status = opt.key;
+        renderSectionDetail(sectionId);
+      } catch (e) {
+        console.error('Failed to update status:', e);
+        if (typeof showToast === 'function') showToast('Failed to update status', 'error');
+      }
+    };
+    menu.appendChild(item);
+  }
+
+  document.body.appendChild(menu);
+  const close = (e) => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('click', close); } };
+  setTimeout(() => document.addEventListener('click', close), 0);
+}
+
+// --- Compose inline title edit ---
+function _composeStartTitleEdit(sectionId, el) {
+  const section = _composeSections.find(s => s.id === sectionId);
+  if (!section) return;
+  const current = section.name;
+  el.innerHTML = '<input type="text" class="kanban-drill-title-input" value="' + (typeof escHtml === 'function' ? escHtml(current) : current) + '" style="width:100%;font-size:inherit;font-weight:inherit;font-family:inherit;background:var(--bg-subtle);border:1px solid var(--border);border-radius:6px;padding:4px 8px;color:var(--text);outline:none;">';
+  const input = el.querySelector('input');
+  input.focus();
+  input.select();
+  const save = async () => {
+    const newName = input.value.trim();
+    if (!newName || newName === current) {
+      el.textContent = current;
+      return;
+    }
+    el.textContent = newName;
+    try {
+      await fetch('/api/compose/projects/' + _composeProject.id + '/sections/' + sectionId, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: newName}),
+      });
+      section.name = newName;
+      if (typeof showToast === 'function') showToast('Renamed section');
+    } catch (e) {
+      el.textContent = current;
+      if (typeof showToast === 'function') showToast('Failed to rename', 'error');
+    }
+  };
+  input.onblur = save;
+  input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } if (e.key === 'Escape') { el.textContent = current; } };
+}
+
+// --- Compose session spawning ---
+async function _composeSpawnSession(sectionId) {
+  if (typeof addNewAgent !== 'function') {
+    if (typeof showToast === 'function') showToast('Session spawner not available', true);
+    return;
+  }
+
+  const section = _composeSections.find(s => s.id === sectionId);
+  if (!section || !_composeProject) return;
+
+  // Set compose_task_id so _newSessionSubmit sends it to the backend,
+  // which resolves the compose system prompt and links the session automatically
+  _composeSelectedSection = sectionId;
+  composeDetailTaskId = 'section:' + _composeProject.id + ':' + sectionId;
+
+  await addNewAgent();
+
+  if (typeof showToast === 'function') showToast('Session started for: ' + section.name);
+}
+
+// --- Open existing compose session ---
+function _composeOpenSession(sessionId) {
+  if (typeof openInGUI === 'function') {
+    openInGUI(sessionId);
+  } else if (typeof selectSession === 'function') {
+    selectSession(sessionId);
+  }
+}
+
+// --- Restore compose view from hash ---
+function _restoreComposeSectionFromHash() {
+  const hash = window.location.hash || '';
+  if (hash.startsWith('#compose/section/')) {
+    const sectionId = hash.replace('#compose/section/', '');
+    if (sectionId && _composeSections.find(s => s.id === sectionId)) {
+      renderSectionDetail(sectionId);
+      return true;
+    }
+  }
+  return false;
+}
+
+// --- Compose card context menu (right-click or dot-menu) ---
+
+function _composeCardContextMenu(sectionId, event) {
+  event.stopPropagation();
+  // Close any existing menu
+  if (typeof closeContextMenu === 'function') closeContextMenu();
+
+  const section = _composeSections.find(s => s.id === sectionId);
+  if (!section || !_composeProject) return;
+
+  const menu = document.createElement('div');
+  menu.className = 'kanban-context-menu';
+
+  if (event.type === 'contextmenu') {
+    menu.style.top = event.clientY + 'px';
+    menu.style.left = event.clientX + 'px';
+  } else {
+    const rect = event.currentTarget.getBoundingClientRect();
+    menu.style.top = rect.bottom + 'px';
+    menu.style.left = rect.left + 'px';
+  }
+
+  let items = '';
+  items += '<div class="kanban-context-item" onclick="closeContextMenu();navigateToSection(\'' + sectionId + '\')">Open</div>';
+  items += '<div class="kanban-context-item" onclick="closeContextMenu();_composeRenameSection(\'' + sectionId + '\')">Rename</div>';
+
+  if (section.session_id) {
+    items += '<div class="kanban-context-item" onclick="closeContextMenu();_composeOpenSession(\'' + section.session_id + '\')">Open Session</div>';
+  } else {
+    items += '<div class="kanban-context-item" onclick="closeContextMenu();_composeSpawnSession(\'' + sectionId + '\')">Spawn Session</div>';
+  }
+
+  // Move to status
+  items += '<div class="kanban-context-separator"></div>';
+  for (const opt of COMPOSE_STATUS_OPTIONS) {
+    if (opt.key !== section.status) {
+      items += '<div class="kanban-context-item kanban-context-move" onclick="closeContextMenu();_composeMoveSection(\'' + sectionId + '\',\'' + opt.key + '\')">Move to ' + opt.label + '</div>';
+    }
+  }
+
+  items += '<div class="kanban-context-separator"></div>';
+  items += '<div class="kanban-context-item kanban-context-danger" onclick="closeContextMenu();_composeDeleteSection(\'' + sectionId + '\')">Delete</div>';
+
+  menu.innerHTML = items;
+  document.body.appendChild(menu);
+
+  setTimeout(() => {
+    document.addEventListener('click', closeContextMenu, { once: true });
+  }, 0);
+}
+
+function _composeRenameSection(sectionId) {
+  const section = _composeSections.find(s => s.id === sectionId);
+  if (!section || !_composeProject) return;
+  const newName = prompt('Rename section:', section.name);
+  if (!newName || !newName.trim() || newName.trim() === section.name) return;
+  fetch('/api/compose/projects/' + _composeProject.id + '/sections/' + sectionId, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: newName.trim()}),
+  }).then(r => r.json()).then(data => {
+    if (data && data.ok) {
+      section.name = newName.trim();
+      _renderComposeSectionCards();
+      showToast('Renamed section');
+    } else {
+      showToast(data.error || 'Failed to rename', 'error');
+    }
+  }).catch(() => showToast('Failed to rename', 'error'));
+}
+
+async function _composeMoveSection(sectionId, newStatus) {
+  const section = _composeSections.find(s => s.id === sectionId);
+  if (!section || !_composeProject) return;
+  try {
+    const resp = await fetch('/api/compose/projects/' + _composeProject.id + '/sections/' + sectionId + '/status', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({status: newStatus}),
+    });
+    if (!resp.ok) throw new Error('Failed');
+    section.status = newStatus;
+    _renderComposeSectionCards();
+    const label = (COMPOSE_STATUS_OPTIONS.find(o => o.key === newStatus) || {}).label || newStatus;
+    showToast('Moved to ' + label);
+  } catch (e) {
+    showToast('Failed to move section', 'error');
+  }
+}
+
+function _composeDeleteSection(sectionId) {
+  const card = document.querySelector('.compose-card[data-section-id="' + sectionId + '"]');
+  const section = _composeSections.find(s => s.id === sectionId);
+  const title = section ? section.name : 'this section';
+
+  if (card) {
+    const old = card.innerHTML;
+    card.innerHTML = '<div class="kanban-delete-confirm"><span>Delete "' + escHtml(title.slice(0, 30)) + '"?</span><div class="kanban-delete-btns"><button class="kanban-delete-yes" onclick="event.stopPropagation();_execComposeDelete(\'' + sectionId + '\')">Delete</button><button class="kanban-delete-no" onclick="event.stopPropagation();_cancelComposeDelete(this,\'' + sectionId + '\')">Cancel</button></div></div>';
+    card._oldHtml = old;
+    card.onclick = null;
+  } else {
+    _execComposeDelete(sectionId);
+  }
+}
+
+function _cancelComposeDelete(btn, sectionId) {
+  const card = document.querySelector('.compose-card[data-section-id="' + sectionId + '"]');
+  if (card && card._oldHtml) {
+    card.innerHTML = card._oldHtml;
+    card.onclick = () => navigateToSection(sectionId);
+  }
+}
+
+async function _execComposeDelete(sectionId) {
+  if (!_composeProject) return;
+  const card = document.querySelector('.compose-card[data-section-id="' + sectionId + '"]');
+  if (card) {
+    const col = card.closest('.compose-column');
+    card.remove();
+    if (col) {
+      const countEl = col.querySelector('.kanban-column-count');
+      if (countEl) countEl.textContent = col.querySelectorAll('.kanban-card').length;
+    }
+  }
+  try {
+    const resp = await fetch('/api/compose/projects/' + _composeProject.id + '/sections/' + sectionId, { method: 'DELETE' });
+    if (!resp.ok) throw new Error('Delete failed');
+    _composeSections = _composeSections.filter(s => s.id !== sectionId);
+    if (_composeSelectedSection === sectionId) _composeSelectedSection = null;
+    showToast('Section deleted');
+    _updateComposeRootHeader();
+  } catch (e) {
+    showToast('Failed to delete section', 'error');
+    initCompose();
+  }
+}
 
 function _updateComposeInputTarget() {
   const nameEl = document.getElementById('compose-input-target-name');
@@ -2162,22 +2600,34 @@ function _composeOnContextUpdated(data) {
   // If the selected section was deleted, fall back to root
   if (_composeSelectedSection && !_composeSections.find(s => s.id === _composeSelectedSection)) {
     _composeSelectedSection = null;
+    _renderComposeBoard();
+    return;
   }
-  _updateComposeRootHeader();
-  _updateComposeInputTarget();
-  _renderComposeSectionCards();
+  // If in drill-down, re-render the detail view; otherwise re-render the board
+  if (_composeSelectedSection) {
+    renderSectionDetail(_composeSelectedSection);
+  } else {
+    _updateComposeRootHeader();
+    _updateComposeInputTarget();
+    _renderComposeSectionCards();
+  }
 }
 
 function _composeOnChanging(data) {
   if (viewMode !== 'compose') return;
-  // Update the section in local state and re-render cards
+  // Update the section in local state and re-render
   if (data && data.section_id) {
     const sec = _composeSections.find(s => s.id === data.section_id);
     if (sec) {
       sec.changing = data.changing;
       sec.change_note = data.change_note || null;
     }
-    _renderComposeSectionCards();
+    // If viewing this section's detail, re-render it; otherwise re-render cards
+    if (_composeSelectedSection === data.section_id) {
+      renderSectionDetail(data.section_id);
+    } else if (!_composeSelectedSection) {
+      _renderComposeSectionCards();
+    }
   }
 }
 

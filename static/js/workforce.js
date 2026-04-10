@@ -452,6 +452,18 @@ window.addEventListener('popstate', (e) => {
     if (typeof setViewMode === 'function') {
       setViewMode('compose');
     }
+    return;
+  }
+
+  // Within compose: handle section drill-down vs board navigation
+  // Use _renderComposeBoard (no pushState) to avoid creating duplicate history entries
+  if (hash.startsWith('#compose') && typeof viewMode !== 'undefined' && viewMode === 'compose') {
+    if (hash.startsWith('#compose/section/')) {
+      const sectionId = hash.replace('#compose/section/', '');
+      if (typeof renderSectionDetail === 'function') renderSectionDetail(sectionId);
+    } else {
+      if (typeof _renderComposeBoard === 'function') _renderComposeBoard();
+    }
   }
 });
 
