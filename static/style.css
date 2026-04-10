@@ -6785,18 +6785,31 @@ mark.find-match.current { background: var(--accent); color:#fff; }
   margin-left: auto;
   flex-shrink: 0;
   white-space: nowrap;
+  transition: color 0.3s ease;
+}
+.compose-status-badge.compose-status-changed {
+  animation: compose-badge-flash 0.6s ease;
+}
+@keyframes compose-badge-flash {
+  0% { color: var(--accent); transform: scale(1.15); }
+  100% { color: var(--text-faint); transform: scale(1); }
 }
 .compose-status-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
+  transition: background-color 0.3s ease;
 }
 .compose-status-done { background: #4caf50; }
-.compose-status-active { background: #f59e0b; }
+.compose-status-active { background: #f59e0b; animation: compose-pulse 2s ease-in-out infinite; }
 .compose-status-idle { background: var(--text-faint); }
 .compose-status-empty { background: var(--border); }
-.compose-status-conflict { background: #ef4444; }
+.compose-status-conflict { background: #ef4444; animation: compose-pulse 1.5s ease-in-out infinite; }
+@keyframes compose-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
 .compose-select-cb {
   width: 14px;
   height: 14px;
@@ -6849,6 +6862,26 @@ mark.find-match.current { background: var(--accent); color:#fff; }
 .compose-bulk-danger:hover {
   color: var(--result-err);
   border-color: var(--result-err);
+}
+.compose-history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 11px;
+}
+.compose-history-label {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.compose-history-ago {
+  color: var(--text-faint);
+  flex-shrink: 0;
+  font-size: 10px;
 }
 .compose-undo-toast {
   position: fixed;

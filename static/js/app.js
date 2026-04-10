@@ -1723,6 +1723,7 @@ let _composeLastClickedId = null;  // for shift-click range selection
 let _composeSearchFilter = '';     // sidebar search filter text
 let _composePendingDeletes = [];   // [{ids: [...], timer: timeoutId, toastEl: el}]
 let _composeFocusedId = null;      // keyboard-focused composition ID
+let _composeActionHistory = [];    // [{label: '...', time: Date.now()}] — last 5 actions
 
 /**
  * Initialize the compose board — fetch project data and render header.
@@ -2065,7 +2066,7 @@ function _renderComposeSidebar() {
           dotTitle = st.not_started + ' not started';
         }
         const fraction = st.total_sections > 0 ? st.complete + '/' + st.total_sections : '';
-        html += '<span class="compose-status-badge" title="' + dotTitle + '"><span class="' + dotCls + '"></span>' + fraction + '</span>';
+        html += '<span class="compose-status-badge" title="' + dotTitle + '" data-fraction="' + fraction + '" data-compose-id="' + cp.id + '"><span class="' + dotCls + '"></span>' + fraction + '</span>';
       }
       html += '</div>';
     }
@@ -2084,7 +2085,34 @@ function _renderComposeSidebar() {
     html += '</div>';
   }
 
+  // ── Action history ──
+  if (_composeActionHistory.length > 0) {
+    html += '<div class="kanban-sidebar-section" id="compose-action-history">';
+    html += '<div class="kanban-sidebar-label">Recent</div>';
+    for (const entry of _composeActionHistory) {
+      const ago = _composeTimeAgo(entry.time);
+      const label = typeof escHtml === 'function' ? escHtml(entry.label) : entry.label;
+      html += '<div class="compose-history-item"><span class="compose-history-label">' + label + '</span><span class="compose-history-ago">' + ago + '</span></div>';
+    }
+    html += '</div>';
+  }
+
+  // Detect fraction changes before replacing DOM
+  const _oldBadges = {};
+  sidebar.querySelectorAll('.compose-status-badge[data-compose-id]').forEach(el => {
+    _oldBadges[el.dataset.composeId] = el.dataset.fraction;
+  });
+
   sidebar.innerHTML = html;
+
+  // Pulse badges whose fractions changed
+  sidebar.querySelectorAll('.compose-status-badge[data-compose-id]').forEach(el => {
+    const prev = _oldBadges[el.dataset.composeId];
+    if (prev !== undefined && prev !== el.dataset.fraction) {
+      el.classList.add('compose-status-changed');
+      setTimeout(() => el.classList.remove('compose-status-changed'), 600);
+    }
+  });
 
   // Attach drag-and-drop to composition list
   _attachComposeDragDrop();
@@ -2268,6 +2296,7 @@ async function _composeRename(projectId) {
     const data = await resp.json();
     if (data && data.ok) {
       showToast('Renamed to "' + newName.trim() + '"');
+      _composeLogAction('Renamed to "' + newName.trim() + '"');
       initCompose();
     } else {
       showToast(data.error || 'Rename failed', 'error');
@@ -2349,6 +2378,7 @@ function _composeScheduleDelete(ids, label) {
     _composePendingDeletes = _composePendingDeletes.filter(x => x !== pd);
     _composeRestackToasts();
     _composeExecuteDeletes(ids);
+    _composeLogAction(label);
     // Refresh after last pending delete completes
     if (_composePendingDeletes.length === 0) {
       initCompose();
@@ -2392,6 +2422,7 @@ async function _composeDuplicate(projectId) {
     const data = await resp.json();
     if (data && data.ok) {
       showToast('Duplicated as "' + name.trim() + '"');
+      _composeLogAction('Duplicated as "' + name.trim() + '"');
       // Switch to the clone
       if (data.project && data.project.id) {
         _activeComposeProjectId = data.project.id;
@@ -2422,6 +2453,7 @@ async function _composeTogglePin(projectId) {
     const data = await resp.json();
     if (data && data.ok) {
       showToast(newPinned ? 'Pinned' : 'Unpinned');
+      _composeLogAction((newPinned ? 'Pinned' : 'Unpinned') + ' "' + (cp ? cp.name : '') + '"');
       initCompose();
     } else {
       showToast(data.error || 'Failed', 'error');
@@ -2499,7 +2531,9 @@ async function _composeBulkPin() {
       console.error('Failed to update pin for ' + pid, e);
     }
   }
-  showToast((newPinned ? 'Pinned ' : 'Unpinned ') + updated + ' composition' + (updated > 1 ? 's' : ''));
+  const _pinLabel = (newPinned ? 'Pinned ' : 'Unpinned ') + updated + ' composition' + (updated > 1 ? 's' : '');
+  showToast(_pinLabel);
+  _composeLogAction(_pinLabel);
   _composeSelected = new Set();
   initCompose();
 }
@@ -2513,6 +2547,45 @@ function _composeFilterSidebar(value) {
     input.focus();
     input.selectionStart = input.selectionEnd = input.value.length;
   }
+}
+
+// --- Compose action history ---
+
+function _composeLogAction(label) {
+  _composeActionHistory.unshift({label: label, time: Date.now()});
+  if (_composeActionHistory.length > 5) _composeActionHistory.length = 5;
+  _renderComposeActionHistory();
+}
+
+function _renderComposeActionHistory() {
+  const el = document.getElementById('compose-action-history');
+  if (!el) {
+    // Section doesn't exist yet (history was empty when sidebar last rendered).
+    // Re-render the full sidebar so the section gets created.
+    if (_composeActionHistory.length > 0) _renderComposeSidebar();
+    return;
+  }
+  if (_composeActionHistory.length === 0) {
+    el.innerHTML = '';
+    return;
+  }
+  let html = '<div class="kanban-sidebar-label">Recent</div>';
+  for (const entry of _composeActionHistory) {
+    const ago = _composeTimeAgo(entry.time);
+    const label = typeof escHtml === 'function' ? escHtml(entry.label) : entry.label;
+    html += '<div class="compose-history-item"><span class="compose-history-label">' + label + '</span><span class="compose-history-ago">' + ago + '</span></div>';
+  }
+  el.innerHTML = html;
+}
+
+function _composeTimeAgo(ts) {
+  const diff = Math.floor((Date.now() - ts) / 1000);
+  if (diff < 0) return 'just now';  // future timestamp (clock skew)
+  if (diff < 5) return 'just now';
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
 }
 
 // --- Compose keyboard shortcuts ---
@@ -2537,11 +2610,16 @@ function attachComposeShortcuts() {
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
     if (e.ctrlKey || e.metaKey || e.key === 'F5') return;
 
+    // If shortcut overlay is open, only allow Escape and ? (to close it)
+    const _helpOverlay = document.querySelector('.kanban-shortcut-overlay');
+    if (_helpOverlay && e.key !== 'Escape' && e.key !== '?') return;
+
     switch (e.key) {
       case 'n': e.preventDefault(); if (_composeProject) composeAddSection(); else composeCreateProject(); break;
       case 'r': e.preventDefault(); initCompose(); if (typeof showToast === 'function') showToast('Refreshed'); break;
       case 'Escape':
-        if (_composeSelected.size > 0) { e.preventDefault(); _composeBulkClear(); }
+        if (_helpOverlay) { e.preventDefault(); _helpOverlay.remove(); }
+        else if (_composeSelected.size > 0) { e.preventDefault(); _composeBulkClear(); }
         else if (_composeFocusedId) { e.preventDefault(); _composeFocusedId = null; _renderComposeSidebar(); }
         else if (_composeSelectedSection) { e.preventDefault(); navigateToComposeBoard(); }
         break;
@@ -2588,8 +2666,35 @@ function attachComposeShortcuts() {
           _composeScheduleDelete([_delId], 'Deleted "' + _delName + '"');
         }
         break;
+      case '?':
+        e.preventDefault();
+        _showComposeShortcutHelp();
+        break;
     }
   });
+}
+
+function _showComposeShortcutHelp() {
+  const existing = document.querySelector('.kanban-shortcut-overlay');
+  if (existing) { existing.remove(); return; }
+  const overlay = document.createElement('div');
+  overlay.className = 'kanban-shortcut-overlay';
+  overlay.innerHTML = `<div class="kanban-shortcut-card"><h3>Compose Keyboard Shortcuts</h3>
+    <div class="kanban-shortcut-grid">
+      <kbd>\u2191 \u2193</kbd><span>Move focus</span>
+      <kbd>Enter</kbd><span>Open composition</span>
+      <kbd>Space</kbd><span>Toggle selection</span>
+      <kbd>Shift+\u2191\u2193</kbd><span>Extend selection</span>
+      <kbd>Delete</kbd><span>Delete focused</span>
+      <kbd>Esc</kbd><span>Clear selection / close</span>
+      <kbd>n</kbd><span>New section</span>
+      <kbd>r</kbd><span>Refresh</span>
+      <kbd>?</kbd><span>Toggle this help</span>
+    </div>
+    <button class="kanban-shortcut-close" onclick="this.closest('.kanban-shortcut-overlay').remove()">Close</button>
+  </div>`;
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  document.body.appendChild(overlay);
 }
 
 function _updateComposeRootHeader() {
@@ -3177,6 +3282,7 @@ function resetComposeState() {
   _composeSearchFilter = '';
   _composeFlushPendingDeletes();
   _composeFocusedId = null;
+  _composeActionHistory = [];
   const header = document.getElementById('compose-root-header');
   const target = document.getElementById('compose-input-target');
   if (header) header.style.display = 'none';
