@@ -1442,6 +1442,7 @@ def get_kanban_config():
         "validation_url_enabled": cfg.get("validation_url_enabled", False),
         "validation_base_url": cfg.get("validation_base_url", ""),
         "validation_url_dismissed": cfg.get("validation_url_dismissed", False),
+        "file_tracking_enabled": cfg.get("file_tracking_enabled", True),
     })
 
 
@@ -1469,7 +1470,8 @@ def update_kanban_config():
                      "auto_parent_reopen", "auto_advance_to_validating",
                      "ai_can_modify_status", "ai_can_mark_complete",
                      "cross_session_awareness",
-                     "validation_url_enabled", "validation_url_dismissed"):
+                     "validation_url_enabled", "validation_url_dismissed",
+                     "file_tracking_enabled"):
         if pref_key in data:
             cfg[pref_key] = bool(data[pref_key])
     if "validation_base_url" in data:

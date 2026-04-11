@@ -311,8 +311,12 @@ class SessionInfo:
     file_versions: dict = field(default_factory=dict)    # file_path -> backup version counter
     _last_hashes: dict = field(default_factory=dict)     # file_path -> last backed-up content hash
     _pre_turn_mtimes: dict = field(default_factory=dict) # file_path -> mtime before turn
+    _post_turn_mtimes: dict = field(default_factory=dict) # carried forward from _detect_changed_files
     _turn_had_direct_edit: bool = False                  # True if streaming saw Edit/Write this turn
     _tracked_files_populated: bool = False               # True after first _prepopulate_tracked_files
+    _cached_git_files: list = field(default_factory=list) # cached git ls-files result
+    _cached_git_files_ts: float = 0.0                     # time.time() when _cached_git_files was set
+    _mtime_turn_count: int = 0                            # how many turns have used mtime carry-forward
     _last_user_uuid: str = ""                            # cached from JSONL, updated by _process_message
     _last_asst_uuid: str = ""                            # cached from JSONL, updated by _process_message
     created_ts: float = 0.0  # time.time() when session was created
@@ -2663,14 +2667,45 @@ class SessionManager:
                   '.next', '.nuxt', '.claude'}
 
     # Set True to log per-step timing in _drive_session / _send_query
-    _PROFILE_PIPELINE = False
+    _PROFILE_PIPELINE = True
 
-    def _git_ls_files(self, cwd_path: Path) -> list:
+    # TTL for cached git ls-files results (seconds)
+    _GIT_LS_FILES_CACHE_TTL = 60
+
+    # How many turns before forcing a full mtime rescan (0 = never force)
+    _MTIME_FULL_RESCAN_INTERVAL = 10
+
+    @staticmethod
+    def _is_file_tracking_enabled() -> bool:
+        """Check kanban_config.json for the file_tracking_enabled preference.
+
+        Defaults to True if the key is missing or the config file can't be read.
+        """
+        try:
+            cfg_path = Path(__file__).resolve().parents[1] / "kanban_config.json"
+            if cfg_path.exists():
+                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                return cfg.get("file_tracking_enabled", True)
+        except Exception:
+            pass
+        return True
+
+    def _git_ls_files(self, cwd_path: Path, info: "SessionInfo | None" = None) -> list:
         """Use `git ls-files` to get tracked files, respecting .gitignore.
+
+        When *info* is provided, caches the result on the SessionInfo so
+        subsequent calls within the TTL window skip the subprocess entirely.
 
         Returns a list of absolute Path objects, or None if git is unavailable
         or the directory is not a git repo.
         """
+        # ── Check per-session cache ──
+        if info is not None:
+            now = time.time()
+            if (info._cached_git_files
+                    and now - info._cached_git_files_ts < self._GIT_LS_FILES_CACHE_TTL):
+                return info._cached_git_files
+
         import subprocess as _sp
         try:
             result = _sp.run(
@@ -2688,6 +2723,12 @@ class SessionManager:
             for rel in raw.split(b'\x00'):
                 if rel:
                     paths.append(cwd_path / rel.decode('utf-8', errors='replace'))
+
+            # ── Store in per-session cache ──
+            if info is not None:
+                info._cached_git_files = paths
+                info._cached_git_files_ts = time.time()
+
             return paths
         except Exception:
             return None
@@ -2699,7 +2740,17 @@ class SessionManager:
         see direct Edit/Write tool uses (e.g. Agent sub-agent edits).
         Uses `git ls-files` when available (fast, respects .gitignore),
         falls back to os.walk with directory pruning.
+
+        **Optimisation:** On follow-up turns, if ``_post_turn_mtimes`` was
+        populated by the previous turn's ``_detect_changed_files``, we carry
+        it forward directly instead of re-walking + re-stat-ing every file.
+        A full rescan is forced every ``_MTIME_FULL_RESCAN_INTERVAL`` turns
+        so newly-added files are eventually picked up.
         """
+        if not self._is_file_tracking_enabled():
+            info._pre_turn_mtimes = {}
+            return
+
         cwd = info.cwd
         if not cwd:
             return
@@ -2707,10 +2758,23 @@ class SessionManager:
         if not cwd_path.is_dir():
             return
 
+        # ── Fast path: carry forward from previous turn ──
+        info._mtime_turn_count += 1
+        force_rescan = (self._MTIME_FULL_RESCAN_INTERVAL > 0
+                        and info._mtime_turn_count % self._MTIME_FULL_RESCAN_INTERVAL == 0)
+
+        if info._post_turn_mtimes and not force_rescan:
+            info._pre_turn_mtimes = info._post_turn_mtimes
+            info._post_turn_mtimes = {}
+            logger.debug("_record_pre_turn_mtimes: carried forward %d files (turn %d)",
+                         len(info._pre_turn_mtimes), info._mtime_turn_count)
+            return
+
+        # ── Full rescan ──
         mtimes = {}
         try:
             # Fast path: use git ls-files (respects .gitignore)
-            git_files = self._git_ls_files(cwd_path)
+            git_files = self._git_ls_files(cwd_path, info)
             if git_files is not None:
                 for f in git_files:
                     if f.suffix.lower() not in self._SOURCE_EXTS:
@@ -2734,7 +2798,9 @@ class SessionManager:
         except Exception as e:
             logger.warning("_record_pre_turn_mtimes failed: %s", e)
         info._pre_turn_mtimes = mtimes
-        logger.debug("_record_pre_turn_mtimes: recorded %d files in %s", len(mtimes), cwd)
+        info._post_turn_mtimes = {}
+        logger.debug("_record_pre_turn_mtimes: full rescan %d files in %s (turn %d)",
+                     len(mtimes), cwd, info._mtime_turn_count)
 
     def _detect_changed_files(self, info: SessionInfo) -> set:
         """Compare current file mtimes against the pre-turn snapshot.
@@ -2742,7 +2808,13 @@ class SessionManager:
         Returns absolute paths of files that were created or modified
         since _record_pre_turn_mtimes was called.
         Uses `git ls-files` when available, falls back to os.walk with pruning.
+
+        Side-effect: populates ``info._post_turn_mtimes`` with the fresh
+        mtime dict so the next turn can carry it forward without re-scanning.
         """
+        if not self._is_file_tracking_enabled():
+            return set()
+
         cwd = info.cwd
         if not cwd:
             return set()
@@ -2752,9 +2824,10 @@ class SessionManager:
 
         pre = info._pre_turn_mtimes
         changed = set()
+        post_mtimes = {}
         try:
-            # Fast path: use git ls-files
-            git_files = self._git_ls_files(cwd_path)
+            # Fast path: use git ls-files (cached per-session)
+            git_files = self._git_ls_files(cwd_path, info)
             if git_files is not None:
                 for f in git_files:
                     if f.suffix.lower() not in self._SOURCE_EXTS:
@@ -2764,6 +2837,7 @@ class SessionManager:
                         current_mtime = f.stat().st_mtime
                     except OSError:
                         continue
+                    post_mtimes[fpath] = current_mtime
                     if fpath not in pre or pre[fpath] != current_mtime:
                         changed.add(fpath)
             else:
@@ -2779,10 +2853,14 @@ class SessionManager:
                             current_mtime = f.stat().st_mtime
                         except OSError:
                             continue
+                        post_mtimes[fpath] = current_mtime
                         if fpath not in pre or pre[fpath] != current_mtime:
                             changed.add(fpath)
         except Exception as e:
             logger.warning("_detect_changed_files failed: %s", e)
+
+        # Save for carry-forward on next turn
+        info._post_turn_mtimes = post_mtimes
         return changed
 
     def _prepopulate_tracked_files(self, info: SessionInfo) -> None:
@@ -2893,6 +2971,8 @@ class SessionManager:
         File change detection uses filesystem mtime comparison so it
         catches edits from Agent sub-agents, Bash, or anything else.
         """
+        if not self._is_file_tracking_enabled():
+            return
         session_id = self._resolve_id(session_id)
         with self._lock:
             info = self._sessions.get(session_id)

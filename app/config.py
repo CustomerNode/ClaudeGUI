@@ -106,6 +106,10 @@ def _kanban_config_defaults() -> dict:
         "validation_url_enabled": False,
         "validation_base_url": "",
         "validation_url_dismissed": False,
+        # ── Performance preferences ──
+        # File tracking snapshots every source file's mtime each turn for
+        # undo/rewind support.  Disable to speed up sessions on large repos.
+        "file_tracking_enabled": True,
     }
 
 
