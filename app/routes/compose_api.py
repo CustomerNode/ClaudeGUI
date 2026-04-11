@@ -452,6 +452,82 @@ def delete_section(project_id, section_id):
     return jsonify({'ok': True})
 
 
+@bp.route('/projects/<project_id>/sections/add-and-link', methods=['POST'])
+def add_and_link_section(project_id):
+    """Atomic create-section + link-session.
+
+    JSON body: {
+        "name": "Section Name",
+        "session_id": "sess-abc",
+        "parent_id": null,          // optional
+        "order": null,              // optional — defaults to end of siblings
+        "artifact_type": null       // optional
+    }
+
+    Creates the section and sets session_id in one operation.
+    If anything fails, neither change persists.
+    """
+    project = get_project(project_id)
+    if not project:
+        return jsonify({'ok': False, 'error': 'Project not found'}), 404
+
+    data = request.get_json(force=True, silent=True) or {}
+    name = (data.get('name') or '').strip()
+    session_id = (data.get('session_id') or '').strip()
+    if not name:
+        return jsonify({'ok': False, 'error': 'name is required'}), 400
+    if not session_id:
+        return jsonify({'ok': False, 'error': 'session_id is required'}), 400
+
+    parent_id = data.get('parent_id')
+
+    # Determine order among siblings
+    existing = get_sections(project_id)
+    siblings = [s for s in existing if s.parent_id == parent_id]
+    if data.get('order') is not None:
+        order = data['order']
+    else:
+        order = max((s.order for s in siblings), default=-1) + 1
+
+    # Guard: check if session is already linked to a section in this project
+    for s in existing:
+        if s.session_id == session_id:
+            return jsonify({
+                'ok': False,
+                'error': 'Session already linked',
+                'linked_section': s.name,
+                'linked_section_id': s.id,
+            }), 409
+
+    section = ComposeSection.create(
+        project_id=project_id,
+        name=name,
+        parent_id=parent_id,
+        order=order,
+        artifact_type=data.get('artifact_type'),
+    )
+    section.session_id = session_id
+
+    # Scaffold folder, then write to context. If context write fails,
+    # clean up the folder so we don't leak orphan directories.
+    scaffold_section(project_id, section)
+
+    from ..compose.context_manager import add_section_to_context
+    try:
+        add_section_to_context(project_id, section)
+    except Exception:
+        logger.exception("add-and-link: failed to add section to context")
+        delete_section_folder(project_id, section.name)
+        return jsonify({'ok': False, 'error': 'Failed to save section'}), 500
+
+    _emit('compose_task_created', {
+        'project_id': project_id,
+        'section': section.to_dict(),
+    })
+
+    return jsonify({'ok': True, 'section': section.to_dict()}), 201
+
+
 @bp.route('/projects/<project_id>/sections/reorder', methods=['POST'])
 def reorder_sections(project_id):
     """Reorder sections.
