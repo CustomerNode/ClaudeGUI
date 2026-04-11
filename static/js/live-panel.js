@@ -730,10 +730,15 @@ function renderLiveEntry(e) {
     }
 
   } else if (e.kind === 'tool_use') {
-    div.className = 'live-entry live-entry-tool';
+    const _isAgent = (e.name === 'Agent');
+    div.className = 'live-entry live-entry-tool' + (_isAgent ? ' live-entry-agent' : '');
     const toolLine = document.createElement('div');
     toolLine.className = 'live-tool-line';
-    toolLine.innerHTML = '<span class="live-tool-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9"/></svg></span>' +
+    // Use a special robot icon for Agent tool, gear icon for everything else
+    const _toolSvg = _isAgent
+      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><line x1="12" y1="7" x2="12" y2="11"/><circle cx="8" cy="16" r="1" fill="currentColor"/><circle cx="16" cy="16" r="1" fill="currentColor"/></svg>'
+      : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9"/></svg>';
+    toolLine.innerHTML = '<span class="live-tool-icon">' + _toolSvg + '</span>' +
       '<span class="live-tool-name">' + escHtml(e.name || 'tool') + '</span>' +
       '<span class="live-tool-desc">' + escHtml((e.desc || '').slice(0, 120)) + '</span>' +
       '<button class="live-expand-btn">\u25be</button>';
@@ -1124,7 +1129,12 @@ function updateLiveInputBar() {
   if (!isRunning) stateKey = 'ended';
   else if (kind === 'question') stateKey = 'question:' + (wd ? wd.question || '' : '');
   else if (kind === 'idle') stateKey = 'idle';
-  else stateKey = 'working:' + _getQueueList(id).length;
+  else {
+    // Include sub-agent count + status in state key so bar re-renders when agents change
+    const _sa = (window._subAgents && window._subAgents[id]) || {};
+    const _saKey = Object.values(_sa).map(a => a.status).join(',');
+    stateKey = 'working:' + _getQueueList(id).length + ':sa:' + _saKey;
+  }
 
   // Reset working timer when leaving working state — but only if we
   // have a definitive non-working state (not just 'ended' from missing data)
@@ -1273,11 +1283,47 @@ function updateLiveInputBar() {
     const _statusLabel = _isCompacting ? 'Compacting\u2026' : 'Working\u2026';
     const _spinnerClass = _isCompacting ? 'spinner compacting-spinner' : 'spinner';
 
+    // Build sub-agent team strip
+    const _agents = (window._subAgents && window._subAgents[id]) || {};
+    const _agentEntries = Object.entries(_agents);
+    let _agentStripHtml = '';
+    if (_agentEntries.length > 0) {
+      const _workingCount = _agentEntries.filter(([, a]) => a.status === 'working').length;
+      const _doneCount = _agentEntries.filter(([, a]) => a.status === 'done').length;
+      const _teamLabel = _workingCount > 0
+        ? _workingCount + ' agent' + (_workingCount > 1 ? 's' : '') + ' active' + (_doneCount > 0 ? ' \u00b7 ' + _doneCount + ' done' : '')
+        : _doneCount + ' agent' + (_doneCount > 1 ? 's' : '') + ' completed';
+      _agentStripHtml = '<div class="sub-agent-strip">' +
+        '<div class="sub-agent-header">' +
+        '<svg class="sub-agent-team-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>' +
+        '<span class="sub-agent-team-label">' + _teamLabel + '</span>' +
+        '</div>' +
+        '<div class="sub-agent-pills">';
+      _agentEntries.forEach(([tuId, ag], idx) => {
+        const isDone = ag.status === 'done';
+        const agentElapsed = isDone && ag.endTime
+          ? Math.round((ag.endTime - ag.startTime) / 1000)
+          : Math.round((Date.now() - ag.startTime) / 1000);
+        const agentTimeStr = agentElapsed >= 60 ? Math.floor(agentElapsed/60) + 'm ' + (agentElapsed%60) + 's' : agentElapsed + 's';
+        const statusIcon = isDone
+          ? '<svg class="sub-agent-check" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>'
+          : '<span class="sub-agent-spinner"></span>';
+        const pillClass = 'sub-agent-pill' + (isDone ? ' done' : ' active');
+        _agentStripHtml += '<div class="' + pillClass + '" style="animation-delay:' + (idx * 0.06) + 's" data-agent-id="' + escHtml(tuId) + '">' +
+          statusIcon +
+          '<span class="sub-agent-label">' + escHtml(ag.desc || 'Agent') + '</span>' +
+          '<span class="sub-agent-time">' + agentTimeStr + '</span>' +
+          '</div>';
+      });
+      _agentStripHtml += '</div></div>';
+    }
+
     bar.innerHTML =
-      '<div class="live-working-status">' +
+      '<div class="live-working-status' + (_agentEntries.length > 0 ? ' has-agents' : '') + '">' +
       '<div class="live-working-indicator"><span class="' + _spinnerClass + '"></span> ' + _statusLabel + ' <span id="live-elapsed" style="color:var(--text-faint);font-size:10px;margin-left:6px;">' + _elapsedStr + '</span></div>' +
       '<button class="live-stop-btn" onclick="liveSubmitInterrupt()" title="Interrupt session">\u25A0 Stop</button>' +
       '</div>' +
+      _agentStripHtml +
       '<textarea id="live-queue-ta" class="live-textarea live-queue-ta" rows="2" ' +
       'placeholder="' + (qCount ? 'Queue another command\u2026' : 'Type your next command \u2014 will send when Claude finishes\u2026') + '"' +
       ' onkeydown="if(_shouldSend(event)){event.preventDefault();liveQueueSave()}"></textarea>' +
@@ -1318,6 +1364,22 @@ function updateLiveInputBar() {
             const textNodes = [...indicator.childNodes].filter(n => n.nodeType === 3);
             if (textNodes.length && textNodes[0].textContent.includes('Compacting')) textNodes[0].textContent = ' Working\u2026 ';
           }
+        }
+        // Update sub-agent elapsed times without full re-render
+        const agentPills = document.querySelectorAll('.sub-agent-pill.active');
+        if (agentPills.length) {
+          const agents = (window._subAgents && window._subAgents[liveSessionId]) || {};
+          agentPills.forEach(pill => {
+            const agId = pill.dataset.agentId;
+            const ag = agents[agId];
+            if (ag && ag.status === 'working') {
+              const timeEl = pill.querySelector('.sub-agent-time');
+              if (timeEl) {
+                const elapsed = Math.round((Date.now() - ag.startTime) / 1000);
+                timeEl.textContent = elapsed >= 60 ? Math.floor(elapsed/60) + 'm ' + (elapsed%60) + 's' : elapsed + 's';
+              }
+            }
+          });
         }
       }, 1000);
     }

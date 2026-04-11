@@ -2084,6 +2084,20 @@ mark.find-match.current { background: var(--accent); color:#fff; }
 .live-entry-user   .live-label { color: var(--accent); }
 .live-entry-asst   .live-label { color: var(--accent-green); }
 .live-entry-tool   .live-label { color: var(--tool-accent); }
+.live-entry-agent .live-tool-line {
+  background: linear-gradient(135deg, #7c7cff10, #9a6aff08);
+  border: 1px solid #7c7cff20;
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+.live-entry-agent .live-tool-name {
+  color: var(--accent);
+  font-weight: 700;
+}
+[data-theme="light"] .live-entry-agent .live-tool-line {
+  background: linear-gradient(135deg, #5555cc08, #7755cc05);
+  border-color: #5555cc15;
+}
 .live-entry-result .live-label { color: var(--text-faint); }
 .live-text { color: var(--live-text); word-break:break-word; font-size:12px; }
 .live-entry-user .live-text { color: var(--live-user-text); white-space:pre-wrap; }
@@ -2329,6 +2343,147 @@ mark.find-match.current { background: var(--accent); color:#fff; }
   from { opacity:0; transform:translateY(6px); }
   to   { opacity:1; transform:translateY(0); }
 }
+/* ── Sub-agent team strip ── */
+.sub-agent-strip {
+  margin-bottom: 10px;
+  padding: 10px 14px 8px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #7c7cff08, #9a6aff06, #5555cc08);
+  border: 1px solid #7c7cff15;
+  animation: agentStripIn 0.35s ease-out both;
+}
+@keyframes agentStripIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.sub-agent-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.sub-agent-team-icon {
+  color: var(--accent);
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+.sub-agent-team-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent);
+  opacity: 0.8;
+}
+.sub-agent-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sub-agent-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px 4px 7px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 500;
+  font-family: -apple-system, 'SF Pro Text', 'Inter', system-ui, sans-serif;
+  animation: pillSlideIn 0.3s ease-out both;
+  transition: all 0.3s ease;
+  max-width: 220px;
+}
+@keyframes pillSlideIn {
+  from { opacity: 0; transform: translateX(-8px) scale(0.9); }
+  to   { opacity: 1; transform: translateX(0) scale(1); }
+}
+.sub-agent-pill.active {
+  background: linear-gradient(135deg, #7c7cff20, #9a6aff18);
+  border: 1px solid #7c7cff35;
+  color: var(--accent);
+  box-shadow: 0 0 12px #7c7cff12, inset 0 0 8px #7c7cff08;
+}
+.sub-agent-pill.done {
+  background: #22c55e12;
+  border: 1px solid #22c55e28;
+  color: #22c55e;
+}
+.sub-agent-spinner {
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid #7c7cff40;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.sub-agent-check {
+  color: #22c55e;
+  flex-shrink: 0;
+  animation: checkPop 0.3s ease-out both;
+}
+@keyframes checkPop {
+  0%   { transform: scale(0); opacity: 0; }
+  60%  { transform: scale(1.3); }
+  100% { transform: scale(1); opacity: 1; }
+}
+.sub-agent-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.3;
+}
+.sub-agent-time {
+  font-size: 9px;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  margin-left: 2px;
+}
+/* Pulse glow on active agent pills */
+.sub-agent-pill.active {
+  animation: pillSlideIn 0.3s ease-out both, agentPulse 2.5s ease-in-out infinite;
+}
+@keyframes agentPulse {
+  0%, 100% { box-shadow: 0 0 12px #7c7cff12, inset 0 0 8px #7c7cff08; }
+  50%      { box-shadow: 0 0 18px #7c7cff22, inset 0 0 12px #7c7cff12; }
+}
+/* Working status with agents gets a subtle upgrade */
+.live-working-status.has-agents {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  margin-bottom: 0;
+  border-bottom-color: transparent;
+}
+.live-working-status.has-agents + .sub-agent-strip {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-top-color: transparent;
+  margin-top: -1px;
+}
+/* Light theme adjustments */
+[data-theme="light"] .sub-agent-strip {
+  background: linear-gradient(135deg, #5555cc08, #7755cc05, #5555cc06);
+  border-color: #5555cc12;
+}
+[data-theme="light"] .sub-agent-pill.active {
+  background: linear-gradient(135deg, #5555cc15, #7755cc12);
+  border-color: #5555cc28;
+  color: #5555cc;
+}
+[data-theme="light"] .sub-agent-spinner {
+  border-color: #5555cc30;
+  border-top-color: #5555cc;
+}
+[data-theme="light"] .sub-agent-pill.done {
+  background: #16a34a10;
+  border-color: #16a34a20;
+  color: #16a34a;
+}
+
 .live-textarea {
   width: 100%;
   background: var(--bg-input-alt);

@@ -2625,7 +2625,10 @@ class SessionManager:
     @staticmethod
     def _extract_tool_desc(inp: dict) -> str:
         """Extract a human-readable description from tool input."""
-        if "command" in inp:
+        if "description" in inp and "prompt" in inp:
+            # Agent tool — use the short description field
+            return str(inp["description"])[:200]
+        elif "command" in inp:
             return str(inp["command"])[:300]
         elif "file_path" in inp:
             desc = str(inp["file_path"])

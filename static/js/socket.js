@@ -8,6 +8,11 @@ const _socketProject = localStorage.getItem('activeProject') || '';
 const socket = io({ query: { project: _socketProject } });
 let _wsConnected = false;
 
+// ── Sub-agent team tracking ──
+// Maps session_id → { toolUseId: { desc, startTime, status: 'working'|'done' } }
+window._subAgents = {};
+
+
 /**
  * Returns true if a session ID belongs to a hidden utility session
  * (planner, auto-title, etc.) that must NEVER appear in the workspace.
@@ -524,8 +529,11 @@ socket.on('session_state', (data) => {
             const _sb = document.querySelector('.msg.assistant.streaming-bubble');
             if (_sb) _sb.remove();
         }
+        // Clear sub-agent tracking when session finishes
+        delete window._subAgents[session_id];
     } else if (state === 'stopped') {
         delete sessionKinds[session_id];
+        delete window._subAgents[session_id];
     }
 
     if (state === 'stopped') {
@@ -921,6 +929,32 @@ socket.on('session_entry', (data) => {
     if (typeof _updateLastMessageTimes === 'function') _updateLastMessageTimes();
     if (liveAutoScroll) {
         logEl.scrollTop = logEl.scrollHeight;
+    }
+    // ── Sub-agent team tracking ──
+    if (data.entry.kind === 'tool_use' && data.entry.name === 'Agent') {
+        if (!window._subAgents[data.session_id]) window._subAgents[data.session_id] = {};
+        window._subAgents[data.session_id][data.entry.id] = {
+            desc: data.entry.desc || 'Sub-agent',
+            startTime: Date.now(),
+            status: 'working'
+        };
+        // Trigger working bar re-render to show new agent
+        if (data.session_id === liveSessionId && typeof updateLiveInputBar === 'function') {
+            liveBarState = null;  // force re-render
+            updateLiveInputBar();
+        }
+    }
+    if (data.entry.kind === 'tool_result' && data.entry.tool_use_id) {
+        const agents = window._subAgents[data.session_id];
+        if (agents && agents[data.entry.tool_use_id]) {
+            agents[data.entry.tool_use_id].status = 'done';
+            agents[data.entry.tool_use_id].endTime = Date.now();
+            // Trigger working bar re-render to show completion
+            if (data.session_id === liveSessionId && typeof updateLiveInputBar === 'function') {
+                liveBarState = null;  // force re-render
+                updateLiveInputBar();
+            }
+        }
     }
     // ── Kanban AI status markers: detect and forward to backend ──
     if (data.entry.kind === 'asst' && data.entry.text) {
