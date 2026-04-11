@@ -13,11 +13,17 @@ Client -> Server events:
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 from flask import request as flask_request
 from flask_socketio import emit
 
 logger = logging.getLogger(__name__)
+
+# Module-level thread pool for parallelizing independent setup work
+# (e.g. compose resolution + cross-session awareness).  A single
+# shared executor avoids creating/destroying threads on every session start.
+_setup_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ws-setup")
 
 # Markers that indicate a UserMessage is SDK/CLI system content, not human input
 _SYSTEM_USER_MARKERS = (
@@ -244,37 +250,11 @@ def register_ws_events(socketio, app):
             permission_mode = None
         session_type = (data.get('session_type') or '').strip() or ""
 
-        # --- Compose task detection: auto-inject system prompt ----
+        # --- Compose task detection + cross-session awareness ----
+        # These two operations are independent and can run in parallel
+        # when both are needed.  Each modifies system_prompt, so we
+        # collect results and apply them sequentially after both finish.
         compose_task_id = (data.get('compose_task_id') or '').strip() or None
-        if compose_task_id:
-            try:
-                from .compose_api import (
-                    resolve_compose_system_prompt,
-                    link_session_to_compose_task,
-                )
-                cp_result = resolve_compose_system_prompt(compose_task_id)
-                if cp_result.get('ok') and cp_result.get('system_prompt'):
-                    compose_prompt = cp_result['system_prompt']
-                    # Append to any existing system prompt
-                    if system_prompt:
-                        system_prompt = system_prompt + '\n\n' + compose_prompt
-                    else:
-                        system_prompt = compose_prompt
-                    logger.info(
-                        "Injected compose system prompt for task %s "
-                        "(role=%s) into session %s",
-                        compose_task_id, cp_result.get('agent_role', '?'),
-                        session_id,
-                    )
-                else:
-                    logger.warning(
-                        "Could not resolve compose prompt for task %s: %s",
-                        compose_task_id, cp_result.get('error', 'unknown'),
-                    )
-            except Exception:
-                logger.exception(
-                    "Error resolving compose prompt for task %s", compose_task_id
-                )
 
         # Route utility sessions to a separate project so their JSONL files
         # never appear in the user's project.
@@ -288,24 +268,85 @@ def register_ws_events(socketio, app):
             emit('error', {'message': 'session_id is required'})
             return
 
-        # -- Cross-session awareness injection (gated by preference) --
+        # Check if cross-session awareness is enabled (for non-utility sessions)
+        want_awareness = False
         if session_type not in ('planner', 'title'):
             try:
-                from ..config import get_kanban_config, _encode_cwd
-                if get_kanban_config().get("cross_session_awareness", True):
-                    from ..session_awareness import build_cross_session_context
-                    cross_ctx = build_cross_session_context(
-                        daemon_client=app.session_manager,
-                        project=_encode_cwd(cwd),
-                        current_session_id=session_id,
+                from ..config import get_kanban_config
+                want_awareness = get_kanban_config().get("cross_session_awareness", True)
+            except Exception:
+                pass
+
+        # -- Helper functions for parallel execution --
+        def _resolve_compose():
+            """Resolve compose system prompt.  Returns prompt string or None."""
+            try:
+                from .compose_api import resolve_compose_system_prompt
+                cp_result = resolve_compose_system_prompt(compose_task_id)
+                if cp_result.get('ok') and cp_result.get('system_prompt'):
+                    logger.info(
+                        "Injected compose system prompt for task %s "
+                        "(role=%s) into session %s",
+                        compose_task_id, cp_result.get('agent_role', '?'),
+                        session_id,
                     )
-                    if cross_ctx:
-                        system_prompt = (
-                            system_prompt + '\n\n' + cross_ctx
-                            if system_prompt else cross_ctx
-                        )
+                    return cp_result['system_prompt']
+                else:
+                    logger.warning(
+                        "Could not resolve compose prompt for task %s: %s",
+                        compose_task_id, cp_result.get('error', 'unknown'),
+                    )
+            except Exception:
+                logger.exception(
+                    "Error resolving compose prompt for task %s", compose_task_id
+                )
+            return None
+
+        def _resolve_awareness():
+            """Build cross-session awareness context.  Returns context string or None."""
+            try:
+                from ..config import _encode_cwd
+                from ..session_awareness import build_cross_session_context
+                return build_cross_session_context(
+                    daemon_client=app.session_manager,
+                    project=_encode_cwd(cwd),
+                    current_session_id=session_id,
+                )
             except Exception:
                 logger.debug("Cross-session awareness injection failed", exc_info=True)
+            return None
+
+        compose_prompt = None
+        cross_ctx = None
+
+        if compose_task_id and want_awareness:
+            # Both needed — run in parallel
+            compose_future = _setup_executor.submit(_resolve_compose)
+            awareness_future = _setup_executor.submit(_resolve_awareness)
+            try:
+                compose_prompt = compose_future.result(timeout=10)
+            except Exception:
+                logger.debug("Compose resolution timed out or failed", exc_info=True)
+            try:
+                cross_ctx = awareness_future.result(timeout=10)
+            except Exception:
+                logger.debug("Awareness resolution timed out or failed", exc_info=True)
+        elif compose_task_id:
+            compose_prompt = _resolve_compose()
+        elif want_awareness:
+            cross_ctx = _resolve_awareness()
+
+        # Apply results to system_prompt (order: compose first, awareness second)
+        if compose_prompt:
+            system_prompt = (
+                system_prompt + '\n\n' + compose_prompt
+                if system_prompt else compose_prompt
+            )
+        if cross_ctx:
+            system_prompt = (
+                system_prompt + '\n\n' + cross_ctx
+                if system_prompt else cross_ctx
+            )
 
         sm = app.session_manager
         result = sm.start_session(

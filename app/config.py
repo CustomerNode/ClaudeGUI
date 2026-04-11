@@ -45,11 +45,22 @@ _KANBAN_CONFIG_FILE = Path(_os.environ["VIBENODE_CONFIG"]) if _os.environ.get("V
 # Kanban config store
 # ---------------------------------------------------------------------------
 
+_kanban_config_cache: dict | None = None
+_kanban_config_cache_time: float = 0.0
+_KANBAN_CONFIG_CACHE_TTL = 10.0  # seconds
+
+
 def get_kanban_config() -> dict:
     """Load kanban configuration from kanban_config.json.
 
     Missing keys are filled from defaults so callers always see the full set.
+    Results are cached with a 10-second TTL.  The cache is invalidated
+    immediately on save so writes are never stale.
     """
+    global _kanban_config_cache, _kanban_config_cache_time
+    now = time.monotonic()
+    if _kanban_config_cache is not None and (now - _kanban_config_cache_time) < _KANBAN_CONFIG_CACHE_TTL:
+        return dict(_kanban_config_cache)  # shallow copy — callers may mutate
     try:
         stored = json.loads(_KANBAN_CONFIG_FILE.read_text(encoding="utf-8"))
         merged = _kanban_config_defaults()
@@ -57,9 +68,14 @@ def get_kanban_config() -> dict:
         # Migrate old key
         if "kanban_auto_advance" in stored and "auto_advance_to_validating" not in stored:
             merged["auto_advance_to_validating"] = bool(stored["kanban_auto_advance"])
-        return merged
+        _kanban_config_cache = merged
+        _kanban_config_cache_time = time.monotonic()
+        return dict(merged)
     except Exception:
-        return _kanban_config_defaults()
+        result = _kanban_config_defaults()
+        _kanban_config_cache = result
+        _kanban_config_cache_time = time.monotonic()
+        return dict(result)
 
 
 def _kanban_config_defaults() -> dict:
@@ -95,9 +111,13 @@ def _kanban_config_defaults() -> dict:
 
 def save_kanban_config(config: dict) -> None:
     """Save kanban configuration to kanban_config.json."""
+    global _kanban_config_cache, _kanban_config_cache_time
     _KANBAN_CONFIG_FILE.write_text(
         json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+    # Invalidate cache so the next read sees the new values immediately
+    _kanban_config_cache = None
+    _kanban_config_cache_time = 0.0
 
 
 # ---------------------------------------------------------------------------

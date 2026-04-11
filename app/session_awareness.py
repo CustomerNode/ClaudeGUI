@@ -10,6 +10,7 @@ Gated by the ``cross_session_awareness`` preference in kanban_config.json.
 """
 
 import os
+import threading
 import time
 
 from .config import cwd_matches_active_project, _encode_cwd
@@ -20,6 +21,35 @@ from .config import cwd_matches_active_project, _encode_cwd
 
 _MAX_SESSIONS = 12
 _MAX_FILES_PER_SESSION = 3
+
+# ---------------------------------------------------------------------------
+# get_all_states() cache — avoids blocking IPC round-trip on every call
+# ---------------------------------------------------------------------------
+
+_states_cache: list | None = None
+_states_cache_time: float = 0.0
+_states_cache_lock = threading.Lock()
+_STATES_CACHE_TTL = 2.0  # seconds
+
+
+def _get_all_states_cached(daemon_client) -> list:
+    """Return cached result of daemon_client.get_all_states().
+
+    The cache has a 2-second TTL.  Cross-session awareness is advisory
+    data injected once at session creation, so brief staleness is fine.
+    """
+    global _states_cache, _states_cache_time
+    now = time.monotonic()
+    with _states_cache_lock:
+        if _states_cache is not None and (now - _states_cache_time) < _STATES_CACHE_TTL:
+            return _states_cache
+    # Cache miss — do the IPC call outside the lock to avoid blocking
+    # other threads that could serve a cache hit.
+    result = daemon_client.get_all_states()
+    with _states_cache_lock:
+        _states_cache = result
+        _states_cache_time = time.monotonic()
+    return result
 
 # ---------------------------------------------------------------------------
 # Template
@@ -128,7 +158,7 @@ def build_cross_session_context(
         ``None`` if there are no other qualifying sessions.
     """
     try:
-        all_states = daemon_client.get_all_states()
+        all_states = _get_all_states_cached(daemon_client)
     except Exception:
         return None
 
