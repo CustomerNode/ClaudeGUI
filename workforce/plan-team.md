@@ -14,37 +14,34 @@ Reusable prompt template. Invoke by typing: **plan team**
 
 ## The Prompt
 
-Run the plan team: Spec Analyst, Product Strategist, Architect, Implementation Auditor, Integration Reviewer. All have full knowledge of the VibeNode codebase and architecture.
+Run the Plan Team: Spec Analyst, Product Strategist, Architect, Implementation Auditor, Integration Reviewer. All have full knowledge of the VibeNode codebase and architecture.
 
-Review the plan/spec we've been working on. You should understand what this means from our conversation. If additional context is needed, check the spec document, implementation-notes.md, and the relevant codebase. Run as a coordinated team in sequence, not five independent reports. Each agent's findings feed into the next.
+Review the plan/spec we've been working on. Use the current conversation as context, but ground all conclusions in the spec, implementation-notes.md, and the relevant codebase. If needed, check those sources to resolve uncertainty before making changes.
 
-### Agent sequence and responsibilities
+Run as a coordinated team in sequence:
+- Spec Analyst identifies contradictions, ambiguities, missing definitions, and gaps in the spec.
+- Product Strategist identifies missing functionality, scope gaps, and places where the plan fails the intended user or business outcome.
+- Architect defines the technical approach and flags proposals that are structurally unsound, over-complex, or inconsistent with the system design.
+- Implementation Auditor checks the plan against the actual codebase, architecture, constraints, and implementation reality.
+- Integration Reviewer identifies blast radius, dependency risks, migration concerns, and effects on existing features or flows.
 
-1. **Spec Analyst** — Read the spec like a hostile parser. Find contradictions, ambiguities, vague language, missing definitions, things that sound clear but aren't, and requirements that conflict with each other. Rewrite unclear language to be specific.
+Each agent's findings must feed into the next. This is one shared analysis, not five separate reports.
 
-2. **Product Strategist** — Read the spec plus Spec Analyst findings. Find missing functionality users will expect but nobody wrote down. Identify missing states, missing flows, edge cases in the user journey. Flag scope that's too narrow or too broad. Add missing functionality that obviously belongs.
+The team should fix what it finds directly in the spec. Preserve the original intent of the spec unless one of the escalation conditions below is triggered.
 
-3. **Architect** — Read the spec plus all prior findings. Design the technical approach: data structures, module boundaries, data flow, integration points. Flag anything architecturally unsound. Make vague architecture concrete. Propose specific patterns, file locations, and data models.
+Fix contradictions, ambiguities, vague areas, missing sections, sequencing problems, codebase mismatches, and integration gaps. Add necessary detail where needed. Do not invent new scope unless it is required to make the spec coherent, complete, and implementable.
 
-4. **Implementation Auditor** — Read the spec plus all prior findings with the actual codebase open. Find things that won't work as written given the existing code, patterns, naming conventions, or constraints. Flag where the spec assumes something that isn't true about the codebase. Update the spec to match reality.
+Do not keep proposals that conflict with the real codebase, architecture, or known integration constraints unless they are explicitly surfaced for my input.
 
-5. **Integration Reviewer** — Read everything. Map the blast radius to existing features. Identify side effects on shipped functionality, migration concerns, backwards compatibility issues, deployment order dependencies, and things that need to change elsewhere to support this plan.
+Do not report issues back to me unless:
+- the fix would significantly change scope,
+- there is a real tradeoff with meaningful costs either way,
+- two reasonable interpretations exist and the right one is not obvious,
+- the fix would require changing existing shipped behavior.
 
-### What to fix vs. what to escalate
+Everything else, just fix directly in the spec.
 
-**Fix autonomously** — update the spec directly:
-- Ambiguous language → rewrite to be specific
-- Missing error states → add them
-- Internal contradictions → resolve the obvious ones
-- Missing obvious functionality → add it
-- Spec conflicts with existing codebase patterns → update spec to match reality
-- Vague architecture → make it concrete with specific proposals
-
-**Escalate to user:**
-- Two valid interpretations of a requirement where the right one isn't obvious
-- Missing functionality that would change scope significantly
-- Architectural tradeoffs with real costs either way
-- Contradictions where both sides have merit
-- Changes that would require modifying existing shipped behavior
-
-Everything else, just fix it. Update the spec, add missing sections, resolve contradictions, add detail where it's vague. When done, give me one combined team report: what you found, what you fixed, what (if anything) needs my input. Keep it short.
+When complete, give me one short combined team report covering:
+- what you found,
+- what you fixed,
+- what, if anything, needs my input.

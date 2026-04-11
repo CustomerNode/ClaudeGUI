@@ -271,9 +271,8 @@ function sessionContextMenu(e, sessionId) {
 
   // Link to task/section
   items += '<div class="ws-ctx-item" onclick="_sessCtx(\'link-workflow\',\'' + sessionId + '\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> Link to Workflow Task</div>';
-  items += '<div class="ws-ctx-item" onclick="_sessCtx(\'link-compose\',\'' + sessionId + '\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> Link to Compose Section</div>';
+  items += '<div class="ws-ctx-item" onclick="_sessCtx(\'add-compose\',\'' + sessionId + '\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg> Add to Compose</div>';
   items += '<div class="ws-ctx-item" onclick="_sessCtx(\'create-workflow\',\'' + sessionId + '\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Create Workflow Task</div>';
-  items += '<div class="ws-ctx-item" onclick="_sessCtx(\'create-compose\',\'' + sessionId + '\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Create Compose Section</div>';
 
   items += '<div class="ws-ctx-divider"></div>';
 
@@ -353,14 +352,11 @@ function _sessCtx(action, sessionId) {
     case 'link-workflow':
       openTaskPickerModal(sessionId, 'workflow');
       break;
-    case 'link-compose':
-      _composeLinkPicker(sessionId);
+    case 'add-compose':
+      _addToCompose(sessionId);
       break;
     case 'create-workflow':
       createWorkflowTaskFromSession(sessionId);
-      break;
-    case 'create-compose':
-      _composePickerFromSession(sessionId);
       break;
     case 'continue':
       continueSession(sessionId);
@@ -383,200 +379,370 @@ function _sessCtx(action, sessionId) {
   }
 }
 
-// --- Create Compose Section from Session ---
+// ═══════════════════════════════════════════════════════════════
+// Add to Compose — unified tree picker
+// ═══════════════════════════════════════════════════════════════
 
-async function _composePickerFromSession(sessionId) {
+// Sanitize an ID for safe embedding in onclick attributes
+function _atcSafeId(id) { return String(id || '').replace(/[^a-zA-Z0-9_-]/g, ''); }
+
+// State for the active picker (reset on close)
+let _atcSessionId = null;
+let _atcProjectId = null;
+let _atcSections = [];
+
+function _atcSessionName() {
+  const sess = (typeof allSessions !== 'undefined')
+    ? allSessions.find(s => s.id === _atcSessionId) : null;
+  if (!sess) return 'Untitled Session';
+  return sess.custom_title || sess.display_title || 'Untitled Session';
+}
+
+async function _addToCompose(sessionId) {
   const overlay = document.getElementById('pm-overlay');
   if (!overlay) return;
 
-  // Fetch all compose projects — show current-project ones first, others dimmed
+  _atcSessionId = sessionId;
+
+  // Fetch all compositions
   const _proj = localStorage.getItem('activeProject') || '';
   let projects = [];
   try {
     const resp = await fetch('/api/compose/projects');
     if (resp.ok) {
       const data = await resp.json();
-      if (data.ok) {
-        projects = (data.projects || []);
-        // Sort: current project first, then others
-        projects.sort(function(a, b) {
-          const aMatch = (!_proj || !a.parent_project || a.parent_project === _proj) ? 0 : 1;
-          const bMatch = (!_proj || !b.parent_project || b.parent_project === _proj) ? 0 : 1;
-          return aMatch - bMatch;
-        });
-        // Mark each project with whether it belongs to the active project
-        projects.forEach(function(p) {
-          p._isCurrentProject = !_proj || !p.parent_project || p.parent_project === _proj;
-        });
-      }
+      if (data.ok) projects = data.projects || [];
     }
   } catch (e) {}
 
+  // Sort: current project first, others dimmed
+  projects.forEach(p => {
+    p._isCurrentProject = !_proj || !p.parent_project || p.parent_project === _proj;
+  });
+  projects.sort((a, b) => (a._isCurrentProject ? 0 : 1) - (b._isCurrentProject ? 0 : 1));
+
+  // Zero compositions — inline create
   if (projects.length === 0) {
-    if (typeof showToast === 'function') showToast('No compositions yet. Create one in the Compose view first.', 'error');
+    _atcShowCreateComposition(overlay);
     return;
   }
 
-  // Build picker modal
-  let html = '<div class="pm-card pm-enter" style="max-width:480px;">';
-  html += '<h2 class="pm-title">Add to Composition</h2>';
-  html += '<div class="pm-body" style="padding:0;">';
+  // One composition — skip straight to tree picker
+  if (projects.length === 1) {
+    _atcLoadTree(overlay, projects[0].id);
+    return;
+  }
 
-  html += '<div class="kanban-create-section">';
+  // Multiple — show composition picker
+  let html = '<div class="pm-card pm-enter" style="max-width:480px;">';
+  html += '<h2 class="pm-title">Add to Compose</h2>';
+  html += '<div class="pm-body" style="padding:0;"><div class="kanban-create-section">';
   html += '<div class="kanban-create-section-label">Choose composition</div>';
 
-  for (var i = 0; i < projects.length; i++) {
-    var p = projects[i];
-    var dimStyle = p._isCurrentProject ? '' : ' opacity:0.5;';
-    var projLabel = p._isCurrentProject ? '' : ' <span style="font-size:10px;color:var(--text-faint);">(other project)</span>';
-    html += '<div class="kanban-drill-chooser-card" style="cursor:pointer;' + dimStyle + '" data-project-id="' + p.id + '" onclick="_composePickerSelectProject(\'' + sessionId + '\',\'' + p.id + '\',this)">';
-    html += '<div class="kanban-drill-chooser-icon" style="color:var(--accent);"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></div>';
-    html += '<div><div class="kanban-drill-chooser-title">' + (typeof escHtml === 'function' ? escHtml(p.name) : p.name) + projLabel + '</div>';
-    html += '<div class="kanban-drill-chooser-desc">Add a new section and link this session to it</div></div>';
-    html += '</div>';
-  }
-
-  html += '</div>';
-  html += '</div></div>';
-
-  overlay.innerHTML = html;
-  overlay.classList.add('show');
-  requestAnimationFrame(function() {
-    var card = overlay.querySelector('.pm-card');
-    if (card) card.classList.remove('pm-enter');
-  });
-  overlay.onclick = function(e) { if (e.target === overlay) _closePm(); };
-}
-
-async function _composePickerSelectProject(sessionId, projectId, el) {
-  // Get session info for default name
-  var sess = (typeof allSessions !== 'undefined') ? allSessions.find(function(s) { return s.id === sessionId; }) : null;
-  var defaultName = sess ? (sess.custom_title || sess.display_title || 'New Section') : 'New Section';
-
-  var name = prompt('Section name:', defaultName);
-  if (!name || !name.trim()) return;
-
-  _closePm();
-
-  try {
-    var resp = await fetch('/api/compose/projects/' + projectId + '/sections', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({name: name.trim(), artifact_type: 'text'}),
-    });
-    if (!resp.ok) throw new Error('Failed to create section');
-    var data = await resp.json();
-    if (!data || !data.ok) throw new Error(data.error || 'Failed');
-
-    var sectionId = data.section.id;
-
-    // Link the session to the new section
-    await fetch('/api/compose/projects/' + projectId + '/sections/' + sectionId, {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({session_id: sessionId}),
-    });
-
-    if (typeof showToast === 'function') showToast('Created section "' + name.trim() + '" and linked session');
-  } catch (e) {
-    console.error('Failed to create compose section from session:', e);
-    if (typeof showToast === 'function') showToast('Failed to create section', 'error');
-  }
-}
-
-// --- Link session to existing compose section ---
-
-async function _composeLinkPicker(sessionId) {
-  const overlay = document.getElementById('pm-overlay');
-  if (!overlay) return;
-
-  // Fetch all compose projects — show current-project ones first, others dimmed
-  const _proj = localStorage.getItem('activeProject') || '';
-  let projects = [];
-  try {
-    const resp = await fetch('/api/compose/projects');
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data.ok) {
-        projects = (data.projects || []);
-        projects.sort(function(a, b) {
-          const aMatch = (!_proj || !a.parent_project || a.parent_project === _proj) ? 0 : 1;
-          const bMatch = (!_proj || !b.parent_project || b.parent_project === _proj) ? 0 : 1;
-          return aMatch - bMatch;
-        });
-        projects.forEach(function(p) {
-          p._isCurrentProject = !_proj || !p.parent_project || p.parent_project === _proj;
-        });
-      }
-    }
-  } catch (e) {}
-
-  if (projects.length === 0) {
-    if (typeof showToast === 'function') showToast('No compositions yet. Create one in the Compose view first.', 'error');
-    return;
-  }
-
-  // For each project, fetch its sections
-  let allEntries = [];
   for (const p of projects) {
-    try {
-      const bResp = await fetch('/api/compose/board?project_id=' + encodeURIComponent(p.id));
-      if (bResp.ok) {
-        const bData = await bResp.json();
-        if (bData && bData.sections) {
-          for (const sec of bData.sections) {
-            allEntries.push({project: p, section: sec});
-          }
-        }
-      }
-    } catch (e) {}
-  }
-
-  if (allEntries.length === 0) {
-    if (typeof showToast === 'function') showToast('No sections found. Use "Create Compose Section" instead.', 'error');
-    return;
-  }
-
-  let html = '<div class="pm-card pm-enter" style="max-width:480px;">';
-  html += '<h2 class="pm-title">Link to Compose Section</h2>';
-  html += '<div class="pm-body" style="padding:0;">';
-  html += '<div class="kanban-create-section">';
-  html += '<div class="kanban-create-section-label">Choose section</div>';
-
-  for (const entry of allEntries) {
-    const sec = entry.section;
-    const pName = entry.project.name;
-    const isCurrent = entry.project._isCurrentProject;
-    const dimStyle = isCurrent ? '' : ' opacity:0.5;';
-    const projLabel = isCurrent ? '' : ' (other project)';
-    html += '<div class="kanban-drill-chooser-card" style="cursor:pointer;' + dimStyle + '" onclick="_composeLinkSession(\'' + sessionId + '\',\'' + entry.project.id + '\',\'' + sec.id + '\')">';
-    html += '<div style="display:flex;flex-direction:column;gap:2px;"><div class="kanban-drill-chooser-title">' + (typeof escHtml === 'function' ? escHtml(sec.name) : sec.name) + '</div>';
-    html += '<div class="kanban-drill-chooser-desc">' + (typeof escHtml === 'function' ? escHtml(pName) : pName) + projLabel + ' &middot; ' + (sec.status || 'not_started') + (sec.session_id ? ' &middot; has session' : '') + '</div></div>';
-    html += '</div>';
+    const dim = p._isCurrentProject ? '' : ' opacity:0.5;';
+    const tag = p._isCurrentProject ? '' : ' <span style="font-size:10px;color:var(--text-faint);">(other project)</span>';
+    const esc = typeof escHtml === 'function' ? escHtml(p.name) : p.name;
+    html += '<div class="kanban-drill-chooser-card" style="cursor:pointer;' + dim + '"'
+      + ' onclick="_atcLoadTree(document.getElementById(\'pm-overlay\'),\'' + _atcSafeId(p.id) + '\')">'
+      + '<div class="kanban-drill-chooser-icon" style="color:var(--accent);">'
+      + '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></div>'
+      + '<div><div class="kanban-drill-chooser-title">' + esc + tag + '</div></div></div>';
   }
 
   html += '</div></div></div>';
+  _atcShowOverlay(overlay, html);
+}
 
+// --- Zero compositions: inline create ---
+function _atcShowCreateComposition(overlay) {
+  let html = '<div class="pm-card pm-enter" style="max-width:400px;">';
+  html += '<h2 class="pm-title">Add to Compose</h2>';
+  html += '<div class="pm-body">';
+  html += '<div class="kanban-create-section-label">No compositions yet. Create one:</div>';
+  html += '<input type="text" id="atc-new-comp-name" class="kanban-input" placeholder="Composition name" style="width:100%;margin:8px 0;" autofocus>';
+  html += '<button class="kanban-sidebar-btn" style="width:100%;" onclick="_atcCreateComposition()">Create</button>';
+  html += '</div></div>';
+  _atcShowOverlay(overlay, html);
+  setTimeout(() => { const inp = document.getElementById('atc-new-comp-name'); if (inp) inp.focus(); }, 60);
+}
+
+async function _atcCreateComposition() {
+  const inp = document.getElementById('atc-new-comp-name');
+  const name = (inp ? inp.value : '').trim();
+  if (!name) { if (inp) inp.focus(); return; }
+
+  try {
+    const resp = await fetch('/api/compose/projects', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name}),
+    });
+    const data = await resp.json();
+    if (data.ok && data.project) {
+      _atcLoadTree(document.getElementById('pm-overlay'), data.project.id);
+    } else {
+      showToast(data.error || 'Failed to create composition', 'error');
+    }
+  } catch (e) {
+    showToast('Failed to create composition', 'error');
+  }
+}
+
+// --- Tree picker ---
+async function _atcLoadTree(overlay, projectId) {
+  if (!overlay) return;
+  _atcProjectId = projectId;
+
+  // Show loading state
+  let html = '<div class="pm-card pm-enter" style="max-width:520px;">';
+  html += '<h2 class="pm-title">Add to Compose</h2>';
+  html += '<div class="pm-body" style="text-align:center;padding:24px;color:var(--text-muted);">Loading sections...</div>';
+  html += '</div>';
+  _atcShowOverlay(overlay, html);
+
+  // Fetch sections
+  try {
+    const resp = await fetch('/api/compose/board?project_id=' + encodeURIComponent(projectId));
+    const data = await resp.json();
+    _atcSections = (data && data.sections) || [];
+  } catch (e) {
+    _atcSections = [];
+  }
+
+  _atcRenderTree(overlay);
+}
+
+function _atcRenderTree(overlay) {
+  if (!overlay) return;
+
+  // Build tree from flat list
+  const sections = _atcSections;
+  const byParent = {};
+  for (const s of sections) {
+    const pid = s.parent_id || '__root__';
+    if (!byParent[pid]) byParent[pid] = [];
+    byParent[pid].push(s);
+  }
+
+  // Sort children within each parent per spec:
+  // 1. Unlinked first (actionable), 2. Has unlinked children, 3. Linked (greyed)
+  // Within each group, preserve order field
+  function _hasUnlinkedDescendant(s) {
+    const children = byParent[s.id] || [];
+    for (const c of children) {
+      if (!c.session_id) return true;
+      if (_hasUnlinkedDescendant(c)) return true;
+    }
+    return false;
+  }
+
+  for (const pid of Object.keys(byParent)) {
+    byParent[pid].sort((a, b) => {
+      const aLinked = !!a.session_id;
+      const bLinked = !!b.session_id;
+      if (aLinked !== bLinked) return aLinked ? 1 : -1; // unlinked first
+      if (aLinked && bLinked) {
+        const aDesc = _hasUnlinkedDescendant(a);
+        const bDesc = _hasUnlinkedDescendant(b);
+        if (aDesc !== bDesc) return aDesc ? -1 : 1;
+      }
+      return (a.order || 0) - (b.order || 0);
+    });
+  }
+
+  // Status dot colors
+  const statusColors = {
+    not_started: 'var(--text-faint)',
+    draft: 'var(--text-faint)',
+    writing: '#4a9eff',
+    working: '#4a9eff',
+    waiting: '#e8a838',
+    blocked: '#e85050',
+    complete: '#50c878',
+    archived: '#666',
+  };
+
+  // Render tree recursively
+  function renderLevel(parentId, depth) {
+    const children = byParent[parentId] || [];
+    if (depth > 5) return ''; // max depth
+    let out = '';
+
+    // [+ Add here] at top of this level
+    out += '<div class="atc-add-marker" style="padding-left:' + (depth * 20 + 8) + 'px;">'
+      + '<button class="atc-add-btn" onclick="_atcStartAdd(\'' + (parentId === '__root__' ? '' : _atcSafeId(parentId))
+      + '\',' + (children.length ? (children[0].order || 0) - 1 : 0) + ')">'
+      + '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>'
+      + ' Add here</button></div>';
+
+    for (let i = 0; i < children.length; i++) {
+      const s = children[i];
+      const linked = !!s.session_id;
+      const color = statusColors[s.status] || statusColors.not_started;
+      const esc = typeof escHtml === 'function' ? escHtml(s.name) : s.name;
+      const indent = depth * 20 + 8;
+
+      out += '<div class="atc-section' + (linked ? ' atc-linked' : '') + '" style="padding-left:' + indent + 'px;">';
+      // Status dot + name
+      out += '<span class="atc-dot" style="background:' + color + ';"></span>';
+      out += '<span class="atc-name">' + esc + '</span>';
+      out += '<span class="atc-status">' + (s.status || '').replace(/_/g, ' ') + '</span>';
+
+      if (linked) {
+        // Greyed out — show linked session name
+        const sessName = s.session_id.slice(0, 8);
+        out += '<span class="atc-linked-label">linked</span>';
+      } else {
+        // Unlinked — show [Attach here]
+        out += '<button class="atc-attach-btn" onclick="_atcAttach(\'' + _atcSafeId(s.id) + '\')">'
+          + 'Attach here</button>';
+      }
+      out += '</div>';
+
+      // [+ Add as child]
+      out += '<div class="atc-add-marker" style="padding-left:' + ((depth + 1) * 20 + 8) + 'px;">'
+        + '<button class="atc-add-btn atc-add-child" onclick="_atcStartAdd(\'' + _atcSafeId(s.id) + '\',0)">'
+        + '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>'
+        + ' Add as child</button></div>';
+
+      // Render children recursively
+      out += renderLevel(s.id, depth + 1);
+
+      // [+ Add here] after this sibling (insertion point)
+      if (i < children.length - 1) {
+        const nextOrder = children[i + 1] ? ((s.order || 0) + ((children[i + 1].order || 0) - (s.order || 0)) / 2) : (s.order || 0) + 1;
+        out += '<div class="atc-add-marker" style="padding-left:' + (depth * 20 + 8) + 'px;">'
+          + '<button class="atc-add-btn" onclick="_atcStartAdd(\'' + (parentId === '__root__' ? '' : _atcSafeId(parentId))
+          + '\',' + nextOrder + ')">'
+          + '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>'
+          + ' Add here</button></div>';
+      }
+    }
+    return out;
+  }
+
+  let html = '<div class="pm-card pm-enter" style="max-width:520px;">';
+  html += '<h2 class="pm-title">Add to Compose</h2>';
+  html += '<div class="pm-body" style="padding:0;">';
+  html += '<div class="atc-tree" id="atc-tree">';
+  html += renderLevel('__root__', 0);
+  if (sections.length === 0) {
+    // Empty composition — just the root add button is already rendered
+  }
+  html += '</div>';
+  // Inline naming area (hidden until user clicks Add)
+  html += '<div id="atc-naming" style="display:none;padding:12px;border-top:1px solid var(--border,#30363d);">';
+  html += '<div class="kanban-create-section-label" id="atc-naming-label">Section name</div>';
+  html += '<input type="text" id="atc-name-input" class="kanban-input" style="width:100%;margin:4px 0 8px;" placeholder="Section name">';
+  html += '<div style="display:flex;gap:8px;">';
+  html += '<button class="kanban-sidebar-btn" style="flex:1;" onclick="_atcConfirmAdd()">Add</button>';
+  html += '<button class="kanban-sidebar-btn" style="flex:1;opacity:0.6;" onclick="_atcCancelAdd()">Cancel</button>';
+  html += '</div></div>';
+  html += '</div></div>';
+
+  _atcShowOverlay(overlay, html);
+}
+
+// --- Add action: show naming input ---
+let _atcPendingParentId = null;
+let _atcPendingOrder = 0;
+
+function _atcStartAdd(parentId, order) {
+  _atcPendingParentId = parentId || null;
+  _atcPendingOrder = order;
+  const naming = document.getElementById('atc-naming');
+  const input = document.getElementById('atc-name-input');
+  const label = document.getElementById('atc-naming-label');
+  if (!naming || !input) return;
+
+  input.value = _atcSessionName();
+  label.textContent = parentId ? 'Add as child — section name:' : 'New section name:';
+  naming.style.display = '';
+  input.focus();
+  input.select();
+
+  // Enter to confirm
+  input.onkeydown = function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); _atcConfirmAdd(); }
+    if (e.key === 'Escape') { e.preventDefault(); _atcCancelAdd(); }
+  };
+}
+
+function _atcCancelAdd() {
+  const naming = document.getElementById('atc-naming');
+  if (naming) naming.style.display = 'none';
+  _atcPendingParentId = null;
+}
+
+async function _atcConfirmAdd() {
+  const input = document.getElementById('atc-name-input');
+  const name = (input ? input.value : '').trim();
+  if (!name) { if (input) input.focus(); return; }
+
+  // Disable UI while saving
+  const btns = document.querySelectorAll('#atc-naming button');
+  btns.forEach(b => b.disabled = true);
+  if (input) input.disabled = true;
+
+  try {
+    const resp = await fetch('/api/compose/projects/' + _atcProjectId + '/sections/add-and-link', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        name: name,
+        session_id: _atcSessionId,
+        parent_id: _atcPendingParentId,
+        order: _atcPendingOrder,
+      }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      _closePm();
+      showToast('Added to Compose: ' + name);
+    } else if (resp.status === 409) {
+      // Session already linked
+      showToast('Session already linked to "' + (data.linked_section || 'another section') + '"', 'error');
+      btns.forEach(b => b.disabled = false);
+      if (input) input.disabled = false;
+    } else {
+      showToast(data.error || 'Failed to add section', 'error');
+      btns.forEach(b => b.disabled = false);
+      if (input) input.disabled = false;
+    }
+  } catch (e) {
+    showToast('Failed to add section', 'error');
+    btns.forEach(b => b.disabled = false);
+    if (input) input.disabled = false;
+  }
+}
+
+// --- Attach to existing unlinked section ---
+async function _atcAttach(sectionId) {
+  try {
+    const resp = await fetch('/api/compose/projects/' + _atcProjectId + '/sections/' + sectionId, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({session_id: _atcSessionId}),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      _closePm();
+      showToast('Session attached to section');
+    } else {
+      showToast(data.error || 'Failed to attach', 'error');
+    }
+  } catch (e) {
+    showToast('Failed to attach session', 'error');
+  }
+}
+
+// --- Overlay helpers ---
+function _atcShowOverlay(overlay, html) {
   overlay.innerHTML = html;
   overlay.classList.add('show');
-  requestAnimationFrame(function() {
-    var card = overlay.querySelector('.pm-card');
+  requestAnimationFrame(() => {
+    const card = overlay.querySelector('.pm-card');
     if (card) card.classList.remove('pm-enter');
   });
   overlay.onclick = function(e) { if (e.target === overlay) _closePm(); };
-}
-
-async function _composeLinkSession(sessionId, projectId, sectionId) {
-  _closePm();
-  try {
-    await fetch('/api/compose/projects/' + projectId + '/sections/' + sectionId, {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({session_id: sessionId}),
-    });
-    if (typeof showToast === 'function') showToast('Session linked to section');
-  } catch (e) {
-    console.error('Failed to link session:', e);
-    if (typeof showToast === 'function') showToast('Failed to link session', 'error');
-  }
 }
