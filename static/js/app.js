@@ -2990,9 +2990,15 @@ function renderSectionDetail(sectionId) {
 
     html += '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-dim);margin-bottom:8px;">Session</div>';
     html += '<div class="kanban-drill-panel"><div class="kanban-drill-panel-body">';
-    html += '<div class="kanban-drill-subtask-row" style="cursor:pointer;" onclick="_composeOpenSession(\'' + section.session_id + '\')">';
+    const _eSid = (typeof escHtml === 'function' ? escHtml(section.session_id) : section.session_id);
+    const _eSessTitle = (typeof escHtml === 'function' ? escHtml(sessTitle) : sessTitle);
+    html += '<div class="kanban-drill-subtask-row" style="cursor:pointer;" onclick="_composeOpenSession(\'' + _eSid + '\')">';
     html += '<span class="kanban-drill-subtask-status" style="background:' + (isRunning ? 'var(--green)26' : 'var(--bg-subtle)') + ';color:' + (isRunning ? 'var(--green)' : 'var(--text-dim)') + ';">' + (isRunning ? 'running' : 'idle') + '</span>';
-    html += '<span class="kanban-drill-subtask-title">' + (typeof escHtml === 'function' ? escHtml(sessTitle) : sessTitle) + '</span>';
+    html += '<span class="kanban-drill-subtask-title">' + _eSessTitle + '</span>';
+    html += '<div class="kanban-drill-subtask-actions" style="margin-left:auto;display:flex;gap:4px;" onclick="event.stopPropagation();">';
+    html += '<button class="kanban-drill-action-btn" title="Rename" onclick="_composeRenameSession(\'' + _eSid + '\')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>';
+    html += '<button class="kanban-drill-action-btn" title="Unlink" onclick="_composeUnlinkSession(\'' + section.id + '\',\'' + _eSid + '\')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>';
+    html += '</div>';
     html += '<span class="kanban-drill-subtask-chevron"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></span>';
     html += '</div>';
     html += '</div></div>';
@@ -3118,6 +3124,117 @@ function _composeOpenSession(sessionId) {
     openInGUI(sessionId);
   } else if (typeof selectSession === 'function') {
     selectSession(sessionId);
+  }
+}
+
+// Open a session inside compose view (mirrors _openSessionInKanban)
+function _openSessionInCompose(sessionId) {
+  const s = (typeof allSessions !== 'undefined') ? allSessions.find(x => x.id === sessionId) : null;
+  const sessionName = s ? (s.custom_title || s.display_title || 'Session') : 'Session';
+  const sectionId = _composeSelectedSection || null;
+  const section = sectionId ? _composeSections.find(x => x.id === sectionId) : null;
+  const sectionTitle = section ? (section.title || 'Section') : '';
+
+  // Hide compose board, show main-body
+  const cb = document.getElementById('compose-board');
+  if (cb) cb.style.display = 'none';
+  const mb = document.getElementById('main-body');
+  if (mb) mb.style.display = '';
+
+  // Remove old crumb bar
+  const old = document.getElementById('compose-session-bar');
+  if (old) old.remove();
+
+  // Build breadcrumb bar
+  const _esc = typeof escHtml === 'function' ? escHtml : (x => x);
+  let crumbHtml = '<div class="kanban-drill-titlebar" id="compose-session-bar">';
+  crumbHtml += '<div class="kanban-drill-breadcrumb">';
+  crumbHtml += '<span class="kanban-drill-crumb kanban-board-crumb" onclick="_composeSessionClose(\'board\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg> Compose</span>';
+  if (sectionId && sectionTitle) {
+    crumbHtml += '<span class="kanban-drill-sep"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></span>';
+    crumbHtml += '<span class="kanban-drill-crumb" onclick="_composeSessionClose(\'' + _esc(sectionId) + '\')">' + _esc(sectionTitle) + '</span>';
+  }
+  crumbHtml += '<span class="kanban-drill-sep"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></span>';
+  crumbHtml += '<span class="kanban-drill-crumb current">' + _esc(sessionName) + '</span>';
+  crumbHtml += '</div>';
+  crumbHtml += '<div class="kanban-drill-actions">';
+  crumbHtml += '<span class="btn-group-label" onclick="openActionsPopup()">Actions</span>';
+  crumbHtml += '</div>';
+  crumbHtml += '</div>';
+
+  if (mb) mb.insertAdjacentHTML('beforebegin', crumbHtml);
+
+  window._composeSessionSectionId = sectionId;
+
+  // Open the session in the live panel
+  _guiFocusPending = true;
+  activeId = sessionId;
+  localStorage.setItem('activeSessionId', sessionId);
+  if (typeof runningIds !== 'undefined' && runningIds.has(sessionId)) guiOpenAdd(sessionId);
+  if (typeof liveSessionId !== 'undefined' && liveSessionId && liveSessionId !== sessionId) { stopLivePanel(); }
+  filterSessions();
+}
+
+// Rename a session linked in compose
+function _composeRenameSession(sessionId) {
+  const s = (typeof allSessions !== 'undefined') ? allSessions.find(x => x.id === sessionId) : null;
+  const current = s ? (s.custom_title || s.display_title || '') : '';
+  const newName = prompt('Rename session:', current);
+  if (newName === null || !newName.trim()) return;
+  const proj = localStorage.getItem('activeProject') || '';
+  fetch('/api/rename/' + sessionId, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({title: newName.trim(), project: proj})
+  }).then(r => r.json()).then(data => {
+    if (data.ok) {
+      if (s) { s.custom_title = newName.trim(); s.display_title = newName.trim(); }
+      if (typeof showToast === 'function') showToast('Session renamed');
+      // Re-render section detail to show new name
+      if (_composeSelectedSection) renderSectionDetail(_composeSelectedSection);
+    }
+  }).catch(() => { if (typeof showToast === 'function') showToast('Rename failed', true); });
+}
+
+// Unlink a session from a compose section
+function _composeUnlinkSession(sectionId, sessionId) {
+  if (!confirm('Unlink this session from the section? The session will still exist in the sessions view.')) return;
+  const projId = _composeProject ? _composeProject.id : '';
+  fetch('/api/compose/sections/' + sectionId + '?project_id=' + encodeURIComponent(projId), {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({session_id: ''})
+  }).then(r => r.json()).then(data => {
+    if (data.ok || data.section) {
+      // Update local state
+      const sec = _composeSections.find(x => x.id === sectionId);
+      if (sec) sec.session_id = '';
+      if (typeof showToast === 'function') showToast('Session unlinked');
+      renderSectionDetail(sectionId);
+    }
+  }).catch(() => { if (typeof showToast === 'function') showToast('Unlink failed', true); });
+}
+
+// Close session view and return to compose board
+function _composeSessionClose(target) {
+  if (typeof liveSessionId !== 'undefined' && liveSessionId) { if (typeof stopLivePanel === 'function') stopLivePanel(); }
+  activeId = null;
+  if (typeof liveSessionId !== 'undefined') liveSessionId = null;
+  window._composeSessionSectionId = null;
+  localStorage.removeItem('activeSessionId');
+  // Remove crumb bar
+  const bar = document.getElementById('compose-session-bar');
+  if (bar) bar.remove();
+  // Restore panels
+  const mb = document.getElementById('main-body');
+  if (mb) mb.style.display = 'none';
+  const cb = document.getElementById('compose-board');
+  if (cb) cb.style.display = '';
+  // Navigate back
+  if (target === 'board') {
+    renderComposeBoard();
+  } else {
+    renderSectionDetail(target);
   }
 }
 

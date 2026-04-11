@@ -427,6 +427,11 @@ async function openInGUI(id) {
     _openSessionInKanban(id);
     return;
   }
+  // In compose mode, render session inside the compose board with compose titlebar
+  if (typeof viewMode !== 'undefined' && viewMode === 'compose' && typeof _openSessionInCompose === 'function') {
+    _openSessionInCompose(id);
+    return;
+  }
   _guiFocusPending = true;
   closeAllGrpDropdowns();
   if (typeof _ensureMainBodyVisible === 'function') _ensureMainBodyVisible();
