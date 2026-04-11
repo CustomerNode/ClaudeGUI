@@ -59,6 +59,7 @@ class TaskSession:
     task_id: str
     session_id: str
     created_at: str
+    session_type: str = 'session'  # 'session' (work) or 'planner'
 
     def to_dict(self):
         return asdict(self)
@@ -193,7 +194,7 @@ class KanbanRepository(ABC):
     # ── Task ↔ Session links ──────────────────────────────────────────
 
     @abstractmethod
-    def link_session(self, task_id, session_id):
+    def link_session(self, task_id, session_id, session_type='session'):
         """Associate a Claude session with a task.  Returns TaskSession."""
         ...
 
@@ -203,8 +204,12 @@ class KanbanRepository(ABC):
         ...
 
     @abstractmethod
-    def get_task_sessions(self, task_id):
-        """Return list of session_id strings linked to *task_id*."""
+    def get_task_sessions(self, task_id, session_type=None):
+        """Return list of TaskSession objects linked to *task_id*.
+
+        Args:
+            session_type: Optional filter — 'session', 'planner', or None for all.
+        """
         ...
 
     @abstractmethod

@@ -880,6 +880,10 @@ socket.on('session_entry', (data) => {
     if (liveAutoScroll) {
         logEl.scrollTop = logEl.scrollHeight;
     }
+    // ── Kanban AI status markers: detect and forward to backend ──
+    if (data.entry.kind === 'asst' && data.entry.text) {
+        _processKanbanStatusMarkers(data.entry.text);
+    }
 });
 
 // Permission requests
@@ -1271,6 +1275,37 @@ socket.on('compose_directive_conflict_resolved', (data) => {
         }
     });
 });
+
+// ---- Kanban AI status marker processing ----
+// Detects <!-- kanban:status task_id=UUID status=VALUE --> markers in AI
+// output and forwards them to the backend for automatic status transitions.
+const _kanbanStatusMarkerRe = /<!--\s*kanban:status\s+task_id=([a-f0-9-]+)\s+status=(\w+)\s*-->/gi;
+const _processedKanbanMarkers = new Set();
+
+function _processKanbanStatusMarkers(text) {
+    if (!text) return;
+    let match;
+    _kanbanStatusMarkerRe.lastIndex = 0;
+    while ((match = _kanbanStatusMarkerRe.exec(text)) !== null) {
+        const taskId = match[1];
+        const newStatus = match[2];
+        const key = taskId + ':' + newStatus;
+        // Dedup — don't send the same status change twice
+        if (_processedKanbanMarkers.has(key)) continue;
+        _processedKanbanMarkers.add(key);
+        // Clear dedup after 30s so the same transition can fire again later
+        setTimeout(() => _processedKanbanMarkers.delete(key), 30000);
+        // Fire and forget — send to backend
+        fetch('/api/kanban/tasks/' + taskId + '/ai-status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ new_status: newStatus, session_id: liveSessionId || '' }),
+        }).then(r => {
+            if (r.ok) console.log('[kanban-ai] Status updated:', taskId, '->', newStatus);
+            else r.json().then(d => console.warn('[kanban-ai] Status change rejected:', d.error || d));
+        }).catch(e => console.warn('[kanban-ai] Status change failed:', e));
+    }
+}
 
 // ---- Periodic state resync heartbeat ----
 // SocketIO events can be silently lost (transport hiccup, emit failure,

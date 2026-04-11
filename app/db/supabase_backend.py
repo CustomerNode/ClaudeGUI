@@ -642,15 +642,22 @@ class SupabaseRepository(KanbanRepository):
     # Task ↔ Session links
     # ------------------------------------------------------------------
 
-    def link_session(self, task_id, session_id):
-        """Associate a Claude session with a task."""
+    def link_session(self, task_id, session_id, session_type='session'):
+        """Associate a Claude session with a task.
+
+        Args:
+            task_id: The task to link to.
+            session_id: The session UUID.
+            session_type: 'session' (work session) or 'planner'.
+        """
         now = datetime.now(timezone.utc).isoformat()
         self.client.table("task_sessions").upsert({
             "task_id": task_id,
             "session_id": session_id,
             "created_at": now,
+            "session_type": session_type,
         }).execute()
-        return TaskSession(task_id=task_id, session_id=session_id, created_at=now)
+        return TaskSession(task_id=task_id, session_id=session_id, created_at=now, session_type=session_type)
 
     def unlink_session(self, task_id, session_id):
         """Remove the link between a session and a task."""
@@ -662,16 +669,30 @@ class SupabaseRepository(KanbanRepository):
             .execute()
         )
 
-    def get_task_sessions(self, task_id):
-        """Return list of session_id strings linked to a task."""
-        result = (
+    def get_task_sessions(self, task_id, session_type=None):
+        """Return list of TaskSession objects linked to a task.
+
+        Args:
+            task_id: The task to query.
+            session_type: Optional filter — 'session', 'planner', or None for all.
+        """
+        q = (
             self.client.table("task_sessions")
-            .select("session_id")
+            .select("task_id, session_id, created_at, session_type")
             .eq("task_id", task_id)
-            .order("created_at")
-            .execute()
         )
-        return [row["session_id"] for row in result.data]
+        if session_type:
+            q = q.eq("session_type", session_type)
+        result = q.order("created_at").execute()
+        return [
+            TaskSession(
+                task_id=r["task_id"],
+                session_id=r["session_id"],
+                created_at=r["created_at"],
+                session_type=r.get("session_type", "session"),
+            )
+            for r in result.data
+        ]
 
     def get_session_task(self, session_id):
         """Return the task_id linked to a session, or None."""

@@ -288,6 +288,25 @@ def register_ws_events(socketio, app):
             emit('error', {'message': 'session_id is required'})
             return
 
+        # -- Cross-session awareness injection (gated by preference) --
+        if session_type not in ('planner', 'title'):
+            try:
+                from ..config import get_kanban_config, _encode_cwd
+                if get_kanban_config().get("cross_session_awareness", True):
+                    from ..session_awareness import build_cross_session_context
+                    cross_ctx = build_cross_session_context(
+                        daemon_client=app.session_manager,
+                        project=_encode_cwd(cwd),
+                        current_session_id=session_id,
+                    )
+                    if cross_ctx:
+                        system_prompt = (
+                            system_prompt + '\n\n' + cross_ctx
+                            if system_prompt else cross_ctx
+                        )
+            except Exception:
+                logger.debug("Cross-session awareness injection failed", exc_info=True)
+
         sm = app.session_manager
         result = sm.start_session(
             session_id=session_id,

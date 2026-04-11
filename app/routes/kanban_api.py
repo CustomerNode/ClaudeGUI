@@ -485,9 +485,10 @@ def get_task(task_id):
         try:
             from flask import current_app
             sm = getattr(current_app, 'session_manager', None)
-            for sid in sessions:
-                sess_id = sid.session_id if hasattr(sid, 'session_id') else sid
-                sess_info = {'session_id': sess_id, 'status': 'sleeping'}
+            for link in sessions:
+                sess_id = link.session_id if hasattr(link, 'session_id') else link
+                sess_type = link.session_type if hasattr(link, 'session_type') else 'session'
+                sess_info = {'session_id': sess_id, 'status': 'sleeping', 'session_type': sess_type}
                 if sm:
                     try:
                         state = sm.get_session_state(sess_id)
@@ -499,7 +500,14 @@ def get_task(task_id):
                         pass
                 enriched_sessions.append(sess_info)
         except Exception:
-            enriched_sessions = [{'session_id': (s.session_id if hasattr(s, 'session_id') else s), 'status': 'sleeping'} for s in sessions]
+            enriched_sessions = [
+                {
+                    'session_id': (s.session_id if hasattr(s, 'session_id') else s),
+                    'status': 'sleeping',
+                    'session_type': (s.session_type if hasattr(s, 'session_type') else 'session'),
+                }
+                for s in sessions
+            ]
 
         result['active_sessions'] = active_count
         result["sessions"] = enriched_sessions
@@ -633,7 +641,8 @@ def reorder_task(task_id):
 def link_session(task_id):
     """Link a session to a task.
 
-    Body: {session_id}
+    Body: {session_id, session_type?}
+    session_type: 'session' (default) or 'planner'
     Triggers handle_session_start to auto-transition the task if needed.
     """
     try:
@@ -641,14 +650,21 @@ def link_session(task_id):
         session_id = data.get("session_id", "").strip()
         if not session_id:
             return jsonify({"error": "session_id is required"}), 400
+        session_type = data.get("session_type", "session")
+        if session_type not in ("session", "planner"):
+            session_type = "session"
 
         repo = _get_repo()
         task = repo.get_task(task_id)
         if task is None:
             return jsonify({"error": "Task not found"}), 404
 
-        link = repo.link_session(task_id, session_id)
-        updated = handle_session_start(repo, task_id)
+        link = repo.link_session(task_id, session_id, session_type=session_type)
+        # Only auto-transition status for work sessions, not planners
+        if session_type == 'session':
+            updated = handle_session_start(repo, task_id)
+        else:
+            updated = task
 
         _emit("kanban_task_updated", updated)
         return jsonify(link.to_dict() if hasattr(link, 'to_dict') else link)
@@ -1451,6 +1467,8 @@ def update_kanban_config():
     # Behavior preferences
     for pref_key in ("auto_start_on_session", "auto_parent_working",
                      "auto_parent_reopen", "auto_advance_to_validating",
+                     "ai_can_modify_status", "ai_can_mark_complete",
+                     "cross_session_awareness",
                      "validation_url_enabled", "validation_url_dismissed"):
         if pref_key in data:
             cfg[pref_key] = bool(data[pref_key])
@@ -1506,6 +1524,44 @@ def session_state_change():
         return jsonify({"ok": True, "linked": True, "task_id": task_id})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@bp.route("/api/kanban/tasks/<task_id>/ai-status", methods=["POST"])
+def ai_status_change(task_id):
+    """AI-initiated status change for a kanban task.
+
+    Body: {new_status, session_id?}
+    Called when an AI session emits a status-change action for a task.
+    Respects ai_can_modify_status and ai_can_mark_complete preferences.
+    """
+    from ..config import get_kanban_config as _get_cfg
+    try:
+        data = request.get_json(silent=True) or {}
+        new_status = data.get("new_status", "").strip()
+        if not new_status:
+            return jsonify({"error": "new_status is required"}), 400
+
+        cfg = _get_cfg()
+
+        # Check AI autonomy preferences
+        if not cfg.get("ai_can_modify_status", True):
+            return jsonify({"error": "AI status modification is disabled", "blocked": True}), 403
+
+        if new_status == "complete" and not cfg.get("ai_can_mark_complete", True):
+            return jsonify({"error": "AI cannot mark tasks as complete (preference disabled)", "blocked": True}), 403
+
+        repo = _get_repo()
+        task = repo.get_task(task_id)
+        if task is None:
+            return jsonify({"error": "Task not found"}), 404
+
+        updated = transition_task(repo, task_id, new_status, force=False)
+        _emit("kanban_task_updated", updated)
+        return jsonify({"ok": True, "task": _task_response(updated)})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @bp.route("/api/kanban/tasks/<task_id>/context")

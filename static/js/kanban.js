@@ -1632,6 +1632,20 @@ async function _submitCreateTask(status, parentId) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || 'Create failed');
     }
+    const created = await res.json();
+    const newId = created.id || (created.task && created.task.id);
+
+    // Upgrade ghost card so it's immediately draggable before initKanban re-renders
+    if (ghostCard && newId) {
+      ghostCard.dataset.taskId = newId;
+      ghostCard.dataset.status = targetStatus;
+      ghostCard.draggable = true;
+      ghostCard.setAttribute('onclick', "navigateToTask('" + newId + "')");
+      ghostCard.setAttribute('ondragstart', "onKanbanDragStart(event, '" + newId + "', '" + targetStatus + "')");
+      ghostCard.setAttribute('ondragend', 'onKanbanDragEnd(event)');
+      ghostCard.style.opacity = '';
+    }
+
     if (typeof showToast === 'function') showToast('Task created');
     initKanban(true);
   } catch (e) {
@@ -2081,15 +2095,74 @@ async function renderTaskDetail(taskId, opts) {
 
     html += '</div>'; // drill-left
 
-    // ════════════ RIGHT: Chooser / Subtasks / Sessions ════════════
+    // ════════════ RIGHT: Chooser / Subtasks / Sessions / Leaf ════════════
     const hasChildren = childCount > 0;
-    const hasSessions = sessions.length > 0;
-    const mode = hasChildren ? 'subtasks' : hasSessions ? 'sessions' : 'empty';
+    const hasSessions = sessions.filter(s => (s.session_type || 'session') === 'session').length > 0;
+    const isLeafSubtask = !hasChildren && !!task.parent_id;
+    const mode = hasChildren ? 'subtasks' : isLeafSubtask ? 'leaf' : hasSessions ? 'sessions' : 'empty';
 
     html += '<div class="kanban-drill-right">';
 
-    if (mode === 'empty') {
-      // ── Chooser: no subtasks and no sessions yet ──
+    if (mode === 'leaf') {
+      // ── Leaf subtask: show Session and Planner as drill-down children ──
+      // Find existing linked session and planner for this task
+      const workSessions = sessions.filter(s => (s.session_type || 'session') === 'session');
+      const plannerSessions = sessions.filter(s => s.session_type === 'planner');
+      const existingSession = workSessions.length > 0 ? workSessions[0] : null;
+      const existingPlanner = plannerSessions.length > 0 ? plannerSessions[0] : null;
+
+      html += '<div class="kanban-drill-panel-header">';
+      html += `<span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-dim);">Work</span>`;
+      html += '</div>';
+      html += '<div class="kanban-drill-panel"><div class="kanban-drill-panel-body">';
+
+      // Session row
+      const sessStatus = existingSession ? (existingSession.status || 'sleeping') : 'not_started';
+      const sessColor = existingSession
+        ? (sessStatus === 'working' ? 'var(--status-working)' : sessStatus === 'idle' ? 'var(--status-complete)' : 'var(--text-dim)')
+        : 'var(--text-dim)';
+      const sessLabel = existingSession ? (sessStatus.charAt(0).toUpperCase() + sessStatus.slice(1)) : 'New';
+      const sessTitle = existingSession ? _resolveSessionName(existingSession.session_id) : 'Session';
+      const sessClick = existingSession
+        ? `_kanbanOpenSession('${task.id}','${escHtml(existingSession.session_id)}')`
+        : `openSessionSpawner('${task.id}')`;
+
+      html += `<div class="kanban-drill-subtask-row kanban-drill-leaf-row" onclick="${sessClick}" style="cursor:pointer;">`;
+      html += `<span class="kanban-drill-subtask-grip" style="visibility:hidden;"></span>`;
+      html += `<div class="kanban-drill-subtask-status" style="background:${sessColor}26;color:${sessColor};">${escHtml(sessLabel)}</div>`;
+      html += `<span class="kanban-drill-subtask-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-2px;margin-right:5px;opacity:0.6;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>${escHtml(sessTitle)}</span>`;
+      if (existingSession) {
+        html += `<div class="kanban-drill-subtask-actions">`;
+        html += `<button class="kanban-subtask-action-btn kanban-subtask-action-danger" onclick="event.stopPropagation();_clearLeafSession('${task.id}','${escHtml(existingSession.session_id)}','session')" title="Clear session"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>`;
+        html += `</div>`;
+      }
+      html += `<span class="kanban-drill-subtask-chevron" title="Open">${KI.chevronR}</span>`;
+      html += '</div>';
+
+      // Planner row
+      const planStatus = existingPlanner ? (existingPlanner.status || 'sleeping') : 'not_started';
+      const planColor = existingPlanner
+        ? (planStatus === 'working' ? 'var(--purple)' : planStatus === 'idle' ? 'var(--status-complete)' : 'var(--text-dim)')
+        : 'var(--text-dim)';
+      const planLabel = existingPlanner ? (planStatus.charAt(0).toUpperCase() + planStatus.slice(1)) : 'New';
+      const planClick = `_openLeafPlanner('${task.id}', ${existingPlanner ? "'" + escHtml(existingPlanner.session_id) + "'" : 'null'})`;
+
+      html += `<div class="kanban-drill-subtask-row kanban-drill-leaf-row" onclick="${planClick}" style="cursor:pointer;">`;
+      html += `<span class="kanban-drill-subtask-grip" style="visibility:hidden;"></span>`;
+      html += `<div class="kanban-drill-subtask-status" style="background:${planColor}26;color:${planColor};">${escHtml(planLabel)}</div>`;
+      html += `<span class="kanban-drill-subtask-title">${KI.plan} <span style="margin-left:5px;">Planner</span></span>`;
+      if (existingPlanner) {
+        html += `<div class="kanban-drill-subtask-actions">`;
+        html += `<button class="kanban-subtask-action-btn kanban-subtask-action-danger" onclick="event.stopPropagation();_clearLeafSession('${task.id}','${escHtml(existingPlanner.session_id)}','planner')" title="Clear planner"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>`;
+        html += `</div>`;
+      }
+      html += `<span class="kanban-drill-subtask-chevron" title="Open">${KI.chevronR}</span>`;
+      html += '</div>';
+
+      html += '</div></div>';
+
+    } else if (mode === 'empty') {
+      // ── Chooser: no subtasks and no sessions yet (root-level tasks only) ──
       html += '<div class="kanban-drill-chooser">';
       html += '<div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">How to proceed</div>';
       html += `<div class="kanban-drill-chooser-card" onclick="_chooserAction(this, () => createSubtaskInline('${task.id}'))">`;
@@ -2862,6 +2935,76 @@ async function onKanbanDrop(event, targetStatus) {
 
 
 // ═══════════════════════════════════════════════════════════════
+// AI AUTONOMY INLINE TOGGLE
+// Subtle toggle shown below the input bar in kanban-scoped sessions.
+// ═══════════════════════════════════════════════════════════════
+
+// Cache fetched config to avoid hammering the API on every render
+let _aiAutonomyCache = null;
+let _aiAutonomyCacheTime = 0;
+
+function _buildAiAutonomyToggle() {
+  // Only show in kanban-scoped sessions
+  if (!window._kanbanSessionTaskId && !window._kanbanPlannerTaskId) return '';
+
+  // Fetch config async and update the toggle state once loaded
+  const now = Date.now();
+  if (!_aiAutonomyCache || (now - _aiAutonomyCacheTime > 15000)) {
+    fetch('/api/kanban/config').then(r => r.ok ? r.json() : null).then(cfg => {
+      if (!cfg) return;
+      _aiAutonomyCache = cfg;
+      _aiAutonomyCacheTime = Date.now();
+      // Update toggle states in DOM
+      const modEl = document.getElementById('ai-toggle-modify');
+      const compEl = document.getElementById('ai-toggle-complete');
+      if (modEl) modEl.classList.toggle('active', cfg.ai_can_modify_status !== false);
+      if (compEl) compEl.classList.toggle('active', cfg.ai_can_mark_complete !== false);
+    }).catch(() => {});
+  }
+
+  const modActive = _aiAutonomyCache ? (_aiAutonomyCache.ai_can_modify_status !== false) : true;
+  const compActive = _aiAutonomyCache ? (_aiAutonomyCache.ai_can_mark_complete !== false) : true;
+
+  return '<div class="kanban-ai-autonomy-bar">' +
+    '<span class="kanban-ai-autonomy-label">AI:</span>' +
+    '<button id="ai-toggle-modify" class="kanban-ai-autonomy-pill' + (modActive ? ' active' : '') + '" onclick="_toggleAiPref(\'ai_can_modify_status\', this)" title="Toggle AI ability to change task statuses">Modify status</button>' +
+    '<button id="ai-toggle-complete" class="kanban-ai-autonomy-pill' + (compActive ? ' active' : '') + '" onclick="_toggleAiPref(\'ai_can_mark_complete\', this)" title="Toggle AI ability to mark tasks as complete">Mark complete</button>' +
+    '</div>';
+}
+
+async function _toggleAiPref(key, btn) {
+  const isActive = btn.classList.contains('active');
+  const newVal = !isActive;
+  btn.classList.toggle('active', newVal);
+
+  // If disabling modify, also disable complete
+  if (key === 'ai_can_modify_status' && !newVal) {
+    const compEl = document.getElementById('ai-toggle-complete');
+    if (compEl) compEl.classList.remove('active');
+  }
+
+  try {
+    const body = {};
+    body[key] = newVal;
+    if (key === 'ai_can_modify_status' && !newVal) body.ai_can_mark_complete = false;
+    await fetch('/api/kanban/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    // Update cache
+    if (_aiAutonomyCache) {
+      _aiAutonomyCache[key] = newVal;
+      if (key === 'ai_can_modify_status' && !newVal) _aiAutonomyCache.ai_can_mark_complete = false;
+    }
+  } catch (e) {
+    console.error('[Kanban] Failed to update AI preference:', e);
+    // Revert toggle on failure
+    btn.classList.toggle('active', isActive);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // SESSION SPAWNER (plan Section 5)
 // ═══════════════════════════════════════════════════════════════
 
@@ -2983,7 +3126,8 @@ async function openSessionSpawner(taskId) {
       '<div class="live-bar-row">' +
       '<span class="send-hint" style="font-size:10px;color:var(--text-faint);">' + (typeof _sendHint === 'function' ? _sendHint() : '') + '</span>' +
       '<button class="live-send-btn" id="live-voice-btn"></button>' +
-      '</div>';
+      '</div>' +
+      _buildAiAutonomyToggle();
     if (typeof setupVoiceButton === 'function') {
       setupVoiceButton(document.getElementById('live-input-ta'), document.getElementById('live-voice-btn'), () => _newSessionSubmit(newId));
     }
@@ -3003,6 +3147,433 @@ async function openSessionSpawner(taskId) {
       delete window._kanbanPendingTaskLink;
     }
   }, 500);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LEAF SUBTASK: Planner drill-down + clear/delete
+// Uses the same full-view drill-down paradigm as task navigation.
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Open the planner for a leaf subtask. Uses the same drill-down paradigm
+ * as navigating into a child task — replaces the current view entirely.
+ * If an existing planner session exists, resumes it. Otherwise creates a new one.
+ */
+async function _openLeafPlanner(taskId, existingSessionId) {
+  // Close any existing planner slide-in panel if open
+  const _pp = document.getElementById('kanban-planner-panel');
+  if (_pp && _pp.classList.contains('open')) {
+    _pp.classList.remove('open');
+    _pp.remove();
+    _persistPlannerState(null);
+  }
+
+  const taskTitle = window._kanbanDetailTaskTitle || '';
+  _plannerScopeParentId = taskId;
+
+  // If we have an existing planner session, re-open it as a scoped planner
+  if (existingSessionId) {
+    // Navigate into the planner like a drill-down child
+    _openPlannerDrillDown(taskId, existingSessionId, taskTitle);
+    return;
+  }
+
+  // Create a new planner session and link it
+  const newId = crypto.randomUUID();
+
+  // Register as hidden session (planner sessions don't appear in sidebar)
+  if (typeof _hiddenSessionIds !== 'undefined') _hiddenSessionIds.add(newId);
+
+  // Fetch task details for prefill
+  let prefill = '';
+  try {
+    const res = await fetch('/api/kanban/tasks/' + taskId);
+    if (res.ok) {
+      const data = await res.json();
+      const title = data.title || 'this task';
+      const desc = data.description || '';
+      prefill = 'Plan the subtasks for: "' + title + '"' + (desc ? '\nContext: ' + desc : '');
+    }
+  } catch (_) {}
+
+  // Link planner session to task
+  try {
+    await fetch('/api/kanban/tasks/' + taskId + '/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: newId, session_type: 'planner' }),
+    });
+  } catch (e) {
+    console.error('[Kanban] Failed to link planner session:', e);
+  }
+
+  _openPlannerDrillDown(taskId, newId, taskTitle, prefill);
+}
+
+/**
+ * Open planner in a full drill-down view (same paradigm as task/session navigation).
+ * Hides the kanban board, shows main-body with planner UI and breadcrumb bar.
+ */
+function _openPlannerDrillDown(taskId, sessionId, taskTitle, prefill) {
+  const kb = document.getElementById('kanban-board');
+  const mb = document.getElementById('main-body');
+
+  // Build breadcrumb from existing drill-down crumbs
+  const existingBreadcrumb = kb ? kb.querySelector('.kanban-drill-breadcrumb') : null;
+  const _isSkel = existingBreadcrumb && existingBreadcrumb.querySelector('.skel-shimmer');
+  let crumbInnerHtml = '';
+  if (existingBreadcrumb && !_isSkel) {
+    const clone = existingBreadcrumb.cloneNode(true);
+    const oldTrigger = clone.querySelector('.kanban-history-trigger');
+    if (oldTrigger) oldTrigger.remove();
+    const current = clone.querySelector('.kanban-drill-crumb.current');
+    if (current && taskId) {
+      current.classList.remove('current');
+      current.setAttribute('onclick', "_kanbanPlannerClose('" + escHtml(taskId) + "')");
+    }
+    crumbInnerHtml = clone.innerHTML;
+  } else {
+    crumbInnerHtml = '<span class="kanban-drill-crumb kanban-board-crumb" onclick="_kanbanPlannerClose(\'board\')" onmouseenter="_showKanbanHistory(this)" onmouseleave="_hideKanbanHistory()">' + KI.menu + ' Board</span>';
+    if (taskId && taskTitle) {
+      crumbInnerHtml += '<span class="kanban-drill-sep">' + KI.chevronR + '</span>';
+      crumbInnerHtml += '<span class="kanban-drill-crumb" onclick="_kanbanPlannerClose(\'' + escHtml(taskId) + '\')">' + escHtml(taskTitle) + '</span>';
+    }
+  }
+
+  if (kb) kb.style.display = 'none';
+  if (mb) mb.style.display = '';
+
+  // Remove old bar if exists
+  const oldBar = document.getElementById('kanban-session-bar');
+  if (oldBar) oldBar.remove();
+
+  // Build crumb bar with "Planner" as current node
+  let crumbHtml = '<div class="kanban-drill-titlebar" id="kanban-session-bar"><div class="kanban-drill-breadcrumb">'
+    + _kanbanHistoryIcon() + crumbInnerHtml
+    + '<span class="kanban-drill-sep">' + KI.chevronR + '</span>'
+    + '<span class="kanban-drill-crumb current">' + KI.plan + ' Planner</span></div>'
+    + '<div class="kanban-drill-actions"><span class="btn-group-label" onclick="openActionsPopup()">Actions</span></div></div>';
+  if (mb) mb.insertAdjacentHTML('beforebegin', crumbHtml);
+
+  // Track state
+  window._kanbanPlannerTaskId = taskId;
+  window._kanbanPlannerSessionId = sessionId;
+  _plannerSessionId = sessionId;
+
+  // Push history
+  history.pushState(
+    { view: 'kanban', taskId: taskId, planner: true, plannerSessionId: sessionId },
+    '', window.location.pathname + '#kanban/task/' + taskId + '/planner/' + sessionId
+  );
+
+  // Track in recent history
+  _kanbanHistoryPush({ type: 'planner', id: sessionId, title: 'Planner', taskId: taskId || '' });
+
+  // Render the planner UI inside main-body — same layout as the slide-in
+  // but now occupying the full main area
+  const plannerBody = document.getElementById('main-body');
+  if (plannerBody) {
+    plannerBody.innerHTML =
+      '<div class="live-panel" id="live-panel">' +
+      '<div class="conversation live-log" id="planner-drilldown-log" style="padding:20px;">' +
+      '<div class="planner-status" style="opacity:0.5;"><span>Describe what you want to plan, then press Enter.</span></div>' +
+      '</div>' +
+      '<div class="live-input-bar" id="live-input-bar"></div></div>';
+
+    const bar = document.getElementById('live-input-bar');
+    if (bar) {
+      bar.innerHTML =
+        '<textarea id="planner-drilldown-input" class="live-textarea" rows="3" placeholder="Describe your plan\u2026" autofocus' +
+        ' onkeydown="if(_shouldSend(event)){event.preventDefault();_submitPlannerDrillDown()}">' +
+        (prefill ? escHtml(prefill) : '') +
+        '</textarea>' +
+        '<div class="live-bar-row">' +
+        '<span class="send-hint" style="font-size:10px;color:var(--text-faint);">' + (typeof _sendHint === 'function' ? _sendHint() : '') + '</span>' +
+        '<button class="live-send-btn" id="planner-voice-btn"></button>' +
+        '</div>' +
+        _buildAiAutonomyToggle();
+      if (typeof setupVoiceButton === 'function') {
+        setupVoiceButton(document.getElementById('planner-drilldown-input'), document.getElementById('planner-voice-btn'), () => _submitPlannerDrillDown());
+      }
+      setTimeout(() => {
+        const ta = document.getElementById('planner-drilldown-input');
+        if (ta) { ta.focus(); ta.select(); if (typeof _initAutoResize === 'function') _initAutoResize(ta); }
+      }, 100);
+    }
+  }
+
+  document.getElementById('main-toolbar').style.display = 'none';
+}
+
+/**
+ * Submit a message to the planner from the drill-down view.
+ * Uses the same start_session mechanism as the slide-in planner panel.
+ */
+async function _submitPlannerDrillDown() {
+  const ta = document.getElementById('planner-drilldown-input');
+  if (!ta) return;
+  const prompt = ta.value.trim();
+  if (!prompt) return;
+  ta.value = '';
+
+  const logEl = document.getElementById('planner-drilldown-log');
+  if (!logEl) return;
+
+  // Show user message
+  logEl.innerHTML += '<div class="msg user"><div class="msg-text">' + escHtml(prompt) + '</div></div>';
+
+  // Show working indicator
+  logEl.innerHTML += '<div class="planner-status" id="planner-dd-working" style="padding:12px 0;"><span style="opacity:0.6;">Planning\u2026</span></div>';
+  logEl.scrollTop = logEl.scrollHeight;
+
+  const sessionId = window._kanbanPlannerSessionId || _plannerSessionId;
+  const taskId = window._kanbanPlannerTaskId;
+
+  // Reset planner state
+  _plannerProposal = null;
+  _plannerAccumText = '';
+  _plannerSteps = [];
+
+  // Build system prompt (same logic as _openPlannerSlideout)
+  let sysPrompt = _PLANNER_SYSTEM;
+  let valUrlSnippet = '';
+  let taskTreeSnippet = '';
+  let drillDownSnippet = '';
+  let detectedUrlSnippet = '';
+  const projectDir = typeof _currentProjectDir === 'function' ? _currentProjectDir() : '';
+
+  try {
+    const fetches = [
+      fetch('/api/kanban/config').then(r => r.ok ? r.json() : {}),
+      fetch('/api/kanban/task-tree-summary').then(r => r.ok ? r.json() : {}),
+      fetch('/api/kanban/detected-urls' + (projectDir ? '?cwd=' + encodeURIComponent(projectDir) : '')).then(r => r.ok ? r.json() : {}),
+    ];
+    if (taskId) {
+      fetches.push(fetch('/api/kanban/tasks/' + taskId + '/ancestors').then(r => r.ok ? r.json() : null));
+      fetches.push(fetch('/api/kanban/tasks/' + taskId).then(r => r.ok ? r.json() : null));
+    }
+    const results = await Promise.all(fetches);
+    const cfgRes = results[0];
+    const treeRes = results[1];
+    const urlsRes = results[2] || {};
+    const ancestorRes = results[3] || null;
+    const taskDetail = results[4] || null;
+
+    if (cfgRes.validation_url_enabled && cfgRes.validation_base_url) {
+      valUrlSnippet = ' VALIDATION URLS ENABLED. Dev server base URL: ' + cfgRes.validation_base_url + '. You MUST set verification_url on EVERY task.';
+    }
+    if (urlsRes.formatted) {
+      detectedUrlSnippet = '\n\nDETECTED ROUTES:\n' + urlsRes.formatted;
+    }
+    if (treeRes.summary) {
+      taskTreeSnippet = '\n\nEXISTING TASK TREE:\n' + treeRes.summary;
+    }
+    if (taskId && (ancestorRes || taskDetail)) {
+      let parts = [];
+      if (ancestorRes && ancestorRes.ancestors && ancestorRes.ancestors.length) {
+        parts.push('CURRENT POSITION: ' + ancestorRes.ancestors.map(a => a.title).join(' → '));
+      }
+      if (taskDetail) {
+        parts.push('CURRENT TASK (id: ' + taskId + '): "' + (taskDetail.title || '') + '"');
+        if (taskDetail.description) parts.push('Description: ' + taskDetail.description);
+      }
+      if (parts.length) drillDownSnippet = '\n\nDRILL-DOWN CONTEXT:\n' + parts.join('\n');
+    }
+  } catch (_) {}
+
+  sysPrompt += valUrlSnippet + detectedUrlSnippet + taskTreeSnippet + drillDownSnippet;
+  if (taskId) {
+    sysPrompt += ' IMPORTANT: You are planning subtasks for an EXISTING task. Return EXACTLY ONE top-level task in your "tasks" array — this is the parent task. Include its subtasks as children.';
+  }
+
+  // Wire up entry/state listeners for the planner session
+  _detachPlannerListeners();
+
+  _plannerEntryListener = (data) => {
+    if (data.session_id !== sessionId) return;
+    if (!data.entry) return;
+    const working = document.getElementById('planner-dd-working');
+    if (working) working.remove();
+
+    const kind = data.entry.kind;
+    const text = data.entry.text || '';
+
+    if (kind === 'tool_use') {
+      const desc = data.entry.desc || data.entry.name || 'Working\u2026';
+      const stepsEl = document.getElementById('planner-dd-steps');
+      if (!stepsEl) {
+        logEl.insertAdjacentHTML('beforeend', '<div id="planner-dd-steps" style="font-size:11px;color:var(--text-dim);padding:4px 0;"></div>');
+      }
+      const se = document.getElementById('planner-dd-steps');
+      if (se) se.innerHTML = '<span style="opacity:0.6;">' + escHtml(desc) + '</span>';
+      return;
+    }
+    if (kind === 'tool_result') return;
+    if (!text || kind !== 'asst') return;
+
+    _plannerAccumText += text;
+
+    // Render accumulated response as markdown
+    const html = typeof mdParse === 'function' ? mdParse(_plannerAccumText) : escHtml(_plannerAccumText);
+    let msgEl = document.getElementById('planner-dd-response');
+    if (!msgEl) {
+      logEl.insertAdjacentHTML('beforeend', '<div class="msg assistant" id="planner-dd-response"><div class="msg-text"></div></div>');
+      msgEl = document.getElementById('planner-dd-response');
+    }
+    if (msgEl) msgEl.querySelector('.msg-text').innerHTML = html;
+    logEl.scrollTop = logEl.scrollHeight;
+
+    // Check for kanban status markers
+    if (typeof _processKanbanStatusMarkers === 'function') _processKanbanStatusMarkers(text);
+  };
+
+  _plannerStateListener = (data) => {
+    if (data.session_id !== sessionId) return;
+    if (data.state === 'idle' || data.state === 'stopped') {
+      // Session done — try to parse plan from accumulated text
+      if (_plannerProposal) return;  // Already parsed
+      _showDrillDownPlanResult(_plannerAccumText);
+    }
+  };
+
+  socket.on('session_entry', _plannerEntryListener);
+  socket.on('session_state', _plannerStateListener);
+
+  // Register session as running
+  if (typeof _hiddenSessionIds !== 'undefined') _hiddenSessionIds.add(sessionId);
+  runningIds.add(sessionId);
+  sessionKinds[sessionId] = 'working';
+
+  // Start the planner session via daemon
+  socket.emit('start_session', {
+    session_id: sessionId,
+    prompt: prompt,
+    cwd: projectDir,
+    system_prompt: sysPrompt,
+    max_turns: 0,
+    session_type: 'planner',
+  });
+}
+
+/**
+ * Try to parse and display plan results in the drill-down planner.
+ */
+function _showDrillDownPlanResult(rawText) {
+  // Reuse the existing _showPlanResult parser — it extracts JSON
+  const logEl = document.getElementById('planner-drilldown-log');
+  if (!logEl) return;
+
+  // Try to extract JSON from the raw text
+  const jsonMatch = rawText.match(/```json\s*([\s\S]*?)```/) || rawText.match(/(\{[\s\S]*\})/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[1]);
+      _plannerProposal = parsed;
+
+      // Show accept bar below the log
+      let acceptBar = document.getElementById('planner-dd-accept');
+      if (!acceptBar) {
+        const panel = document.getElementById('live-panel');
+        if (panel) {
+          panel.insertAdjacentHTML('beforeend',
+            '<div id="planner-dd-accept" style="padding:10px 20px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0;">' +
+            '<button class="pm-btn pm-btn-primary" onclick="_acceptPlannerDrillDown()" style="background:var(--purple);border-color:var(--purple);">Accept Plan</button>' +
+            '<span style="font-size:12px;color:var(--text-dim);">Accept to create subtasks on the board</span>' +
+            '</div>');
+        }
+      }
+    } catch (_) {
+      // Not valid JSON — show as-is (just a text response, no plan to accept)
+    }
+  }
+
+  // Show refine prompt
+  const ta = document.getElementById('planner-drilldown-input');
+  if (ta) {
+    ta.placeholder = 'Refine the plan or type a new request\u2026';
+    ta.focus();
+  }
+}
+
+/**
+ * Accept the plan from the drill-down planner and create subtasks.
+ */
+async function _acceptPlannerDrillDown() {
+  if (!_plannerProposal) {
+    if (typeof showToast === 'function') showToast('No plan to accept', true);
+    return;
+  }
+  const taskId = window._kanbanPlannerTaskId;
+  if (!taskId) return;
+
+  try {
+    const res = await fetch('/api/kanban/planner/accept', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        proposal: _plannerProposal,
+        parent_id: taskId,
+        session_id: window._kanbanPlannerSessionId,
+      }),
+    });
+    if (!res.ok) throw new Error('Failed to accept plan');
+
+    if (typeof showToast === 'function') showToast('Plan accepted! Subtasks created.');
+    // Navigate back to the task to see the new subtasks
+    _kanbanPlannerClose(taskId);
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Failed: ' + e.message, true);
+  }
+}
+
+/**
+ * Close the planner drill-down and return to the task view.
+ */
+function _kanbanPlannerClose(target) {
+  // Clean up planner state
+  window._kanbanPlannerTaskId = null;
+  window._kanbanPlannerSessionId = null;
+  if (_plannerEntryListener) { socket.off('session_entry', _plannerEntryListener); _plannerEntryListener = null; }
+
+  // Remove crumb bar
+  const bar = document.getElementById('kanban-session-bar');
+  if (bar) bar.remove();
+
+  // Remove accept bar if present
+  const acceptBar = document.getElementById('planner-dd-accept');
+  if (acceptBar) acceptBar.remove();
+
+  // Restore panels
+  const mb = document.getElementById('main-body');
+  if (mb) mb.style.display = 'none';
+  const kb = document.getElementById('kanban-board');
+  if (kb) kb.style.display = '';
+
+  // Navigate
+  if (target === 'board') navigateToBoard();
+  else navigateToTask(target);
+}
+
+/**
+ * Clear/delete a leaf subtask's linked session or planner and refresh the view.
+ */
+async function _clearLeafSession(taskId, sessionId, sessionType) {
+  const typeLabel = sessionType === 'planner' ? 'planner' : 'session';
+  _kanbanConfirm(
+    'Clear ' + typeLabel + '?',
+    'This will unlink the ' + typeLabel + ' from this task. You can create a new one afterward.',
+    async () => {
+      try {
+        await fetch('/api/kanban/tasks/' + taskId + '/sessions/' + sessionId, { method: 'DELETE' });
+        if (typeof showToast === 'function') showToast(typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1) + ' cleared');
+        // Refresh the drill-down view
+        renderTaskDetail(taskId);
+      } catch (e) {
+        if (typeof showToast === 'function') showToast('Failed: ' + e.message, true);
+      }
+    },
+    { btnLabel: 'Clear', btnStyle: 'background:var(--red);border-color:var(--red);' }
+  );
 }
 
 async function _kanbanOpenSession(taskId, sessionId) {
@@ -3149,6 +3720,14 @@ function _openSessionInKanban(sessionId) {
 
   // Start live panel — writes to #main-body
   if (typeof startLivePanel === 'function') startLivePanel(sessionId);
+
+  // Inject AI autonomy toggle after the live panel input bar renders
+  setTimeout(() => {
+    const inputBar = document.getElementById('live-input-bar');
+    if (inputBar && !inputBar.querySelector('.kanban-ai-autonomy-bar')) {
+      inputBar.insertAdjacentHTML('beforeend', _buildAiAutonomyToggle());
+    }
+  }, 300);
 }
 
 /**
@@ -3807,6 +4386,20 @@ async function openKanbanSettings(initialTab) {
         <div><div style="font-size:13px;font-weight:500;">All done → Validating</div><div style="font-size:12px;color:var(--text-dim);">When all sessions and subtasks finish, move to Validating</div></div>
         <label class="kanban-toggle"><input type="checkbox" id="kb-auto-advance" ${_chk('auto_advance_to_validating', false)}><span class="kanban-toggle-slider"></span></label>
       </div>
+      <div style="font-size:14px;font-weight:600;margin:16px 0 12px;">AI Behavior</div>
+      <div class="kanban-settings-row">
+        <div><div style="font-size:13px;font-weight:500;">AI can modify task status</div><div style="font-size:12px;color:var(--text-dim);">Allow AI sessions to change task statuses (working, validating, etc.)</div></div>
+        <label class="kanban-toggle"><input type="checkbox" id="kb-ai-modify-status" ${_chk('ai_can_modify_status', true)} onchange="document.getElementById('kb-ai-mark-complete').disabled=!this.checked;if(!this.checked)document.getElementById('kb-ai-mark-complete').checked=false;"><span class="kanban-toggle-slider"></span></label>
+      </div>
+      <div class="kanban-settings-row" style="padding-left:20px;opacity:${(config.ai_can_modify_status !== false) ? '1' : '0.5'};">
+        <div><div style="font-size:13px;font-weight:500;">AI can mark tasks complete</div><div style="font-size:12px;color:var(--text-dim);">Allow AI to mark tasks as complete (otherwise stops at validating)</div></div>
+        <label class="kanban-toggle"><input type="checkbox" id="kb-ai-mark-complete" ${_chk('ai_can_mark_complete', true)} ${config.ai_can_modify_status === false ? 'disabled' : ''}><span class="kanban-toggle-slider"></span></label>
+      </div>
+      <div style="font-size:14px;font-weight:600;margin:16px 0 12px;">Session Awareness</div>
+      <div class="kanban-settings-row">
+        <div><div style="font-size:13px;font-weight:500;">Cross-session awareness</div><div style="font-size:12px;color:var(--text-dim);">Tell AI sessions what other sessions are doing — names, status, and recently edited files</div></div>
+        <label class="kanban-toggle"><input type="checkbox" id="kb-cross-session" ${_chk('cross_session_awareness', true)}><span class="kanban-toggle-slider"></span></label>
+      </div>
       <div style="font-size:14px;font-weight:600;margin:16px 0 12px;">General</div>
       <div class="kanban-settings-row">
         <div><div style="font-size:13px;font-weight:500;">Column page size</div><div style="font-size:12px;color:var(--text-dim);">Max tasks per column before pagination</div></div>
@@ -3926,7 +4519,10 @@ async function openKanbanSettings(initialTab) {
         auto_parent_working: document.getElementById('kb-auto-parent-working')?.checked ?? true,
         auto_parent_reopen: document.getElementById('kb-auto-parent-reopen')?.checked ?? true,
         auto_advance_to_validating: document.getElementById('kb-auto-advance')?.checked ?? false,
+        ai_can_modify_status: document.getElementById('kb-ai-modify-status')?.checked ?? true,
+        ai_can_mark_complete: document.getElementById('kb-ai-mark-complete')?.checked ?? true,
         kanban_page_size: parseInt(pageSize, 10),
+        cross_session_awareness: document.getElementById('kb-cross-session')?.checked ?? true,
         validation_url_enabled: document.getElementById('kb-val-enabled')?.checked ?? false,
         validation_base_url: document.getElementById('kb-val-base-url')?.value?.trim() || '',
       };

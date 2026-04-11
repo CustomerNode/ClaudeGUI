@@ -78,6 +78,14 @@ def _kanban_config_defaults() -> dict:
         "auto_parent_reopen": True,
         # All children/sessions done → task moves to Validating
         "auto_advance_to_validating": False,
+        # ── AI autonomy preferences ──
+        # AI sessions can change task statuses (working, validating, etc.)
+        "ai_can_modify_status": True,
+        # AI planner / sessions can mark tasks as complete
+        "ai_can_mark_complete": True,
+        # ── Cross-session awareness ──
+        # Inject other active sessions' names/status/files into system prompts
+        "cross_session_awareness": True,
         # ── Validation URL preferences ──
         "validation_url_enabled": False,
         "validation_base_url": "",

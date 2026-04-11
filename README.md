@@ -1,6 +1,6 @@
 # VibeNode
 
-A local development environment for Claude Code — interactive session management, a hierarchical task board where your roadmap terminates in working Claude sessions, and a unified knowledge asset library that brings skills and agents together. Built by [CustomerNode](https://customernode.com) and [Claude Code](https://claude.ai/download).
+Session orchestrator UI for Claude Code — manage parallel sessions that are aware of each other and avoid conflicts automatically, a hierarchical task board where your roadmap terminates in working Claude sessions, and a unified knowledge asset library that brings skills and agents together. Built by [CustomerNode](https://customernode.com) and [Claude Code](https://claude.ai/download).
 
 ![VibeNode homepage showing Sessions, Workflow, and Workforce cards](docs/screenshots/homepage.png)
 
@@ -30,6 +30,11 @@ Run and interact with your Claude Code sessions. This is the full interactive te
 - Send commands to running sessions
 - Session tools: auto-name, duplicate, fork, rewind, delete, summarize, extract code, compare sessions
 - Display as visual grid cards or compact list — switch anytime from the sidebar menu
+- **Cross-session awareness** — Every session in a project knows what the other sessions are doing. At session start, each session's system prompt is injected with a live snapshot of all other active sessions in the same project: their auto-generated names, current status, how long they've been running, and the last few files they've edited. When sessions are touching the same files, the overlap is flagged explicitly — the AI sees the conflict, re-reads the file before editing, and if the file is unstable mid-refactor, backs off and surfaces the incomplete work to the user instead of creating merge conflicts. No inter-session messaging, no coordination protocol — just awareness and smart avoidance. Toggle it on or off in System Preferences.
+
+![Cross-session awareness — sessions see each other's status and files, with automatic conflict avoidance](docs/cross-session-awareness.svg)
+
+Sessions can be displayed as visual grid cards or a compact list — switch anytime from the sidebar menu.
 
 ![Session grid with live conversation panel](docs/screenshots/session-grid.png)
 
@@ -69,7 +74,7 @@ Open a session from the board and the full breadcrumb path stays visible, keepin
 - **Built for scale** — Paginated columns, indexed queries, recursive CTEs for tree traversal, gap-numbered positioning for drag reorder. Designed to handle thousands of tasks without degradation.
 - **Configurable columns** — Rename, reorder, recolor, add, or remove workflow columns per project. Per-column sort mode (manual drag, date entered, date created, alphabetical).
 - **Reports & analytics** — Velocity, cycle time, status breakdown, remediation rate, tag distribution, completion trends, workload analysis, and more.
-- **Multi-session coordination** — When a session launches from a task, it gets a briefing that includes sibling task statuses, which siblings have active sessions running (and for how long), open validation issues, and the full breadcrumb path up the task tree. Claude can see what's being worked on nearby and avoid conflicts — parallel sessions on related tasks are aware of each other.
+- **Multi-session coordination** — When a session launches from a task, it gets a briefing that includes sibling task statuses, which siblings have active sessions running (and for how long), open validation issues, and the full breadcrumb path up the task tree. This is layered on top of the project-wide cross-session awareness (see Sessions above) — so workflow sessions get both a task-neighborhood view of their siblings *and* a bird's-eye view of everything running across the project, with file-level overlap detection and automatic conflict avoidance.
 - **Tags, issues, and validation** — Tag tasks for filtering, log validation issues against tasks, track resolution status.
 
 ### Workforce

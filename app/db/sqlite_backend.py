@@ -111,6 +111,7 @@ class SqliteRepository(KanbanRepository):
             if row and row[0] is not None:
                 # Apply any newer migrations that may not have run yet
                 self._apply_migration_002(conn)
+                self._apply_migration_005(conn)
                 self._schema_applied = True
                 return
 
@@ -128,6 +129,8 @@ class SqliteRepository(KanbanRepository):
 
         # Apply migration 002 — task_tags (idempotent)
         self._apply_migration_002(conn)
+        # Apply migration 005 — session_type column
+        self._apply_migration_005(conn)
 
         self._schema_applied = True
 
@@ -188,6 +191,21 @@ class SqliteRepository(KanbanRepository):
             (2, now),
         )
         conn.commit()
+
+    def _apply_migration_005(self, conn):
+        """Add session_type column to task_sessions (idempotent)."""
+        info = conn.execute("PRAGMA table_info(task_sessions)").fetchall()
+        col_names = [row[1] if isinstance(row, tuple) else row["name"] for row in info]
+        if "session_type" not in col_names:
+            conn.execute(
+                "ALTER TABLE task_sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'session'"
+            )
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (5, now),
+            )
+            conn.commit()
 
     # ------------------------------------------------------------------
     # Row ↔ dataclass helpers
@@ -521,17 +539,23 @@ class SqliteRepository(KanbanRepository):
     # Task ↔ Session links
     # ------------------------------------------------------------------
 
-    def link_session(self, task_id, session_id):
-        """Associate a Claude session with a task."""
+    def link_session(self, task_id, session_id, session_type='session'):
+        """Associate a Claude session with a task.
+
+        Args:
+            task_id: The task to link to.
+            session_id: The session UUID.
+            session_type: 'session' (work session) or 'planner'.
+        """
         conn = self._get_conn()
         now = datetime.now(timezone.utc).isoformat()
         conn.execute(
-            "INSERT OR IGNORE INTO task_sessions (task_id, session_id, created_at) "
-            "VALUES (?, ?, ?)",
-            (task_id, session_id, now),
+            "INSERT OR IGNORE INTO task_sessions (task_id, session_id, created_at, session_type) "
+            "VALUES (?, ?, ?, ?)",
+            (task_id, session_id, now, session_type),
         )
         conn.commit()
-        return TaskSession(task_id=task_id, session_id=session_id, created_at=now)
+        return TaskSession(task_id=task_id, session_id=session_id, created_at=now, session_type=session_type)
 
     def unlink_session(self, task_id, session_id):
         """Remove the link between a session and a task."""
@@ -542,15 +566,38 @@ class SqliteRepository(KanbanRepository):
         )
         conn.commit()
 
-    def get_task_sessions(self, task_id):
-        """Return list of session_id strings linked to a task."""
+    def get_task_sessions(self, task_id, session_type=None):
+        """Return list of TaskSession objects linked to a task.
+
+        Args:
+            task_id: The task to query.
+            session_type: Optional filter — 'session', 'planner', or None for all.
+        """
         conn = self._get_conn()
-        cur = conn.execute(
-            "SELECT session_id FROM task_sessions WHERE task_id = ? "
-            "ORDER BY created_at ASC",
-            (task_id,),
-        )
-        return [row["session_id"] for row in cur.fetchall()]
+        if session_type:
+            cur = conn.execute(
+                "SELECT task_id, session_id, created_at, session_type "
+                "FROM task_sessions WHERE task_id = ? AND session_type = ? "
+                "ORDER BY created_at ASC",
+                (task_id, session_type),
+            )
+        else:
+            cur = conn.execute(
+                "SELECT task_id, session_id, created_at, session_type "
+                "FROM task_sessions WHERE task_id = ? "
+                "ORDER BY created_at ASC",
+                (task_id,),
+            )
+        rows = cur.fetchall()
+        return [
+            TaskSession(
+                task_id=r["task_id"],
+                session_id=r["session_id"],
+                created_at=r["created_at"],
+                session_type=r["session_type"] if "session_type" in r.keys() else "session",
+            )
+            for r in rows
+        ]
 
     def get_session_task(self, session_id):
         """Return the task_id linked to a session, or None."""
@@ -961,7 +1008,7 @@ class SqliteRepository(KanbanRepository):
         """Return every task_sessions row (for migration)."""
         conn = self._get_conn()
         cur = conn.execute(
-            "SELECT task_id, session_id, created_at FROM task_sessions"
+            "SELECT task_id, session_id, created_at, session_type FROM task_sessions"
         )
         return [dict(row) for row in cur.fetchall()]
 

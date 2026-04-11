@@ -315,7 +315,12 @@ class SessionInfo:
     _tracked_files_populated: bool = False               # True after first _prepopulate_tracked_files
     _last_user_uuid: str = ""                            # cached from JSONL, updated by _process_message
     _last_asst_uuid: str = ""                            # cached from JSONL, updated by _process_message
+    created_ts: float = 0.0  # time.time() when session was created
     _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def __post_init__(self):
+        if not self.created_ts:
+            self.created_ts = time.time()
 
     def to_state_dict(self) -> dict:
         d = {
@@ -328,6 +333,8 @@ class SessionInfo:
             "model": self.model,
             "session_type": self.session_type,
             "working_since": self.working_since if self.state == SessionState.WORKING else 0,
+            "created_ts": self.created_ts,
+            "tracked_files": list(self.tracked_files)[-5:],
         }
         if self.substatus:
             d["substatus"] = self.substatus

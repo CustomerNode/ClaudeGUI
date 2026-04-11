@@ -7539,6 +7539,60 @@ mark.find-match.current { background: var(--accent); color:#fff; }
 .kanban-drill-subtask-row.drag-above { border-top: 2px solid var(--accent); margin-top: -2px; }
 .kanban-drill-subtask-row.drag-below { border-bottom: 2px solid var(--accent); margin-bottom: -2px; }
 
+/* Leaf subtask rows (Session / Planner entry points) */
+.kanban-drill-leaf-row {
+  transition: background 0.15s;
+}
+.kanban-drill-leaf-row:hover {
+  background: var(--bg-subtle-faint);
+}
+.kanban-drill-leaf-row .kanban-drill-subtask-title svg {
+  opacity: 0.5;
+}
+.kanban-drill-leaf-row:hover .kanban-drill-subtask-title svg {
+  opacity: 0.8;
+}
+
+/* AI autonomy inline toggle bar */
+.kanban-ai-autonomy-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--border-faint, var(--border));
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+.kanban-ai-autonomy-bar:hover { opacity: 1; }
+.kanban-ai-autonomy-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+.kanban-ai-autonomy-pill {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s;
+  line-height: 1.4;
+}
+.kanban-ai-autonomy-pill:hover {
+  border-color: var(--text-muted);
+}
+.kanban-ai-autonomy-pill.active {
+  background: var(--accent-dim, var(--accent));
+  color: #fff;
+  border-color: var(--accent-dim, var(--accent));
+}
+
 /* Ghost add row */
 .kanban-drill-ghost-row { opacity: 0.5; cursor: pointer; }
 .kanban-drill-ghost-row:hover { opacity: 0.8; }
