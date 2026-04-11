@@ -2,7 +2,7 @@
 VibeNode Flask application factory.
 """
 
-from flask import Flask
+from flask import Flask, request
 from flask_socketio import SocketIO
 
 from .config import _VIBENODE_DIR
@@ -75,5 +75,16 @@ def create_app() -> Flask:
                 mtime = 0
             return f"/static/{filename}?v={mtime}"
         return dict(versioned_static=versioned_static)
+
+    # Prevent aggressive browser caching of static JS/CSS
+    app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+
+    @app.after_request
+    def _no_cache_static(response):
+        if request.path.startswith('/static/'):
+            response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
+        return response
 
     return app
