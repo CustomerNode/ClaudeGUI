@@ -104,31 +104,318 @@ function closeGitSyncModal() {
   document.getElementById('git-sync-overlay').classList.remove('show');
 }
 
+function _syncStatusHtml(stepLabel) {
+  return '<div class="scan-anim">'
+    + '<div class="scan-shield">'
+    +   '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+    +     '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'
+    +   '</svg>'
+    +   '<div class="scan-beam"></div>'
+    + '</div>'
+    + '<div class="scan-label" id="sync-step-label">' + (stepLabel || 'Working...') + '</div>'
+    + '<div class="scan-progress">'
+    +   '<div class="scan-progress-bar"><div class="scan-progress-fill" id="scan-progress-fill" style="width:0%"></div></div>'
+    +   '<div class="scan-progress-text" id="scan-progress-text"></div>'
+    +   '<div class="scan-file-name" id="scan-file-name" style="font-size:10px;color:var(--text-faint,#666);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:380px;"></div>'
+    + '</div>'
+    + '</div>';
+}
+
+function _setSyncStep(label, pct) {
+  const el = document.getElementById('sync-step-label');
+  const fill = document.getElementById('scan-progress-fill');
+  const text = document.getElementById('scan-progress-text');
+  const fname = document.getElementById('scan-file-name');
+  if (el) el.textContent = label;
+  if (fill) fill.style.width = (pct || 0) + '%';
+  if (text) text.textContent = '';
+  if (fname) fname.textContent = '';
+}
+
 async function executeGitAction(action, btnId, btnLabel) {
   closeGitSyncModal();
   const btn = document.getElementById(btnId);
   btn.disabled = true;
+
+  const isPush = action === 'push' || action === 'both';
+  const isPull = action === 'pull' || action === 'both';
+
+  // Show animated modal for all actions
+  const firstStep = isPull ? 'Pulling latest updates...' : 'Scanning repository...';
+  showGitSyncModal(btnLabel, isPush ? _scanAnimationHtml() : _syncStatusHtml(firstStep), []);
+
+  // For push/sync: run streaming scan first
+  if (isPush) {
+    try {
+      const preScan = await _runStreamingScan();
+      await new Promise(r => setTimeout(r, 300));
+      if (!preScan.ok) {
+        let body = '<ul style="margin:10px 0 0 16px;color:var(--text-secondary);">'
+          + '<li>Push blocked by security scan: ' + escHtml(preScan.summary) + '</li></ul>'
+          + _renderScanFindings(preScan);
+        const scanBtns = [
+          {label: 'Fix with AI', primary: true, onclick: () => { closeGitSyncModal(); _launchRemediationSession(preScan); }},
+          {label: 'Close', onclick: closeGitSyncModal}
+        ];
+        showGitSyncModal('Push Blocked \u2014 Security Issue', body, scanBtns);
+        btn.disabled = false;
+        return;
+      }
+      // Scan passed — transition to sync step
+      _setSyncStep(isPull ? 'Pulling & pushing...' : 'Pushing changes...', 0);
+    } catch(_) {
+      // Stream failed — fall through to normal sync (server has its own scan)
+    }
+  }
+
+  // Show indeterminate progress during the git operation
+  const _pulseTimer = setInterval(() => {
+    const fill = document.getElementById('scan-progress-fill');
+    if (!fill) { clearInterval(_pulseTimer); return; }
+    // Gentle pulse between 20-80% to show activity
+    const t = (Date.now() % 2000) / 2000;
+    const pct = 20 + 60 * (0.5 + 0.5 * Math.sin(t * Math.PI * 2));
+    fill.style.width = pct + '%';
+  }, 50);
+
   try {
     const res = await fetch('/api/git-sync', {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({action})
     });
+    clearInterval(_pulseTimer);
     const r = await res.json();
-    const body = '<ul style="margin:10px 0 0 16px;color:var(--text-secondary);">'
+
+    // Snap to 100%
+    const fill = document.getElementById('scan-progress-fill');
+    if (fill) fill.style.width = '100%';
+    await new Promise(r => setTimeout(r, 300));
+
+    let body = '<ul style="margin:10px 0 0 16px;color:var(--text-secondary);">'
       + r.messages.map(m => '<li>' + escHtml(m) + '</li>').join('') + '</ul>';
-    showGitSyncModal(r.ok ? btnLabel + ' \u2713' : 'Problem', body,
-      [{label:'OK', primary:true, onclick: closeGitSyncModal}]);
-    // Use the git status returned directly from the sync response.
-    // This avoids a separate poll that could race with background refreshes.
+
+    if (r.scan && !r.scan.ok) {
+      body += _renderScanFindings(r.scan);
+    }
+
+    const btns = [{label:'OK', primary: r.ok, onclick: closeGitSyncModal}];
+    if (r.scan && !r.scan.ok) {
+      btns.unshift({label: 'Fix with AI', primary: true, onclick: () => { closeGitSyncModal(); _launchRemediationSession(r.scan); }});
+    }
+    showGitSyncModal(r.ok ? btnLabel + ' \u2713' : 'Push Blocked \u2014 Security Issue', body, btns);
     if (r.git_status) {
       _applyGitStatus(r.git_status);
     } else {
       await pollGitStatus();
     }
   } catch(e) {
+    clearInterval(_pulseTimer);
     showGitSyncModal('Error', '<p style="color:var(--result-err)">Could not complete. Try again.</p>',
       [{label:'OK', onclick: closeGitSyncModal}]);
   } finally {
     btn.disabled = false;
   }
+}
+
+// ── Security scan rendering ──
+function _renderScanFindings(scan) {
+  let html = '<div style="margin-top:12px;padding:10px;background:rgba(255,60,60,0.08);border:1px solid rgba(255,60,60,0.2);border-radius:8px;">';
+  html += '<div style="font-weight:600;color:var(--result-err,#ff4444);font-size:12px;margin-bottom:6px;">Security Scan Results</div>';
+  html += '<div style="font-size:11px;color:var(--text-secondary);margin-bottom:8px;">' + escHtml(scan.summary) + ' (' + scan.files_scanned + ' files scanned)</div>';
+
+  if (scan.blocked_files && scan.blocked_files.length) {
+    html += '<div style="font-size:11px;font-weight:600;color:var(--text-heading);margin:6px 0 3px;">Blocked Files:</div>';
+    html += '<ul style="margin:0 0 0 14px;font-size:11px;color:var(--text-secondary);">';
+    scan.blocked_files.forEach(f => {
+      html += '<li><code style="color:var(--result-err)">' + escHtml(f.file) + '</code> — ' + escHtml(f.reason) + '</li>';
+    });
+    html += '</ul>';
+  }
+
+  if (scan.findings && scan.findings.length) {
+    html += '<div style="font-size:11px;font-weight:600;color:var(--text-heading);margin:6px 0 3px;">Potential Secrets:</div>';
+    html += '<ul style="margin:0 0 0 14px;font-size:11px;color:var(--text-secondary);">';
+    scan.findings.slice(0, 15).forEach(f => {
+      html += '<li><code style="color:var(--result-err)">' + escHtml(f.file) + ':' + f.line + '</code> — '
+        + escHtml(f.type) + ': <code>' + escHtml(f.match) + '</code></li>';
+    });
+    if (scan.findings.length > 15) {
+      html += '<li style="color:var(--text-muted)">...and ' + (scan.findings.length - 15) + ' more</li>';
+    }
+    html += '</ul>';
+  }
+
+  html += '</div>';
+  return html;
+}
+
+function _scanAnimationHtml() {
+  return '<div class="scan-anim">'
+    + '<div class="scan-shield">'
+    +   '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+    +     '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'
+    +   '</svg>'
+    +   '<div class="scan-beam"></div>'
+    + '</div>'
+    + '<div class="scan-label">Scanning repository...</div>'
+    + '<div class="scan-progress">'
+    +   '<div class="scan-progress-bar"><div class="scan-progress-fill" id="scan-progress-fill"></div></div>'
+    +   '<div class="scan-progress-text" id="scan-progress-text">Connecting...</div>'
+    +   '<div class="scan-file-name" id="scan-file-name" style="font-size:10px;color:var(--text-faint,#666);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:380px;"></div>'
+    + '</div>'
+    + '</div>';
+}
+
+function _runStreamingScan() {
+  return new Promise((resolve, reject) => {
+    const es = new EventSource('/api/git-scan-stream');
+    const fill = () => document.getElementById('scan-progress-fill');
+    const text = () => document.getElementById('scan-progress-text');
+    const fname = () => document.getElementById('scan-file-name');
+
+    es.onmessage = (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        if (d.type === 'progress') {
+          const pct = Math.round((d.current / d.total) * 100);
+          if (fill()) fill().style.width = pct + '%';
+          if (text()) text().textContent = d.current + ' / ' + d.total + ' files';
+          if (fname()) fname().textContent = d.file;
+        } else if (d.type === 'done') {
+          es.close();
+          if (fill()) fill().style.width = '100%';
+          if (text()) text().textContent = d.files_scanned + ' / ' + d.files_scanned + ' files';
+          if (fname()) fname().textContent = '';
+          resolve(d);
+        }
+      } catch(_) {}
+    };
+    es.onerror = () => {
+      es.close();
+      reject(new Error('Scan stream failed'));
+    };
+  });
+}
+
+async function runCodeScan() {
+  showGitSyncModal('Server Scan', _scanAnimationHtml(), []);
+  try {
+    const scan = await _runStreamingScan();
+    // Brief pause so user sees 100%
+    await new Promise(r => setTimeout(r, 400));
+    let body;
+    const btns = [];
+    if (scan.ok) {
+      body = '<div style="text-align:center;padding:16px 0;">'
+        + '<div style="font-weight:600;color:var(--accent-green,#4ecdc4);">All Clear</div>'
+        + '<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">' + scan.files_scanned + ' files scanned — no secrets or sensitive data detected.</div>'
+        + '</div>';
+      btns.push({label: 'OK', primary: true, onclick: closeGitSyncModal});
+    } else {
+      body = _renderScanFindings(scan);
+      btns.push({label: 'Fix with AI', primary: true, onclick: () => { closeGitSyncModal(); _launchRemediationSession(scan); }});
+      btns.push({label: 'Close', onclick: closeGitSyncModal});
+    }
+    showGitSyncModal('Server Scan Results', body, btns);
+  } catch(e) {
+    showGitSyncModal('Error', '<p style="color:var(--result-err)">Could not run scan. Try again.</p>',
+      [{label:'OK', onclick: closeGitSyncModal}]);
+  }
+}
+
+// ── Launch AI remediation session ──
+// Spins up a new Claude session with the scan results and a remediation prompt.
+// Switches to sessions view and opens the new session automatically.
+let _lastScanResults = null;
+
+function _launchRemediationSession(scan) {
+  _lastScanResults = scan;
+
+  // Build a detailed prompt for the AI
+  let prompt = 'SECURITY SCAN VIOLATION — REMEDIATION REQUIRED\n\n';
+  prompt += 'The VibeNode pre-push security scanner has detected issues that are blocking publish.\n';
+  prompt += 'You must remediate these issues so the developer can safely publish the app.\n\n';
+  prompt += '## Scan Summary\n';
+  prompt += scan.summary + ' (' + scan.files_scanned + ' files scanned)\n\n';
+
+  if (scan.blocked_files && scan.blocked_files.length) {
+    prompt += '## Blocked Files\n';
+    scan.blocked_files.forEach(f => {
+      prompt += '- `' + f.file + '` — ' + f.reason + '\n';
+    });
+    prompt += '\n';
+  }
+
+  if (scan.findings && scan.findings.length) {
+    prompt += '## Potential Secrets Found\n';
+    scan.findings.forEach(f => {
+      prompt += '- `' + f.file + ':' + f.line + '` — ' + f.type + ': `' + f.match + '`\n';
+    });
+    prompt += '\n';
+  }
+
+  prompt += '## Instructions\n';
+  prompt += '1. Read each flagged file and understand the issue\n';
+  prompt += '2. For real secrets: move them to environment variables or kanban_config.json (gitignored)\n';
+  prompt += '3. For false positives in source code patterns (like regex patterns that look like keys): add the file to the scanner\'s skip list in app/git_scanner.py\n';
+  prompt += '4. For forbidden files (.env, credentials, etc): ensure they are in .gitignore and remove from tracking with `git rm --cached`\n';
+  prompt += '5. After making fixes, run the scan again by calling: curl http://localhost:5050/api/git-scan\n';
+  prompt += '6. Verify the scan returns {"ok": true} before considering the task complete\n';
+  prompt += '\nIMPORTANT: This is a public repository. Everything committed will be visible on the internet.\n';
+
+  // Switch to sessions view and create a new session
+  if (typeof setViewMode === 'function' && typeof viewMode !== 'undefined' && viewMode !== 'sessions') {
+    setViewMode('sessions');
+  }
+
+  // Create a new session with the remediation prompt
+  const newId = crypto.randomUUID();
+  const optimistic = {
+    id: newId,
+    display_title: 'Security Remediation',
+    custom_title: 'Security Remediation',
+    last_activity: '',
+    size: '',
+    message_count: 0,
+    preview: 'Fixing security scan violations...',
+  };
+
+  if (typeof allSessions !== 'undefined') allSessions.unshift(optimistic);
+  if (typeof filterSessions === 'function') filterSessions();
+  if (typeof guiOpenAdd === 'function') guiOpenAdd(newId);
+
+  // Set as active session
+  if (typeof activeId !== 'undefined') activeId = newId;
+  liveSessionId = newId;
+  localStorage.setItem('activeSessionId', newId);
+
+  // Update URL
+  if (typeof _pushChatUrl === 'function') _pushChatUrl(newId);
+
+  // Mark as running and emit start_session
+  if (typeof runningIds !== 'undefined') runningIds.add(newId);
+  if (typeof sessionKinds !== 'undefined') sessionKinds[newId] = 'working';
+
+  const startOpts = {
+    session_id: newId,
+    prompt: prompt,
+    cwd: (typeof _currentProjectDir === 'function') ? _currentProjectDir() : '',
+    name: 'Security Remediation',
+  };
+
+  socket.emit('start_session', startOpts);
+
+  // Switch to live panel and show the session
+  if (typeof startLivePanel === 'function') startLivePanel(newId, {skipLog: true});
+
+  // Add optimistic user bubble
+  if (typeof _addOptimisticBubble === 'function') {
+    _liveSending = true;
+    _addOptimisticBubble(newId, prompt);
+    setTimeout(() => { _liveSending = false; }, 500);
+  }
+
+  // Update toolbar
+  if (typeof setToolbarSession === 'function') setToolbarSession(newId, 'Security Remediation', false, 'Security Remediation');
+  if (typeof updateLiveInputBar === 'function') updateLiveInputBar();
 }

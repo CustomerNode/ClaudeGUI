@@ -126,6 +126,15 @@ def do_git_sync(action: str) -> dict:
             messages.append("Pulled latest VibeNode updates from remote.")
 
     if action in ("push", "both") and ok:
+        # ── Security scan before push ──
+        from .git_scanner import scan_staged_files
+        scan = scan_staged_files(proj)
+        if not scan["ok"]:
+            return {"ok": False, "messages": messages + [
+                "\u26d4 Push blocked by security scan: " + scan["summary"],
+                "Run a Code Scan from the toolbar for details."
+            ], "scan": scan}
+
         # Auto-commit any uncommitted changes before pushing
         dirty = subprocess.run(["git", "-C", str(proj), "status", "--porcelain"],
                                capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW)
@@ -133,6 +142,18 @@ def do_git_sync(action: str) -> dict:
             from datetime import datetime as _dt
             subprocess.run(["git", "-C", str(proj), "add", "-A"],
                           capture_output=True, creationflags=_NO_WINDOW)
+
+            # Re-scan after staging (git add -A might pick up new files)
+            scan2 = scan_staged_files(proj)
+            if not scan2["ok"]:
+                # Unstage everything to prevent accidental commit
+                subprocess.run(["git", "-C", str(proj), "reset", "HEAD"],
+                              capture_output=True, creationflags=_NO_WINDOW)
+                return {"ok": False, "messages": messages + [
+                    "\u26d4 Push blocked after staging: " + scan2["summary"],
+                    "Secrets or sensitive files were detected. Run Code Scan for details."
+                ], "scan": scan2}
+
             msg = "Update VibeNode " + _dt.now().strftime("%Y-%m-%d %H:%M")
             subprocess.run(["git", "-C", str(proj), "commit", "-m", msg],
                            capture_output=True, text=True, timeout=10, creationflags=_NO_WINDOW)

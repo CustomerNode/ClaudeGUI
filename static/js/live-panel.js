@@ -35,6 +35,20 @@ function _clearDraft(sessionId) {
   _persistDraftsToStorage(_drafts);
 }
 
+// ── Strip "Sent from Q at ..." footer from message text for display ──
+function _stripVnMeta(text) {
+  const m = text.match(/\n{1,2}Sent from Q at (\d{4}-\d{2}-\d{2} \d{1,2}:\d{2} [AP]M)(\s*\(transcribed from voice[^)]*\))?\s*$/);
+  if (!m) return {clean: text, sentAt: null, voice: false};
+  return {clean: text.replace(m[0], ''), sentAt: m[1], voice: !!m[2]};
+}
+
+function _formatSentAt(str) {
+  if (!str) return '';
+  // Already human-readable like "2026-04-11 2:30 PM", just extract the time part
+  const timePart = str.match(/(\d{1,2}:\d{2} [AP]M)$/);
+  return timePart ? timePart[1] : str;
+}
+
 function _saveDraftFromDOM() {
   if (!liveSessionId) return;
   const ta = document.getElementById('live-input-ta') || document.getElementById('live-queue-ta');
@@ -647,7 +661,15 @@ function renderLiveEntry(e) {
 
   if (e.kind === 'user' || e.kind === 'asst') {
     const role = e.kind === 'user' ? 'user' : 'assistant';
-    const text = e.text || '';
+    let text = e.text || '';
+    let vnSentAt = null;
+    let vnIsVoice = false;
+    if (e.kind === 'user') {
+      const vnMeta = _stripVnMeta(text);
+      text = vnMeta.clean;
+      vnSentAt = vnMeta.sentAt;
+      vnIsVoice = vnMeta.voice;
+    }
 
     // Render bracketed messages like [Request interrupted by user] as centered pills
     if (e.kind === 'user' && /^\[.+\]$/.test(text.trim())) {
@@ -692,6 +714,14 @@ function renderLiveEntry(e) {
         btn.remove();
       };
       div.appendChild(btn);
+    }
+
+    // Add VN metadata footer for user messages
+    if (e.kind === 'user' && vnSentAt) {
+      const footer = document.createElement('div');
+      footer.className = 'vn-msg-footer';
+      footer.innerHTML = (vnIsVoice ? '<span class="vn-msg-footer-icon">\ud83c\udf99\ufe0f</span> Transcribed from voice \u00b7 ' : '<span class="vn-msg-footer-icon">\u26a1</span> ') + 'Sent at ' + _formatSentAt(vnSentAt);
+      div.appendChild(footer);
     }
 
   } else if (e.kind === 'tool_use') {
@@ -1385,13 +1415,17 @@ function liveSubmitIdle() {
   if (!text) return;
   ta.value = '';
   _resetTextareaHeight(ta);
-  _liveSubmitDirect(liveSessionId, text);
+  // Check and consume voice flag
+  const wasVoice = (typeof _lastSubmitWasVoice !== 'undefined' && _lastSubmitWasVoice);
+  if (wasVoice) _lastSubmitWasVoice = false;
+  _liveSubmitDirect(liveSessionId, text, wasVoice ? {voice: true} : undefined);
 }
 
 function _liveSubmitDirect(sid, text, opts) {
   if (!sid) return;
   _liveSending = true;
   _clearDraft(sid);
+  const _isVoice = opts && opts.voice;
 
   // Clear stale client-side queue — message is being sent directly
   delete _sessionQueues[sid];
@@ -1409,7 +1443,7 @@ function _liveSubmitDirect(sid, text, opts) {
     sessionKinds[sid] = 'working';
   } else if (runningIds.has(sid)) {
     // Send message — server will process if idle, or queue if busy
-    socket.emit('send_message', {session_id: sid, text: text});
+    socket.emit('send_message', {session_id: sid, text: text, voice: _isVoice || undefined});
     // Ghost session safety net: if no session_state event arrives within 3s,
     // the daemon has lost this session. Fall back to start_session to recover.
     const _ghostTimer = setTimeout(() => {
@@ -1503,7 +1537,7 @@ function _liveSubmitDirect(sid, text, opts) {
   // Add optimistic user bubble only for real messages (not permission answers, not slash commands)
   const _isSlash = text.trim().startsWith('/') && !text.trim().includes(' ');
   if (!wasPermission && text.length > 1 && !_isSlash) {
-    _addOptimisticBubble(sid, text);
+    _addOptimisticBubble(sid, text, _isVoice);
   }
 
   // Optimistically set working state and render the full working bar immediately
@@ -1633,7 +1667,7 @@ function _resetMessageWatchdog(sid) {
   _startMessageWatchdog(sid);
 }
 
-function _addOptimisticBubble(sid, text) {
+function _addOptimisticBubble(sid, text, isVoice) {
   if (sid !== liveSessionId) return;
   const logEl = document.getElementById('live-log');
   if (!logEl) return;
@@ -1657,6 +1691,13 @@ function _addOptimisticBubble(sid, text) {
   userMsg.className = 'msg user msg-entering optimistic-bubble';
   userMsg.dataset.optimisticId = msgId;
   userMsg.innerHTML = '<div class="msg-role">me <span class="msg-time">' + timestamp + '</span></div><div class="msg-body msg-content"><pre style="white-space:pre-wrap;margin:0;">' + escHtml(text) + '</pre></div>';
+  // Add VN metadata footer
+  const vnFooter = document.createElement('div');
+  vnFooter.className = 'vn-msg-footer';
+  const nowH = now.getHours() % 12 || 12;
+  const _timeStr = nowH + ':' + String(now.getMinutes()).padStart(2, '0') + ' ' + (now.getHours() >= 12 ? 'PM' : 'AM');
+  vnFooter.innerHTML = (isVoice ? '<span class="vn-msg-footer-icon">\ud83c\udf99\ufe0f</span> Transcribed from voice \u00b7 ' : '<span class="vn-msg-footer-icon">\u26a1</span> ') + 'Sent at ' + _timeStr;
+  userMsg.appendChild(vnFooter);
   userMsg.addEventListener('animationend', () => userMsg.classList.remove('msg-entering'), {once: true});
   logEl.appendChild(userMsg);
   logEl.scrollTop = logEl.scrollHeight;
@@ -1673,8 +1714,12 @@ function liveSubmitContinue(fromId) {
   if (!sid) return;
   _clearDraft(sid);
 
-  // Add optimistic user bubble
-  _addOptimisticBubble(sid, text);
+  // Check and consume voice flag
+  const wasVoice = (typeof _lastSubmitWasVoice !== 'undefined' && _lastSubmitWasVoice);
+  if (wasVoice) _lastSubmitWasVoice = false;
+
+  // Add optimistic user bubble (with voice tag if applicable)
+  _addOptimisticBubble(sid, text, wasVoice);
 
   _liveSending = true;
 
@@ -1690,12 +1735,13 @@ function liveSubmitContinue(fromId) {
       prompt: text,
       cwd: _currentProjectDir(),
       resume: true,
+      voice: wasVoice || undefined,
     });
     runningIds.add(sid);
     guiOpenAdd(sid);
   } else {
     // Session is running — send message directly
-    socket.emit('send_message', {session_id: sid, text: text});
+    socket.emit('send_message', {session_id: sid, text: text, voice: wasVoice || undefined});
   }
 
   // Immediately render full working bar

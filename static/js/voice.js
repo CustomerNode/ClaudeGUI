@@ -5,6 +5,9 @@ const _micActiveSvg = '<svg width="16" height="16" viewBox="0 0 24 24" fill="non
 const _sendSvg = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
 
 let _activeRecognition = null;
+// Flag set true when the most recent submit was triggered by voice transcription.
+// Consumed (read + cleared) by the submit path to tag the message for AI context.
+let _lastSubmitWasVoice = false;
 
 /** Stop any active voice recognition cleanly (called on session switch, etc.) */
 function _stopActiveVoice() {
@@ -35,6 +38,33 @@ function setupVoiceButton(textarea, button, onSubmit) {
     button.parentNode.insertBefore(sendBtn, button.nextSibling);
   }
 
+  // Create a cancel button (X) that appears to the LEFT of the mic button during recording
+  let cancelBtn = button.previousElementSibling;
+  if (!cancelBtn || !cancelBtn.classList.contains('voice-cancel-btn')) {
+    cancelBtn = document.createElement('button');
+    cancelBtn.className = 'voice-cancel-btn';
+    cancelBtn.innerHTML = '&times;';
+    cancelBtn.title = 'Cancel recording & discard';
+    cancelBtn.style.display = 'none';
+    button.parentNode.insertBefore(cancelBtn, button);
+  }
+
+  cancelBtn.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (_activeRecognition && _activeRecognition._target === textarea) {
+      _activeRecognition._intentionalStop = true;
+      _activeRecognition._discarded = true;   // flag so onend knows to discard
+      try { _activeRecognition.stop(); } catch (_) {}
+      _activeRecognition = null;
+    }
+    // Clear the textarea entirely (discard composed message)
+    textarea.value = '';
+    textarea.dispatchEvent(new Event('input'));
+    textarea.focus();
+    updateIcon();
+  };
+
   sendBtn.onclick = () => {
     if (onSubmit) onSubmit();
   };
@@ -48,17 +78,20 @@ function setupVoiceButton(textarea, button, onSubmit) {
       button.title = 'Stop recording';
       button.classList.add('recording');
       sendBtn.style.display = 'none';
+      cancelBtn.style.display = '';
     } else if (_hasVoiceSupport()) {
       button.innerHTML = _micSvg;
       button.title = 'Voice input';
       button.classList.remove('recording');
       sendBtn.style.display = hasText ? '' : 'none';
+      cancelBtn.style.display = 'none';
     } else {
       // No voice support — button acts as send
       button.innerHTML = _sendSvg;
       button.title = 'Send (Ctrl+Enter)';
       button.classList.remove('recording');
       sendBtn.style.display = 'none';
+      cancelBtn.style.display = 'none';
     }
   };
 
@@ -134,10 +167,19 @@ function setupVoiceButton(textarea, button, onSubmit) {
       }
 
       if (_activeRecognition === recognition) _activeRecognition = null;
+      // If the user hit the cancel (X) button, discard everything
+      if (recognition._discarded) {
+        textarea.value = '';
+        textarea.dispatchEvent(new Event('input'));
+        updateIcon();
+        textarea.focus();
+        return;
+      }
       textarea.value = finalTranscript;
       textarea.dispatchEvent(new Event('input'));
       updateIcon();
       if (finalTranscript.trim() && onSubmit) {
+        _lastSubmitWasVoice = true;
         onSubmit();
       } else {
         textarea.focus();

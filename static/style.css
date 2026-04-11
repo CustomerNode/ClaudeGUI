@@ -1282,6 +1282,104 @@ header h1:hover { opacity: 0.7; }
   font-size: 14px;
 }
 
+/* VN message metadata footer */
+.vn-msg-footer {
+  font-size: 9px;
+  color: var(--text-faint, rgba(255,255,255,0.25));
+  text-align: right;
+  margin-top: 4px;
+  letter-spacing: 0.3px;
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.msg.user:hover .vn-msg-footer,
+.msg.user:last-child .vn-msg-footer { opacity: 1; }
+.vn-msg-footer-icon {
+  font-size: 8px;
+  margin-right: 2px;
+}
+
+/* ===== Security scan animation ===== */
+.scan-anim {
+  text-align: center;
+  padding: 24px 0 12px;
+}
+.scan-shield {
+  position: relative;
+  display: inline-block;
+  color: var(--accent, #7c6fe0);
+  animation: scan-pulse 2s ease-in-out infinite;
+}
+.scan-shield svg {
+  filter: drop-shadow(0 0 8px currentColor);
+}
+.scan-beam {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, currentColor, transparent);
+  border-radius: 1px;
+  animation: scan-sweep 1.4s ease-in-out infinite;
+  box-shadow: 0 0 6px currentColor;
+}
+@keyframes scan-sweep {
+  0%   { top: 12px; opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { top: 40px; opacity: 0; }
+}
+@keyframes scan-pulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.06); }
+}
+.scan-label {
+  margin-top: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-heading, #fff);
+  letter-spacing: 0.3px;
+}
+.scan-progress {
+  margin-top: 16px;
+  padding: 0 20px;
+}
+.scan-progress-bar {
+  height: 4px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.scan-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent, #7c6fe0), var(--accent-green, #4ecdc4));
+  border-radius: 2px;
+  transition: width 0.08s linear;
+  box-shadow: 0 0 8px var(--accent, #7c6fe0);
+}
+.scan-progress-text {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted, #888);
+  font-variant-numeric: tabular-nums;
+}
+.scan-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent, #7c6fe0);
+  opacity: 0.3;
+  animation: scan-dot 1.2s ease-in-out infinite;
+}
+.scan-dots span:nth-child(2) { animation-delay: 0.2s; }
+.scan-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes scan-dot {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50%      { opacity: 1; transform: scale(1.4); }
+}
+
 /* ===== Sticky user message bar ===== */
 /* Overlay bar outside the scroll container — never touches message layout. */
 .sticky-user-bar {
@@ -2314,6 +2412,28 @@ mark.find-match.current { background: var(--accent); color:#fff; }
 @keyframes recording-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(204, 68, 68, 0.3); }
   50% { box-shadow: 0 0 0 6px rgba(204, 68, 68, 0); }
+}
+/* Voice cancel (X) button — appears left of mic during recording */
+.voice-cancel-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--result-err, #c44);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--result-err, #c44);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+.voice-cancel-btn:hover {
+  background: var(--result-err, #c44);
+  color: #fff;
 }
 .live-send-btn.waiting { background:var(--question-bg, #ff9500); color:var(--question-text, #000); border-color:var(--question-bg, #ff9500); }
 .live-send-btn.waiting:hover { opacity:0.85; }

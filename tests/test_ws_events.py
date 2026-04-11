@@ -106,7 +106,7 @@ class TestStartSession:
         client.emit('start_session', {
             'session_id': 'new-session',
             'prompt': 'Hello Claude',
-            'cwd': '/home/user/project',
+            'cwd': '/tmp/project',
             'name': 'My Session',
             'resume': False,
         })
@@ -114,7 +114,7 @@ class TestStartSession:
         mock_session_manager.start_session.assert_called_with(
             session_id='new-session',
             prompt='Hello Claude',
-            cwd='/home/user/project',
+            cwd='/tmp/project',
             name='My Session',
             resume=False,
         )

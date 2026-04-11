@@ -8,7 +8,7 @@ from pathlib import Path
 
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, Response
 
 from ..git_ops import get_git_cache, refresh_if_idle, do_git_sync
 from ..config import get_active_project, _decode_project, _sessions_dir, _CLAUDE_PROJECTS
@@ -31,6 +31,26 @@ def api_git_sync():
     # directly instead of making a separate poll that might race.
     result["git_status"] = get_git_cache()
     return jsonify(result)
+
+
+@bp.route("/api/git-scan")
+def api_git_scan():
+    """Run deterministic security scan on uncommitted/staged files."""
+    from ..git_scanner import scan_staged_files
+    return jsonify(scan_staged_files())
+
+
+@bp.route("/api/git-scan-stream")
+def api_git_scan_stream():
+    """SSE endpoint — streams real file-by-file scan progress."""
+    from ..git_scanner import scan_staged_files_stream
+
+    def generate():
+        for line in scan_staged_files_stream():
+            yield f"data: {line}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
 @bp.route("/api/project-git-status")

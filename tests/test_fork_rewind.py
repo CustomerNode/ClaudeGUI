@@ -198,8 +198,7 @@ def rich_session(fake_project, tmp_path):
     (fh_dir / backup_name).write_text("print('hello')\n", encoding="utf-8")
 
     # Absolute paths inside tmp_path (writable in tests) — this matches
-    # real Claude Code which uses absolute Windows paths like
-    # C:\Users\user\Documents\project\app.py
+    # real Claude Code which uses absolute Windows paths like C:\proj\app.py
     proj_root = tmp_path / "project"
     proj_root.mkdir(parents=True, exist_ok=True)
     abs_app_py = str(proj_root / "app.py")
@@ -326,14 +325,14 @@ class TestLoadSessionTimeline:
             _user_msg("Hello", _ts(0, 0), uid_a, "sess-snap-order"),
             _asst_msg("I edited the file", _ts(0, 5), uid_b, "sess-snap-order",
                       tool_uses=[{"name": "Edit", "input": {
-                          "file_path": "C:\\Users\\test\\proj\\foo.py",
+                          "file_path": "C:\\proj\\foo.py",
                           "old_string": "old",
                           "new_string": "new",
                       }}]),
             # Snapshot comes AFTER the assistant message it references
             # Uses realistic hash@version backup name
             _snapshot(uid_b, {
-                "C:\\Users\\test\\proj\\foo.py": "e4a1f6c823b09d17@v1",
+                "C:\\proj\\foo.py": "e4a1f6c823b09d17@v1",
             }),
         ]
         _write_session(fake_project, "sess-snap-order", lines)

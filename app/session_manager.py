@@ -466,7 +466,7 @@ class SessionManager:
         )
         return {"ok": True}
 
-    def send_message(self, session_id: str, text: str) -> dict:
+    def send_message(self, session_id: str, text: str, voice: bool = False) -> dict:
         """Send a follow-up message to an idle session."""
         session_id = self._resolve_id(session_id)
         with self._lock:
@@ -481,7 +481,15 @@ class SessionManager:
             # Skip slash commands — they're internal CLI directives, not user chat
             _stripped = text.strip()
             if not (_stripped.startswith('/') and ' ' not in _stripped):
-                info.entries.append(LogEntry(kind="user", text=text))
+                # Append human-readable metadata the AI naturally understands
+                from datetime import datetime as _dt
+                _ts_tag = '\n\nSent from Q at ' + _dt.now().strftime('%Y-%m-%d %I:%M %p')
+                if voice:
+                    _ts_tag += ' (transcribed from voice — may contain transcription errors)'
+                tagged_text = text + _ts_tag
+                info.entries.append(LogEntry(kind="user", text=tagged_text))
+            else:
+                tagged_text = text
             info.state = SessionState.WORKING
             # Set compacting substatus immediately so the state event carries it
             if _stripped == '/compact':
@@ -490,7 +498,7 @@ class SessionManager:
         self._emit_state(info)
 
         asyncio.run_coroutine_threadsafe(
-            self._send_query(session_id, text), self._loop
+            self._send_query(session_id, tagged_text), self._loop
         )
         return {"ok": True}
 

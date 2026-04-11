@@ -348,6 +348,15 @@ def register_ws_events(socketio, app):
                 if system_prompt else cross_ctx
             )
 
+        # Tag initial prompt with metadata (timestamp + voice indicator)
+        voice = bool(data.get('voice'))
+        if prompt and session_type not in ('planner', 'title'):
+            from datetime import datetime as _dt
+            _ts_tag = '\n\nSent from Q at ' + _dt.now().strftime('%Y-%m-%d %I:%M %p')
+            if voice:
+                _ts_tag += ' (transcribed from voice \u2014 may contain transcription errors)'
+            prompt = prompt + _ts_tag
+
         sm = app.session_manager
         result = sm.start_session(
             session_id=session_id,
@@ -391,6 +400,7 @@ def register_ws_events(socketio, app):
 
         session_id = data.get('session_id', '').strip()
         text = data.get('text', '').strip()
+        voice = bool(data.get('voice'))
 
         if not session_id:
             emit('error', {'message': 'session_id is required'})
@@ -400,7 +410,7 @@ def register_ws_events(socketio, app):
             return
 
         sm = app.session_manager
-        result = sm.send_message(session_id, text)
+        result = sm.send_message(session_id, text, voice=voice)
 
         if result.get('ok'):
             # Acknowledge receipt so the client knows the message was accepted.

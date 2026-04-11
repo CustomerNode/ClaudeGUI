@@ -165,7 +165,7 @@ def _sessions_dir(project: str = "") -> Path:
                 return p
 
     # Derive from server's own repo path — Claude encodes paths with dashes
-    # e.g. C:\Users\foo\Documents\VibeNode -> C--Users-foo-Documents-VibeNode
+    # e.g. C-drive path -> C--path-segments-joined-with-dashes
     if not _CLAUDE_PROJECTS.is_dir():
         _CLAUDE_PROJECTS.mkdir(parents=True, exist_ok=True)
         return _CLAUDE_PROJECTS

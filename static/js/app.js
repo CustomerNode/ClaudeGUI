@@ -107,7 +107,13 @@ function _updateProjectLabel(project) {
   label.innerHTML = name.innerHTML + ' <span class="sidebar-mini-label">project</span>';
 }
 
+// Generation counter: bumped on every project switch. Async callbacks
+// (WebSocket handlers, fetch responses) check this to discard stale data
+// that arrived after the user already switched projects.
+let _projectSwitchGen = 0;
+
 async function setProject(encoded, reload = true) {
+  ++_projectSwitchGen;  // invalidate all in-flight async for old project
   // Save the current view mode and active session for the OLD project so we
   // can restore them when the user switches back later.
   const prevProject = localStorage.getItem('activeProject');
@@ -159,6 +165,15 @@ async function setProject(encoded, reload = true) {
   sessionKinds = {};
   runningIds = new Set();
   waitingData = {};
+  // Clear allSessions so old-project sessions don't remain visible in the
+  // sidebar/grid during the gap between project switch and loadSessions().
+  allSessions = [];
+  // Clear per-session state maps that would otherwise carry stale data from
+  // the old project into the new one (timestamps, substatus, usage, timers).
+  window._sessionStateTs = {};
+  window._workingSinceMap = {};
+  if (window._sessionSubstatus) window._sessionSubstatus = {};
+  if (window._sessionUsage) window._sessionUsage = {};
   // --- Clear view-specific state from the old project ---
   // Folder tree: stale folder IDs / cached tree from old project
   if (typeof _currentFolderId !== 'undefined') _currentFolderId = null;
@@ -1269,22 +1284,36 @@ function showSkeletonLoader() {
   el.innerHTML = html;
 }
 
+let _loadSessionsAbort = null;
+
 async function loadSessions() {
   showSkeletonLoader();
+  // Abort any in-flight loadSessions fetch to prevent stale project data
+  if (_loadSessionsAbort) _loadSessionsAbort.abort();
+  _loadSessionsAbort = new AbortController();
+  const _myAbort = _loadSessionsAbort;
+  const _myGen = _projectSwitchGen;  // capture generation at call time
+
   // Load workforce assets from disk first (replaces FOLDER_SUPERSET before folder tree reads it)
   // Then load sessions and folder tree in parallel
   if (typeof _loadWorkforceFromDisk === 'function') {
     try { await _loadWorkforceFromDisk(); } catch(e) {}
   }
+  // If project switched during workforce load, bail
+  if (_myGen !== _projectSwitchGen) { console.warn('[loadSessions] project switched during workforce load — discarding'); return; }
   // Pass activeProject so the server syncs _active_project before processing.
   // Closes the race where this HTTP fetch arrives before the WebSocket
   // reconnects and sends request_state_snapshot with the project context.
   const _projParam = localStorage.getItem('activeProject') || '';
   const _sessUrl = _projParam ? '/api/sessions?project=' + encodeURIComponent(_projParam) : '/api/sessions';
   const [resp] = await Promise.all([
-    fetch(_sessUrl),
+    fetch(_sessUrl, {signal: _myAbort.signal}),
     (typeof initFolderTree === 'function') ? initFolderTree().catch(function(){}) : Promise.resolve(),
   ]);
+  // Guard: if project changed while we were fetching, discard stale response
+  if (_myGen !== _projectSwitchGen) { console.warn('[loadSessions] project switched during fetch — discarding'); return; }
+  const _nowProj = localStorage.getItem('activeProject') || '';
+  if (_nowProj !== _projParam) { console.warn('[loadSessions] stale response for', _projParam, '— discarding'); return; }
   const _freshSessions = await resp.json();
   // Preserve optimistic entries for sessions the user is actively working in
   // (e.g. just-started session whose JSONL hasn't been created yet).

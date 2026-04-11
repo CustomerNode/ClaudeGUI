@@ -39,9 +39,14 @@ function _isHiddenSession(id, data) {
     return false;
 }
 
-// No-op — cross-project filtering is now done at the display level,
-// not the event level. Kept for backwards compat with app.js call.
-function _clearCrossProjectCache() {}
+// Clear cross-project caches when switching projects. _hiddenSessionIds
+// can accumulate IDs from the old project that would incorrectly suppress
+// events for the new project if IDs overlap.  Also clear staleness
+// timestamps so the incoming snapshot is authoritative.
+function _clearCrossProjectCache() {
+    _hiddenSessionIds.clear();
+    window._sessionStateTs = {};
+}
 
 /**
  * Check if a session's cwd belongs to the currently active project.
@@ -194,6 +199,10 @@ socket.on('error', (data) => {
 if (!window._sessionStateTs) window._sessionStateTs = {};
 
 socket.on('state_snapshot', (data) => {
+    // Guard: discard snapshots that arrive after a project switch.
+    // _projectSwitchGen is bumped by setProject(); if a snapshot was requested
+    // for the old project, its response arrives with a stale generation.
+    const _snapGen = (typeof _projectSwitchGen !== 'undefined') ? _projectSwitchGen : 0;
     const snapTime = Date.now();
     const newWaiting = {};
     const newRunning = new Set();
@@ -289,12 +298,24 @@ socket.on('state_snapshot', (data) => {
     // but the server snapshot doesn't include yet (e.g. just-started session
     // whose start_session hasn't registered on the daemon before the snapshot
     // was built — common during project switch).
+    // Only preserve if the session is in allSessions (belongs to active
+    // project). Without this guard, sessions from the OLD project bleed
+    // into the new project's state after a project switch.
     for (const id in sessionKinds) {
         if (sessionKinds[id] === 'working' && !newKinds[id]) {
             if (_hiddenSessionIds.has(id)) continue;
+            if (!allSessions.find(x => x.id === id) && id !== liveSessionId) continue;
             newKinds[id] = 'working';
             newRunning.add(id);
         }
+    }
+
+    // Final guard: if the user switched projects while we were processing
+    // this snapshot, discard everything — the new project's snapshot will
+    // arrive shortly and we don't want to pollute its state.
+    if (typeof _projectSwitchGen !== 'undefined' && _snapGen !== _projectSwitchGen) {
+        console.warn('[state_snapshot] project switched during processing — discarding stale snapshot');
+        return;
     }
 
     waitingData = newWaiting;
