@@ -85,6 +85,11 @@ function openGitUpdate() {
   ]);
 }
 
+// ── Minimize / restore state ──
+let _gitSyncMinimized = false;
+let _gitSyncFinished = false;  // true when operation completed while minimized
+let _gitSyncMiniLabel = '';    // current step label for the mini indicator
+
 function showGitSyncModal(title, body, btns) {
   document.getElementById('git-sync-title').textContent = title;
   document.getElementById('git-sync-body').innerHTML = body;
@@ -97,11 +102,79 @@ function showGitSyncModal(title, body, btns) {
     el.onclick = b.onclick;
     acts.appendChild(el);
   });
+  // Show minimize button only when there are no action buttons (in-progress state)
+  const minBtn = document.getElementById('git-sync-minimize-btn');
+  if (minBtn) minBtn.style.display = btns.length === 0 ? 'inline-flex' : 'none';
+  // Track label for mini indicator
+  _gitSyncMiniLabel = title;
+  // If minimized, update the mini indicator label instead of showing the overlay
+  if (_gitSyncMinimized) {
+    const label = document.getElementById('git-sync-mini-label');
+    if (label) label.textContent = title;
+    // If this is a completion call (has buttons), notify mini
+    if (btns.length > 0) {
+      const isOk = title.includes('\u2713') || title.includes('All Clear');
+      _notifyMiniComplete(title, isOk);
+    }
+    return;  // don't show overlay — user minimized it
+  }
   document.getElementById('git-sync-overlay').classList.add('show');
 }
 
 function closeGitSyncModal() {
   document.getElementById('git-sync-overlay').classList.remove('show');
+  _dismissMiniIndicator();
+}
+
+function minimizeGitSyncModal() {
+  _gitSyncMinimized = true;
+  document.getElementById('git-sync-overlay').classList.remove('show');
+  // Show floating mini indicator
+  const mini = document.getElementById('git-sync-mini');
+  const label = document.getElementById('git-sync-mini-label');
+  const spinner = document.getElementById('git-sync-mini-spinner');
+  const closeBtn = document.getElementById('git-sync-mini-close');
+  label.textContent = _gitSyncMiniLabel || document.getElementById('git-sync-title').textContent || 'Working...';
+  spinner.className = 'git-sync-mini-spinner working';
+  closeBtn.style.display = 'none';
+  mini.classList.add('show');
+}
+
+function restoreGitSyncModal() {
+  _gitSyncMinimized = false;
+  document.getElementById('git-sync-mini').classList.remove('show');
+  document.getElementById('git-sync-overlay').classList.add('show');
+}
+
+function _dismissMiniIndicator() {
+  _gitSyncMinimized = false;
+  _gitSyncFinished = false;
+  document.getElementById('git-sync-mini').classList.remove('show');
+}
+
+function dismissGitSyncMini() {
+  // If finished, just dismiss. If still working, restore modal instead.
+  if (_gitSyncFinished) {
+    _dismissMiniIndicator();
+  } else {
+    restoreGitSyncModal();
+  }
+}
+
+// Called when operation finishes — if minimized, update the mini indicator
+function _notifyMiniComplete(title, isOk) {
+  if (!_gitSyncMinimized) return;
+  _gitSyncFinished = true;
+  const label = document.getElementById('git-sync-mini-label');
+  const spinner = document.getElementById('git-sync-mini-spinner');
+  const closeBtn = document.getElementById('git-sync-mini-close');
+  label.textContent = title;
+  spinner.className = 'git-sync-mini-spinner ' + (isOk ? 'done' : 'error');
+  closeBtn.style.display = 'inline-flex';
+  // Flash the indicator to draw attention
+  const mini = document.getElementById('git-sync-mini');
+  mini.classList.add('flash');
+  setTimeout(() => mini.classList.remove('flash'), 1500);
 }
 
 function _syncStatusHtml(stepLabel) {
@@ -130,10 +203,20 @@ function _setSyncStep(label, pct) {
   if (fill) fill.style.width = (pct || 0) + '%';
   if (text) text.textContent = '';
   if (fname) fname.textContent = '';
+  // Update mini indicator label if minimized
+  _gitSyncMiniLabel = label;
+  if (_gitSyncMinimized) {
+    const miniLabel = document.getElementById('git-sync-mini-label');
+    if (miniLabel) miniLabel.textContent = label;
+  }
 }
 
 async function executeGitAction(action, btnId, btnLabel) {
   closeGitSyncModal();
+  // Reset minimize state for new operation
+  _gitSyncMinimized = false;
+  _gitSyncFinished = false;
+  _dismissMiniIndicator();
   const btn = document.getElementById(btnId);
   btn.disabled = true;
 

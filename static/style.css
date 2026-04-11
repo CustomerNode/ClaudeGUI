@@ -1469,6 +1469,156 @@ header h1:hover { opacity: 0.7; }
 .modal input:focus { border-color: var(--border-focus); }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
+/* ── Modal header row with minimize button ── */
+.modal-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0;
+}
+.modal-header-row h2 { margin-bottom: 14px; flex: 1; }
+.git-sync-minimize-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle, #333);
+  background: var(--bg-btn, #1a1a2e);
+  color: var(--text-muted, #888);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s;
+  margin-top: -8px;
+  flex-shrink: 0;
+}
+.git-sync-minimize-btn:hover {
+  background: var(--accent, #7c6fe0);
+  color: #fff;
+  border-color: var(--accent, #7c6fe0);
+}
+
+/* ── Minimized floating indicator ── */
+.git-sync-mini {
+  display: none;
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 200;
+  background: var(--bg-modal, #1a1a2e);
+  border: 1px solid var(--border-modal, #333);
+  border-radius: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.4), 0 0 12px rgba(124,111,224,0.15);
+  transition: all 0.25s ease;
+  animation: miniSlideIn 0.35s ease-out both;
+  max-width: 280px;
+}
+.git-sync-mini.show { display: inline-flex; }
+@keyframes miniSlideIn {
+  from { opacity: 0; transform: translateY(16px) scale(0.9); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.git-sync-mini:hover {
+  box-shadow: 0 4px 28px rgba(0,0,0,0.5), 0 0 20px rgba(124,111,224,0.25);
+  transform: translateY(-2px);
+  border-color: var(--accent, #7c6fe0);
+}
+.git-sync-mini.flash {
+  animation: miniFlash 0.4s ease 3;
+}
+@keyframes miniFlash {
+  0%, 100% { box-shadow: 0 4px 24px rgba(0,0,0,0.4), 0 0 12px rgba(124,111,224,0.15); }
+  50%      { box-shadow: 0 4px 28px rgba(0,0,0,0.5), 0 0 24px rgba(124,111,224,0.4); }
+}
+.git-sync-mini-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.git-sync-mini-spinner.working {
+  border: 2px solid rgba(124,111,224,0.3);
+  border-top-color: var(--accent, #7c6fe0);
+  animation: spin 0.7s linear infinite;
+}
+.git-sync-mini-spinner.done {
+  width: 14px; height: 14px;
+  background: #22c55e;
+  position: relative;
+}
+.git-sync-mini-spinner.done::after {
+  content: '';
+  position: absolute;
+  left: 4px; top: 2px;
+  width: 4px; height: 7px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.git-sync-mini-spinner.error {
+  width: 14px; height: 14px;
+  background: #ef4444;
+  position: relative;
+  border-radius: 50%;
+}
+.git-sync-mini-spinner.error::after {
+  content: '!';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
+.git-sync-mini-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary, #e0e0e0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.git-sync-mini-close {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted, #888);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 2px;
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+.git-sync-mini-close:hover {
+  background: rgba(255,255,255,0.1);
+  color: var(--text-primary, #e0e0e0);
+}
+/* Light theme */
+[data-theme="light"] .git-sync-mini {
+  box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 0 12px rgba(85,85,204,0.1);
+}
+[data-theme="light"] .git-sync-mini:hover {
+  box-shadow: 0 4px 28px rgba(0,0,0,0.16), 0 0 20px rgba(85,85,204,0.2);
+}
+[data-theme="light"] .git-sync-mini-close:hover {
+  background: rgba(0,0,0,0.06);
+}
+
 /* ===== File-drop overlay ===== */
 #file-drop-zone {
   display: none;

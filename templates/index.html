@@ -466,10 +466,20 @@
 <!-- Git Sync modal -->
 <div class="overlay" id="git-sync-overlay">
   <div class="modal" style="width:460px;max-width:92vw;">
-    <h2 id="git-sync-title">Git Sync</h2>
+    <div class="modal-header-row" id="git-sync-header-row">
+      <h2 id="git-sync-title">Git Sync</h2>
+      <button class="git-sync-minimize-btn" id="git-sync-minimize-btn" onclick="minimizeGitSyncModal()" title="Minimize">&minus;</button>
+    </div>
     <div id="git-sync-body" style="color:#ccc;font-size:13px;line-height:1.6;margin-bottom:18px;"></div>
     <div class="modal-actions" id="git-sync-actions"></div>
   </div>
+</div>
+
+<!-- Minimized git sync floating indicator -->
+<div class="git-sync-mini" id="git-sync-mini" onclick="restoreGitSyncModal()">
+  <span class="git-sync-mini-spinner" id="git-sync-mini-spinner"></span>
+  <span class="git-sync-mini-label" id="git-sync-mini-label">Working...</span>
+  <button class="git-sync-mini-close" id="git-sync-mini-close" onclick="event.stopPropagation(); dismissGitSyncMini();" title="Dismiss">&times;</button>
 </div>
 
 <!-- Rename modal -->
