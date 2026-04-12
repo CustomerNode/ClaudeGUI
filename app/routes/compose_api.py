@@ -421,6 +421,8 @@ def update_section(project_id, section_id):
         section.parent_id = data['parent_id']
     if 'summary' in data:
         section.summary = data['summary']
+    if 'ready_for_review' in data:
+        section.ready_for_review = bool(data['ready_for_review'])
 
     try:
         update_section_in_context(project_id, section)
@@ -634,7 +636,8 @@ def preview_section(project_id, section_id):
         return jsonify({'ok': False, 'error': 'Section not found'}), 404
 
     from pathlib import Path
-    section_dir = project_dir(project_id) / "sections" / section.name / "content"
+    from ..compose.models import _sanitize_folder_name
+    section_dir = project_dir(project_id) / "sections" / _sanitize_folder_name(section.name) / "content"
     files = []
     if section_dir.is_dir():
         for fp in sorted(section_dir.iterdir()):
@@ -697,6 +700,51 @@ def reorder_sections(project_id):
     _emit('compose_board_refresh', {'project_id': project_id})
 
     return jsonify({'ok': True})
+
+
+# ---------------------------------------------------------------------------
+# Export pipeline
+# ---------------------------------------------------------------------------
+
+@bp.route('/projects/<project_id>/export', methods=['POST'])
+def export_project(project_id):
+    """Export composition content.
+
+    JSON body: { "format": "markdown" | "zip" }
+    Returns the file as a download.
+    """
+    from flask import Response
+    from ..compose.exporter import export_markdown, export_zip
+
+    project = get_project(project_id)
+    if not project:
+        return jsonify({'ok': False, 'error': 'Project not found'}), 404
+
+    data = request.get_json(force=True, silent=True) or {}
+    fmt = (data.get('format') or 'markdown').strip().lower()
+
+    if fmt == 'markdown':
+        content = export_markdown(project_id)
+        if content is None:
+            return jsonify({'ok': False, 'error': 'No content to export'}), 404
+        safe_name = project.name.replace(' ', '-').lower()[:40]
+        return Response(
+            content,
+            mimetype='text/markdown; charset=utf-8',
+            headers={'Content-Disposition': f'attachment; filename="{safe_name}.md"'},
+        )
+    elif fmt == 'zip':
+        content = export_zip(project_id)
+        if content is None:
+            return jsonify({'ok': False, 'error': 'No content to export'}), 404
+        safe_name = project.name.replace(' ', '-').lower()[:40]
+        return Response(
+            content,
+            mimetype='application/zip',
+            headers={'Content-Disposition': f'attachment; filename="{safe_name}.zip"'},
+        )
+    else:
+        return jsonify({'ok': False, 'error': f'Unsupported format: {fmt}'}), 400
 
 
 # ---------------------------------------------------------------------------

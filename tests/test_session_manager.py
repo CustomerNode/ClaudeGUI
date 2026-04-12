@@ -14,6 +14,9 @@ import threading
 import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+
+# Skip entire module if app.session_manager is not importable (moved to daemon/)
+pytest.importorskip("app.session_manager", reason="app.session_manager moved to daemon.session_manager")
 from dataclasses import dataclass, field
 from typing import Optional
 

@@ -125,6 +125,7 @@ class ComposeSection:
     changing_set_by: Optional[str] = None
     summary: Optional[str] = None
     updated_at: Optional[str] = None
+    ready_for_review: bool = False
 
     def to_dict(self):
         d = asdict(self)
@@ -154,6 +155,7 @@ class ComposeSection:
             changing_set_by=d.get("changing_set_by"),
             summary=d.get("summary"),
             updated_at=d.get("updated_at"),
+            ready_for_review=d.get("ready_for_review", False),
         )
 
     @classmethod

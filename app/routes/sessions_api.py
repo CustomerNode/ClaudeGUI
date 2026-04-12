@@ -769,12 +769,13 @@ def api_rewind(session_id):
                 mid = obj.get("messageId", "")
                 snap = obj.get("snapshot", {})
                 inner_mid = snap.get("messageId", "")
-                all_snapshots.append((mid, inner_mid, snap))
+                all_snapshots.append((mid, inner_mid, snap, line_num))
 
     # Also try snapshot-based restore (works when daemon wrote proper entries)
+    # Use snapshots that appear at or before the target line
     merged_backups = {}
-    for mid, inner_mid, snap in all_snapshots:
-        if mid in msg_uuids_before or inner_mid in msg_uuids_before:
+    for mid, inner_mid, snap, snap_line in all_snapshots:
+        if snap_line <= up_to_line or mid in msg_uuids_before or inner_mid in msg_uuids_before:
             for fp, binfo in snap.get("trackedFileBackups", {}).items():
                 if isinstance(binfo, dict) and binfo.get("backupFileName"):
                     merged_backups[fp] = binfo

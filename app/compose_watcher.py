@@ -63,7 +63,12 @@ def start_compose_watcher(socketio, app):
                     if key in last_mtimes and mtime != last_mtimes[key]:
                         # File changed — emit event
                         try:
-                            ctx = json.loads(ctx_file.read_text(encoding="utf-8"))
+                            try:
+                                ctx = json.loads(ctx_file.read_text(encoding="utf-8"))
+                            except (json.JSONDecodeError, OSError):
+                                # File mid-write — skip this cycle, retry next poll
+                                last_mtimes[key] = mtime
+                                continue
                             project_id = ctx.get("project_id", "")
 
                             with app.app_context():

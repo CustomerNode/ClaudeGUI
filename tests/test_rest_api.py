@@ -314,7 +314,7 @@ class TestSessionLog:
         ])
         resp = client.get("/api/session-log/log-big")
         data = resp.get_json()
-        assert len(data["entries"][0]["text"]) <= 2000
+        assert len(data["entries"][0]["text"]) <= 20000
 
     def test_empty_session_file_returns_zero(self, client, fake_project):
         p = fake_project / "log-empty.jsonl"

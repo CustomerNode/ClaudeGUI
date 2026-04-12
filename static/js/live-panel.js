@@ -431,7 +431,7 @@ async function openInGUI(id) {
   }
   _pushChatUrl(id);
   if (runningIds.has(id)) guiOpenAdd(id);
-  if (liveSessionId && liveSessionId !== id) { stopLivePanel(); }
+  if (liveSessionId && liveSessionId !== id) { _autoSendPendingInput(); stopLivePanel(); }
   filterSessions();
 
   // Show title from sidebar data immediately (no mismatch)
@@ -1108,7 +1108,7 @@ function updateLiveInputBar() {
   // preserve it across state transitions (e.g. idle → working, working → idle).
   // This replaces the old early-return that blocked state transitions entirely.
   const _existingTa = bar.querySelector('#live-input-ta') || bar.querySelector('#live-queue-ta');
-  const _preservedText = _existingTa ? _existingTa.value : '';
+  let _preservedText = _existingTa ? _existingTa.value : '';
   const wd = waitingData[id];     // {question, options, kind} or undefined
 
   // Compute a state key — for question state, include question text so we re-render if the question changed
@@ -1385,11 +1385,11 @@ function updateLiveInputBar() {
   }
 
   // ── Restore text: same-session state transition OR saved draft ──
-  const _restoreText = _preservedText || _getDraft(id);
-  if (_restoreText) {
+  if (!_preservedText) _preservedText = _getDraft(id);
+  if (_preservedText) {
     const _newTa = document.getElementById('live-input-ta') || document.getElementById('live-queue-ta');
     if (_newTa && !_newTa.value) {
-      _newTa.value = _restoreText;
+      _newTa.value = _preservedText;
       _autoResizeTextarea(_newTa);
       _newTa.dispatchEvent(new Event('input'));
     }
@@ -1853,14 +1853,14 @@ function liveSubmitWaiting() {
 
 function liveSubmitInterrupt() {
   if (!liveSessionId) return;
-  // Grab any text the user typed into the queue textarea (not yet queued).
+  // Grab and preserve any text the user typed into the queue textarea (not yet queued).
   const queueTa = document.getElementById('live-queue-ta');
-  const pendingText = queueTa ? queueTa.value.trim() : '';
-  // Collect already-queued messages and merge with pending textarea text.
+  const preservedQueueText = queueTa ? queueTa.value.trim() : '';
+  // Collect already-queued messages and merge with preserved textarea text.
   // The merged text is placed in the idle input so the user can send it.
   const queued = _getQueueList(liveSessionId);
   const parts = [...queued];
-  if (pendingText) parts.push(pendingText);
+  if (preservedQueueText) parts.push(preservedQueueText);
   const mergedText = parts.join('\n\n');
   // Clear queue and interrupt normally
   socket.emit('clear_queue', {session_id: liveSessionId});

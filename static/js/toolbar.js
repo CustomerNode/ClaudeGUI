@@ -42,7 +42,7 @@ function deselectSession() {
   activeId = null;
   localStorage.removeItem('activeSessionId');
   _pushChatUrl(null);
-  if (liveSessionId) { stopLivePanel(); }
+  if (liveSessionId) { _autoSendPendingInput(); stopLivePanel(); }
   // In workspace mode, return to workspace canvas instead of dashboard
   if (workspaceActive) {
     _wsExpandedId = null;
@@ -111,6 +111,7 @@ async function selectSession(id) {
   _pushChatUrl(id);
   // Save draft and stop live panel for a different session
   if (liveSessionId && liveSessionId !== id) {
+    _autoSendPendingInput();
     stopLivePanel();
   }
   filterSessions();

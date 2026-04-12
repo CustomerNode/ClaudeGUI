@@ -174,7 +174,8 @@ class TestSessionLinks:
             sess_id = "session-abc"
             repo.link_session(t.id, sess_id)
             sessions = repo.get_task_sessions(t.id)
-            assert sess_id in sessions
+            session_ids = [s.session_id if hasattr(s, 'session_id') else s for s in sessions]
+            assert sess_id in session_ids
         finally:
             repo.close()
             os.unlink(path)
@@ -187,7 +188,8 @@ class TestSessionLinks:
             repo.link_session(t.id, sess_id)
             repo.unlink_session(t.id, sess_id)
             sessions = repo.get_task_sessions(t.id)
-            assert sess_id not in sessions
+            session_ids = [s.session_id if hasattr(s, 'session_id') else s for s in sessions]
+            assert sess_id not in session_ids
         finally:
             repo.close()
             os.unlink(path)

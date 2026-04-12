@@ -292,10 +292,30 @@ def _build_section_prompt(project: ComposeProject, section: ComposeSection, ctx=
         except Exception:
             ctx = {"sections": [], "facts": {}, "directives": []}
 
-    # Project context: other sections + facts
+    # Project context: other sections + facts + hierarchy awareness
+    all_sections = ctx.get("sections", [])
     other_sections = [
-        s for s in ctx.get("sections", []) if s.get("id") != section.id
+        s for s in all_sections if s.get("id") != section.id
     ]
+
+    # Identify parent section (if this is a subsection)
+    parent_info = ""
+    if section.parent_id:
+        parent = next((s for s in all_sections if s.get("id") == section.parent_id), None)
+        if parent:
+            parent_info = f"\n\nYou are a SUBSECTION of \"{parent.get('name')}\" [{parent.get('status')}]. Coordinate with your parent section and stay within its scope."
+
+    # Identify child subsections (if this section has children)
+    children = [s for s in all_sections if s.get("parent_id") == section.id]
+    children_info = ""
+    if children:
+        child_lines = [f"\n\nYou have {len(children)} subsection(s) that handle parts of your content:"]
+        for c in children:
+            summary = f" -- {c.get('summary')}" if c.get('summary') else ""
+            child_lines.append(f"- [{c.get('status')}] {c.get('name')}{summary}")
+        child_lines.append("Coordinate with these subsections. Do not duplicate their work.")
+        children_info = "\n".join(child_lines)
+
     if other_sections:
         ctx_lines = ["Other sections in this composition:"]
         for s in other_sections:
@@ -303,6 +323,8 @@ def _build_section_prompt(project: ComposeProject, section: ComposeSection, ctx=
         project_context = "\n".join(ctx_lines)
     else:
         project_context = "(this is the only section)"
+
+    project_context += parent_info + children_info
 
     # Add facts
     facts = ctx.get("facts", {})

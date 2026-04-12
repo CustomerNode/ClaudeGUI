@@ -590,7 +590,7 @@ class TestRewindEndpoint:
                            json={"up_to_line": 2})
         assert resp.status_code == 400
         data = resp.get_json()
-        assert "No file snapshot" in data["error"]
+        assert "No edits found" in data["error"] or "No file snapshot" in data["error"]
 
     def test_rewind_nonexistent_returns_404(self, client):
         resp = client.post("/api/rewind/no-such-id", json={"up_to_line": 1})

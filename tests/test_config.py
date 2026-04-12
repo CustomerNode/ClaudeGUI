@@ -26,14 +26,14 @@ class TestNameOperations:
 
     def test_load_names_missing_file(self, tmp_path, monkeypatch):
         from app import config
-        monkeypatch.setattr(config, "_names_file", lambda: tmp_path / "nonexistent.json")
+        monkeypatch.setattr(config, "_names_file", lambda project="": tmp_path / "nonexistent.json")
         result = config._load_names()
         assert result == {}
 
     def test_save_and_load_name(self, tmp_path, monkeypatch):
         from app import config
         names_path = tmp_path / "_session_names.json"
-        monkeypatch.setattr(config, "_names_file", lambda: names_path)
+        monkeypatch.setattr(config, "_names_file", lambda project="": names_path)
         config._save_name("sess_001", "Test Name")
         names = config._load_names()
         assert names["sess_001"] == "Test Name"
@@ -41,7 +41,7 @@ class TestNameOperations:
     def test_delete_name(self, tmp_path, monkeypatch):
         from app import config
         names_path = tmp_path / "_session_names.json"
-        monkeypatch.setattr(config, "_names_file", lambda: names_path)
+        monkeypatch.setattr(config, "_names_file", lambda project="": names_path)
         config._save_name("sess_001", "Test Name")
         config._delete_name("sess_001")
         names = config._load_names()
@@ -50,5 +50,5 @@ class TestNameOperations:
     def test_delete_nonexistent_name_is_safe(self, tmp_path, monkeypatch):
         from app import config
         names_path = tmp_path / "_session_names.json"
-        monkeypatch.setattr(config, "_names_file", lambda: names_path)
+        monkeypatch.setattr(config, "_names_file", lambda project="": names_path)
         config._delete_name("does_not_exist")  # should not raise
