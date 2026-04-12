@@ -42,6 +42,7 @@ def create_app() -> Flask:
     from .routes.kanban_api import bp as kanban_bp
     from .routes.kanban_report_api import bp as kanban_reports_bp
     from .routes.compose_api import bp as compose_bp
+    from .routes.test_api import bp as test_bp
 
     app.register_blueprint(main_bp)
     app.register_blueprint(sessions_bp)
@@ -53,6 +54,7 @@ def create_app() -> Flask:
     app.register_blueprint(kanban_bp)
     app.register_blueprint(kanban_reports_bp)
     app.register_blueprint(compose_bp)
+    app.register_blueprint(test_bp)
 
     # Prune stale utility session JSONL files (>24h) — once at startup,
     # not on every /api/sessions request.

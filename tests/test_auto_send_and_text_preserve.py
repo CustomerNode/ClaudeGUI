@@ -324,7 +324,10 @@ try:
 except ImportError:
     HAS_SELENIUM = False
 
-from tests.conftest import TEST_BASE_URL as BASE_URL
+try:
+    from tests.e2e.conftest import TEST_BASE_URL as BASE_URL
+except ImportError:
+    BASE_URL = "http://localhost:5099"
 LONG_WAIT = 90
 
 

@@ -54,21 +54,132 @@ function openGitPublish() {
     body += '<p style="color:var(--text-muted);font-size:12px;margin-top:8px">'
       + s.behind + ' remote update(s) will be pulled in first, then your changes pushed.</p>';
   }
+  body += '<p style="color:var(--text-muted);font-size:12px;margin-top:8px">'
+    + 'Run regression tests before publishing?</p>';
   showGitSyncModal('Publish App Update', body, [
-    {label: 'Publish Now', primary: true, onclick: () => executeGitAction('both', 'btn-git-publish', 'Publish App Update')},
+    {label: 'Fast Tests + Publish', primary: true, onclick: () => _testThenPublish('fast')},
+    {label: 'Full Tests + Publish', onclick: () => _testThenPublish('full')},
+    {label: 'Skip & Publish', onclick: () => executeGitAction('both', 'btn-git-publish', 'Publish App Update')},
     {label: 'Cancel', onclick: closeGitSyncModal}
   ]);
+}
+
+function _testThenPublish(mode) {
+  _testThenAction(mode, 'publish', 'Publish App Update', 'btn-git-publish');
 }
 
 function openGitSyncBoth() {
   const s = _gitStatus;
   let body = '<p><b style="color:var(--text-heading)">' + s.behind + ' update(s)</b> to pull and '
     + '<b style="color:var(--text-heading)">' + (s.ahead + (s.uncommitted ? 1 : 0)) + ' change(s)</b> to push.</p>'
-    + '<p style="color:var(--text-muted);font-size:12px">Remote updates will be pulled first, merge conflicts resolved automatically, then your changes pushed.</p>';
+    + '<p style="color:var(--text-muted);font-size:12px">Remote updates will be pulled first, merge conflicts resolved automatically, then your changes pushed.</p>'
+    + '<p style="color:var(--text-muted);font-size:12px;margin-top:8px">Run regression tests before syncing?</p>';
   showGitSyncModal('Sync App', body, [
-    {label: 'Sync Now', primary: true, onclick: () => executeGitAction('both', 'btn-git-sync', 'Sync App')},
+    {label: 'Fast Tests + Sync', primary: true, onclick: () => _testThenSync('fast')},
+    {label: 'Full Tests + Sync', onclick: () => _testThenSync('full')},
+    {label: 'Skip & Sync', onclick: () => executeGitAction('both', 'btn-git-sync', 'Sync App')},
     {label: 'Cancel', onclick: closeGitSyncModal}
   ]);
+}
+
+function _testThenSync(mode) {
+  _testThenAction(mode, 'sync', 'Sync App', 'btn-git-sync');
+}
+
+/**
+ * Shared helper: run tests, then execute a git action if they pass.
+ * @param {string} mode - "fast" or "full"
+ * @param {string} actionType - "publish" or "sync" (for labels)
+ * @param {string} actionLabel - display label for the git action
+ * @param {string} btnId - button ID for executeGitAction
+ */
+function _testThenAction(mode, actionType, actionLabel, btnId) {
+  closeGitSyncModal();
+  const testLabel = mode === 'fast' ? 'Fast Tests' : 'Full Tests';
+  const verb = actionType === 'publish' ? 'publish' : 'sync';
+  const desc = 'Running ' + (mode === 'fast' ? 'fast' : 'full') + ' tests before ' + verb + '...';
+  const Verb = verb.charAt(0).toUpperCase() + verb.slice(1);
+
+  if (typeof _testRunning !== 'undefined' && _testRunning) {
+    showGitSyncModal('Tests Running', '<p style="color:var(--text-muted)">Tests are already running.</p>',
+      [{label: 'OK', onclick: closeGitSyncModal}]);
+    return;
+  }
+
+  if (typeof _testRunning !== 'undefined') _testRunning = true;
+
+  showGitSyncModal(testLabel + ' Before ' + Verb, typeof _testRunnerHtml === 'function' ? _testRunnerHtml(desc) : '<p>' + desc + '</p>', []);
+
+  fetch('/api/run-tests', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mode})
+  }).then(res => {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let lines = [];
+
+    function read() {
+      reader.read().then(({done, value}) => {
+        if (done) {
+          if (typeof _testRunning !== 'undefined') _testRunning = false;
+          return;
+        }
+        buffer += decoder.decode(value, {stream: true});
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop();
+
+        for (const part of parts) {
+          if (!part.startsWith('data: ')) continue;
+          try {
+            const d = JSON.parse(part.slice(6));
+            if (d.type === 'line') {
+              lines.push(d.line);
+              if (typeof _updateTestOutput === 'function') _updateTestOutput(lines);
+            } else if (d.type === 'done') {
+              if (typeof _testRunning !== 'undefined') _testRunning = false;
+              if (d.ok) {
+                showGitSyncModal('Tests Passed \u2713', '<div style="text-align:center;padding:12px 0;">'
+                  + '<div style="font-weight:600;color:var(--accent-green,#4ecdc4);">'
+                  + d.passed + ' tests passed \u2014 proceeding to ' + verb + '...</div></div>', []);
+                setTimeout(() => {
+                  executeGitAction('both', btnId, actionLabel);
+                }, 1200);
+              } else {
+                let body = '<div style="text-align:center;padding:8px 0;">'
+                  + '<div style="font-weight:600;color:var(--result-err,#ff4444);font-size:16px;">' + Verb + ' Blocked</div>'
+                  + '<div style="font-size:13px;color:var(--text-muted);margin-top:4px;">'
+                  + d.failed + ' test(s) failed. Fix the failures before ' + verb + 'ing.</div></div>';
+                const failLines = lines.filter(l => l.startsWith('FAILED') || l.startsWith('ERROR'));
+                if (failLines.length > 0) {
+                  body += '<pre style="text-align:left;font-size:10px;font-family:monospace;'
+                    + 'max-height:200px;overflow-y:auto;background:rgba(255,60,60,0.06);'
+                    + 'border:1px solid rgba(255,60,60,0.15);border-radius:6px;'
+                    + 'padding:8px 10px;margin-top:10px;color:var(--text-secondary);'
+                    + 'white-space:pre-wrap;word-break:break-all;">'
+                    + failLines.map(l => (typeof _escTestHtml === 'function' ? _escTestHtml(l) : l)).join('\n')
+                    + '</pre>';
+                }
+                showGitSyncModal(Verb + ' Blocked \u2014 Tests Failed', body, [
+                  {label: Verb + ' Anyway', onclick: () => executeGitAction('both', btnId, actionLabel)},
+                  {label: 'Cancel', primary: true, onclick: closeGitSyncModal}
+                ]);
+              }
+            }
+          } catch(_) {}
+        }
+        read();
+      }).catch(() => { if (typeof _testRunning !== 'undefined') _testRunning = false; });
+    }
+    read();
+  }).catch(() => {
+    if (typeof _testRunning !== 'undefined') _testRunning = false;
+    showGitSyncModal('Test Error', '<p style="color:var(--result-err)">Could not run tests. ' + Verb + ' anyway?</p>', [
+      {label: Verb + ' Anyway', onclick: () => executeGitAction('both', btnId, actionLabel)},
+      {label: 'Cancel', onclick: closeGitSyncModal}
+    ]);
+  });
 }
 
 function openGitUpdate() {

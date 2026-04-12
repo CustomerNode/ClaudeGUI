@@ -6,3 +6,5 @@ supabase
 pg8000
 openpyxl
 python-pptx
+pytest
+pytest-timeout
