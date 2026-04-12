@@ -62,95 +62,172 @@ def _system_user_label(text: str) -> str:
     return "System message"
 
 
-def _parse_jsonl_entries(app, session_id: str, since: int = 0, project: str = "") -> list:
+# ---- Entry cache for fast repeated loads ----------------------------------
+# Maps session_id -> (mtime, file_size, entries_list).
+# Invalidated when the .jsonl file's mtime or size changes.
+_entry_cache: dict = {}
+_ENTRY_CACHE_MAX = 200  # max sessions to keep cached
+
+
+def _parse_raw_line(raw: str) -> list:
+    """Parse a single JSONL line into zero or more structured entries."""
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        return []
+    t = obj.get("type", "")
+    if t in ("file-history-snapshot", "custom-title", "progress"):
+        return []
+    entries = []
+    if t == "user":
+        msg = obj.get("message", {})
+        content = msg.get("content", "")
+        if isinstance(content, str) and content.strip():
+            text = content.strip()[:20000]
+            if _is_system_user_content(text):
+                entries.append({"kind": "system", "text": _system_user_label(text)})
+            else:
+                entries.append({"kind": "user", "text": text})
+        elif isinstance(content, list):
+            for block in content:
+                bt = block.get("type", "")
+                if bt == "text" and block.get("text", "").strip():
+                    text = block["text"].strip()[:20000]
+                    if _is_system_user_content(text):
+                        entries.append({"kind": "system", "text": _system_user_label(text)})
+                    else:
+                        entries.append({"kind": "user", "text": text})
+                elif bt == "tool_result":
+                    rc = block.get("content", "")
+                    if isinstance(rc, list):
+                        rt = " ".join(
+                            b.get("text", "") for b in rc
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                    else:
+                        rt = str(rc)
+                    entries.append({
+                        "kind": "tool_result",
+                        "tool_use_id": block.get("tool_use_id", ""),
+                        "text": rt[:20000],
+                        "is_error": bool(block.get("is_error")),
+                    })
+    elif t == "assistant":
+        msg = obj.get("message", {})
+        content = msg.get("content", "")
+        if isinstance(content, str) and content.strip():
+            entries.append({"kind": "asst", "text": content.strip()[:50000]})
+        elif isinstance(content, list):
+            for block in content:
+                bt = block.get("type", "")
+                if bt == "text" and block.get("text", "").strip():
+                    entries.append({"kind": "asst", "text": block["text"].strip()[:50000]})
+                elif bt == "tool_use":
+                    inp = block.get("input") or {}
+                    if "command" in inp:
+                        desc = inp["command"][:300]
+                    elif "path" in inp:
+                        desc = inp["path"]
+                        if "content" in inp:
+                            desc += f" (write {len(str(inp.get('content', '')))} chars)"
+                    elif "pattern" in inp:
+                        desc = inp["pattern"][:200]
+                    elif inp:
+                        first_key = next(iter(inp))
+                        desc = f"{first_key}: {str(inp[first_key])[:200]}"
+                    else:
+                        desc = ""
+                    entries.append({
+                        "kind": "tool_use",
+                        "id": block.get("id", ""),
+                        "name": block.get("name", ""),
+                        "desc": desc,
+                    })
+    return entries
+
+
+def _parse_jsonl_entries(app, session_id: str, since: int = 0, project: str = "",
+                         tail: int = 0) -> list:
     """Parse .jsonl file on disk to produce structured log entries.
 
     Reuses the same logic as live_api.py's api_session_log endpoint so that
     historical sessions display correctly in the live panel.
+
+    Performance optimisations for long sessions:
+    - mtime-based in-memory cache: second+ loads are near-instant.
+    - ``tail`` parameter: when set, only the last ``tail`` *lines* of the
+      file are read from disk (binary seek from EOF). This avoids reading
+      the entire multi-MB file for the common case of showing the latest
+      messages. The caller is responsible for requesting enough tail lines
+      to cover the desired entry count (lines != entries because some lines
+      are filtered and some produce multiple entries).
     """
+    import os
     from ..config import _sessions_dir
 
     path = _sessions_dir(project) / f"{session_id}.jsonl"
     if not path.exists():
         return []
+
     try:
-        raw_lines = [l for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
-    except Exception:
+        st = os.stat(path)
+        mtime = st.st_mtime
+        fsize = st.st_size
+    except OSError:
         return []
 
-    entries = []
-    for raw in raw_lines[since:]:
+    # --- Cache hit? --------------------------------------------------------
+    cached = _entry_cache.get(session_id)
+    if cached and cached[0] == mtime and cached[1] == fsize:
+        entries = cached[2]
+        return entries[since:] if since else entries
+
+    # --- Read file (full or tail) ------------------------------------------
+    raw_lines: list
+    is_partial = False  # True when we only read the tail
+
+    if tail and tail > 0 and fsize > 0:
+        # Binary tail-read: seek back from EOF to get ~tail lines.
+        # Over-read by 50% to account for filtered lines.
         try:
-            obj = json.loads(raw)
+            with open(path, 'rb') as fh:
+                # Estimate bytes: read last chunk sized for the requested
+                # number of lines.  Average JSONL line is ~1-2KB but tool
+                # results can be much larger.  Start with a generous guess
+                # and expand if we don't get enough lines.
+                target_lines = int(tail * 1.5) + 20
+                chunk = min(fsize, target_lines * 3000)
+                fh.seek(max(0, fsize - chunk))
+                if fh.tell() != 0:
+                    fh.readline()  # discard partial first line
+                data = fh.read().decode('utf-8', errors='replace')
+            raw_lines = [l for l in data.splitlines() if l.strip()]
+            is_partial = True
         except Exception:
-            continue
-        t = obj.get("type", "")
-        if t in ("file-history-snapshot", "custom-title", "progress"):
-            continue
-        if t == "user":
-            msg = obj.get("message", {})
-            content = msg.get("content", "")
-            if isinstance(content, str) and content.strip():
-                text = content.strip()[:20000]
-                if _is_system_user_content(text):
-                    entries.append({"kind": "system", "text": _system_user_label(text)})
-                else:
-                    entries.append({"kind": "user", "text": text})
-            elif isinstance(content, list):
-                for block in content:
-                    bt = block.get("type", "")
-                    if bt == "text" and block.get("text", "").strip():
-                        text = block["text"].strip()[:20000]
-                        if _is_system_user_content(text):
-                            entries.append({"kind": "system", "text": _system_user_label(text)})
-                        else:
-                            entries.append({"kind": "user", "text": text})
-                    elif bt == "tool_result":
-                        rc = block.get("content", "")
-                        if isinstance(rc, list):
-                            rt = " ".join(
-                                b.get("text", "") for b in rc
-                                if isinstance(b, dict) and b.get("type") == "text"
-                            )
-                        else:
-                            rt = str(rc)
-                        entries.append({
-                            "kind": "tool_result",
-                            "tool_use_id": block.get("tool_use_id", ""),
-                            "text": rt[:20000],
-                            "is_error": bool(block.get("is_error")),
-                        })
-        elif t == "assistant":
-            msg = obj.get("message", {})
-            content = msg.get("content", "")
-            if isinstance(content, str) and content.strip():
-                entries.append({"kind": "asst", "text": content.strip()[:50000]})
-            elif isinstance(content, list):
-                for block in content:
-                    bt = block.get("type", "")
-                    if bt == "text" and block.get("text", "").strip():
-                        entries.append({"kind": "asst", "text": block["text"].strip()[:50000]})
-                    elif bt == "tool_use":
-                        inp = block.get("input") or {}
-                        if "command" in inp:
-                            desc = inp["command"][:300]
-                        elif "path" in inp:
-                            desc = inp["path"]
-                            if "content" in inp:
-                                desc += f" (write {len(str(inp.get('content', '')))} chars)"
-                        elif "pattern" in inp:
-                            desc = inp["pattern"][:200]
-                        elif inp:
-                            first_key = next(iter(inp))
-                            desc = f"{first_key}: {str(inp[first_key])[:200]}"
-                        else:
-                            desc = ""
-                        entries.append({
-                            "kind": "tool_use",
-                            "id": block.get("id", ""),
-                            "name": block.get("name", ""),
-                            "desc": desc,
-                        })
+            return []
+    else:
+        try:
+            raw_lines = [l for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        except Exception:
+            return []
+
+    # --- Parse lines -------------------------------------------------------
+    entries = []
+    for raw in raw_lines[since if not is_partial else 0:]:
+        entries.extend(_parse_raw_line(raw))
+
+    # --- Populate cache (only for full reads) ------------------------------
+    if not is_partial:
+        # Evict oldest if cache is too large
+        if len(_entry_cache) >= _ENTRY_CACHE_MAX:
+            try:
+                oldest_key = next(iter(_entry_cache))
+                del _entry_cache[oldest_key]
+            except StopIteration:
+                pass
+        _entry_cache[session_id] = (mtime, fsize, entries)
+        return entries[since:] if since else entries
+
     return entries
 
 

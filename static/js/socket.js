@@ -291,7 +291,7 @@ socket.on('state_snapshot', (data) => {
             console.warn('[state_snapshot] Live session', liveSessionId,
                 'transitioned from working →', newKinds[liveSessionId],
                 '— DOM is empty, re-fetching entries');
-            socket.emit('get_session_log', {session_id: liveSessionId, since: 0, project: localStorage.getItem('activeProject') || ''});
+            socket.emit('get_session_log', {session_id: liveSessionId, since: 0, limit: LIVE_PAGE_SIZE, project: localStorage.getItem('activeProject') || ''});
         } else {
             console.log('[state_snapshot] Live session', liveSessionId,
                 'transitioned from working →', newKinds[liveSessionId],
@@ -605,7 +605,7 @@ socket.on('session_state', (data) => {
             const sc = data.entry_count;
             if (sc != null && sc > liveLineCount) {
                 console.warn('[entry-catchup] Backend has', sc, 'entries but frontend has', liveLineCount, '— re-fetching');
-                socket.emit('get_session_log', {session_id: session_id, since: 0, project: localStorage.getItem('activeProject') || ''});
+                socket.emit('get_session_log', {session_id: session_id, since: 0, limit: LIVE_PAGE_SIZE, project: localStorage.getItem('activeProject') || ''});
             }
             // No blind 500ms re-fetch — it destroys already-rendered content
         }
@@ -1206,62 +1206,80 @@ socket.on('session_id_remapped', (data) => {
     }
 });
 
-// Session log response (for panel open) — client-side pagination.
-// Server sends ALL entries; we stash them and only render the last PAGE_SIZE.
+// Session log response — server-side pagination.
+// Server sends only the requested page; "Load older" fetches from server.
 socket.on('session_log', (data) => {
     if (data.session_id !== liveSessionId) return;
     const logEl = document.getElementById('live-log');
     if (!logEl) return;
 
-    const allEntries = data.entries || [];
-    console.log('[WS] session_log: received ' + allEntries.length + ' entries, will render last ' + LIVE_PAGE_SIZE);
+    const entries = data.entries || [];
+    const total = data.total || entries.length;
+    const offset = data.offset || 0;
+    const hasMore = data.has_more || false;
+    const isPrepend = data.prepend || false;
 
-    // Guard: if the DOM already has MORE entries than this re-fetch returned
-    // (e.g. daemon restarted and hasn't fully re-read the JSONL yet), do NOT
-    // wipe the DOM — we'd be destroying data the user can already see.
-    if (allEntries.length < liveLineCount && liveLineCount > 0) {
-        console.warn('[WS] session_log has fewer entries (' + allEntries.length +
-            ') than DOM (' + liveLineCount + ') — skipping destructive re-render');
-        // Still update the stash so "Load older" has fresh data if it's bigger
-        if (allEntries.length > _liveEntryStash.length) _liveEntryStash = allEntries;
+    console.log('[WS] session_log: received', entries.length, 'entries (offset=' + offset +
+        ', total=' + total + ', has_more=' + hasMore + ', prepend=' + isPrepend + ')');
+
+    // --- Prepend path: "Load older" response ---
+    if (isPrepend) {
+        const existingBtn = logEl.querySelector('.live-load-more');
+        if (existingBtn) existingBtn.remove();
+
+        const prevHeight = logEl.scrollHeight;
+        const prevScroll = logEl.scrollTop;
+        const frag = document.createDocumentFragment();
+
+        // Update pagination state
+        _liveRenderedFrom = offset;
+        _liveEntryStash = [];  // not used in server-pagination mode
+
+        if (offset > 0) {
+            frag.appendChild(_createLoadMoreButton());
+        }
+        entries.forEach((entry) => {
+            frag.appendChild(renderLiveEntry(entry));
+        });
+        logEl.insertBefore(frag, logEl.firstChild);
+
+        // Restore scroll position so viewport stays on the same messages
+        const newHeight = logEl.scrollHeight;
+        logEl.scrollTop = prevScroll + (newHeight - prevHeight);
         return;
     }
 
-    // Stash all entries in memory for "Load older" to pull from
-    _liveEntryStash = allEntries;
+    // --- Initial load path ---
+
+    // Guard: if the DOM already has MORE entries than this response covers
+    // (e.g. daemon restarted and hasn't fully re-read the JSONL yet), do NOT
+    // wipe the DOM — we'd be destroying data the user can already see.
+    const effectiveCount = offset + entries.length;
+    if (effectiveCount < liveLineCount && liveLineCount > 0) {
+        console.warn('[WS] session_log covers fewer entries (' + effectiveCount +
+            ') than DOM (' + liveLineCount + ') — skipping destructive re-render');
+        return;
+    }
+
+    // Clear and re-render
+    _liveEntryStash = [];  // server pagination — no client stash needed
+    _liveRenderedFrom = offset;
 
     logEl.innerHTML = '';
     _optimisticMsgId = 0;
     if (typeof _clearOutputShelf === 'function') _clearOutputShelf();
 
-    // Only render the last LIVE_PAGE_SIZE entries, but always extend back
-    // to include the most recent user message so the prompt is visible.
-    let start = Math.max(0, allEntries.length - LIVE_PAGE_SIZE);
-    if (start > 0) {
-        let hasUser = false;
-        for (let i = allEntries.length - 1; i >= start; i--) {
-            if (allEntries[i].kind === 'user') { hasUser = true; break; }
-        }
-        if (!hasUser) {
-            for (let i = start - 1; i >= 0; i--) {
-                if (allEntries[i].kind === 'user') { start = i; break; }
-            }
-        }
-    }
-    _liveRenderedFrom = start;
-    const visible = allEntries.slice(start);
-
-    // Show "Load older" button if there are hidden entries
-    if (_liveRenderedFrom > 0) {
+    // Show "Load older" button if server says there are more
+    if (hasMore) {
         logEl.appendChild(_createLoadMoreButton());
     }
 
-    if (visible.length) {
-        visible.forEach((entry) => {
+    if (entries.length) {
+        entries.forEach((entry) => {
             logEl.appendChild(renderLiveEntry(entry));
             if (typeof _tryAddOutputCard === 'function') _tryAddOutputCard(entry);
         });
-        liveLineCount = allEntries.length;
+        liveLineCount = total;
     } else {
         liveLineCount = 0;
     }
@@ -1281,7 +1299,7 @@ socket.on('session_log', (data) => {
             var _switchMeasure = performance.getEntriesByName('session-switch-' + data.session_id)[0];
             if (_switchMeasure) {
                 console.debug('[PERF] Session switch for %s: %dms (%d entries)',
-                    data.session_id.slice(0, 12), Math.round(_switchMeasure.duration), allEntries.length);
+                    data.session_id.slice(0, 12), Math.round(_switchMeasure.duration), entries.length);
             }
         } catch (_e) { /* ignore measurement errors */ }
         performance.clearMarks('switch-' + data.session_id);
@@ -1435,7 +1453,7 @@ function _processKanbanStatusMarkers(text) {
 // within one interval instead of requiring a manual refresh.
 setInterval(() => {
     if (socket.connected) socket.emit('request_state_snapshot');
-}, 15000);
+}, 30000);
 
 
 // ---- Continuous stuck-session watchdog ----
@@ -1463,8 +1481,8 @@ setInterval(() => {
 // ---- Startup ----
 window._initialLoadDone = false;
 loadProjects().then(() => { window._initialLoadDone = true; }).catch(() => { window._initialLoadDone = true; });
-pollGitStatus();
-setInterval(pollGitStatus, 60000);
+// NOTE: pollGitStatus() and its 60s interval are registered in polling.js.
+// Do NOT duplicate them here — double polling spawns 6 git subprocesses/min.
 // Initialize folder tree from server (shows template selector on first run)
 if (typeof initFolderTree === 'function') {
   initFolderTree().catch(function(e) { console.error('initFolderTree failed', e); });

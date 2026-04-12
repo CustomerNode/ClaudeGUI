@@ -15,7 +15,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_POLL_INTERVAL = 1.0  # seconds between polls
+_POLL_INTERVAL = 4.0  # seconds between polls
 _watcher_thread = None
 _stop_event = threading.Event()
 

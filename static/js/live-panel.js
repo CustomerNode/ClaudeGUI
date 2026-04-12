@@ -93,12 +93,12 @@ let liveAutoScroll = true;
 // text-based comparison that would eat legitimate duplicate messages.
 let _optimisticMsgId = 0;
 
-// Client-side pagination for long chat threads.
-// The server sends ALL entries; we stash them in memory and only render
-// the last PAGE_SIZE initially. "Load older" renders more from the stash.
+// Server-side pagination for long chat threads.
+// Server sends only the requested page; "Load older" fetches older pages
+// from the server via get_session_log with a `before` parameter.
 const LIVE_PAGE_SIZE = 100;
-let _liveEntryStash = [];       // full entry list from server (kept in memory)
-let _liveRenderedFrom = 0;      // index into _liveEntryStash of the oldest rendered entry
+let _liveEntryStash = [];       // legacy — kept for compat but no longer primary
+let _liveRenderedFrom = 0;      // server-side offset of oldest rendered entry
 
 function _createLoadMoreButton() {
   const wrap = document.createElement('div');
@@ -115,34 +115,20 @@ function _createLoadMoreButton() {
 
 function liveLoadMore() {
   if (_liveRenderedFrom <= 0 || !liveSessionId) return;
-  const logEl = document.getElementById('live-log');
-  if (!logEl) return;
 
-  const prevHeight = logEl.scrollHeight;
-  const prevScroll = logEl.scrollTop;
+  // Disable the button to prevent double-clicks while loading
+  const btn = document.getElementById('live-load-more-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
 
-  // Remove existing "load more" button
-  const existingBtn = logEl.querySelector('.live-load-more');
-  if (existingBtn) existingBtn.remove();
-
-  // Render the next batch from the stash
-  const start = Math.max(0, _liveRenderedFrom - LIVE_PAGE_SIZE);
-  const batch = _liveEntryStash.slice(start, _liveRenderedFrom);
-  _liveRenderedFrom = start;
-
-  const frag = document.createDocumentFragment();
-  if (_liveRenderedFrom > 0) {
-    frag.appendChild(_createLoadMoreButton());
-  }
-  batch.forEach((entry) => {
-    frag.appendChild(renderLiveEntry(entry));
+  // Request older entries from server — the session_log handler's
+  // prepend path will insert them into the DOM.
+  socket.emit('get_session_log', {
+    session_id: liveSessionId,
+    since: 0,
+    limit: LIVE_PAGE_SIZE,
+    before: _liveRenderedFrom,
+    project: localStorage.getItem('activeProject') || ''
   });
-
-  logEl.insertBefore(frag, logEl.firstChild);
-
-  // Restore scroll position so viewport stays on the same messages
-  const newHeight = logEl.scrollHeight;
-  logEl.scrollTop = prevScroll + (newHeight - prevHeight);
 }
 // Per-session queue — server-backed local cache (synced via queue_updated events)
 const _sessionQueues = {};
@@ -558,7 +544,7 @@ function startLivePanel(id, opts) {
   // Request the log via WebSocket (skip for brand-new sessions — optimistic bubble is enough)
   if (!skipLog) {
     performance.mark('switch-' + id);
-    socket.emit('get_session_log', {session_id: id, since: 0, project: localStorage.getItem('activeProject') || ''});
+    socket.emit('get_session_log', {session_id: id, since: 0, limit: LIVE_PAGE_SIZE, project: localStorage.getItem('activeProject') || ''});
   }
 
 
@@ -1706,7 +1692,7 @@ function _watchdogHttpCheck(sid, forceApply) {
           const _wdLog = document.getElementById('live-log');
           const _wdHasEntries = _wdLog && _wdLog.querySelectorAll('.msg').length > 0;
           if (!_wdHasEntries) {
-            socket.emit('get_session_log', {session_id: sid, since: 0, project: localStorage.getItem('activeProject') || ''});
+            socket.emit('get_session_log', {session_id: sid, since: 0, limit: LIVE_PAGE_SIZE, project: localStorage.getItem('activeProject') || ''});
           }
         }
         filterSessions();
@@ -1717,7 +1703,7 @@ function _watchdogHttpCheck(sid, forceApply) {
         if (sid === liveSessionId && serverEntryCount > liveLineCount + 1) {
           console.warn('[watchdog] Entry mismatch while working: server has', serverEntryCount,
             'but frontend has', liveLineCount, '— re-fetching');
-          socket.emit('get_session_log', {session_id: sid, since: 0, project: localStorage.getItem('activeProject') || ''});
+          socket.emit('get_session_log', {session_id: sid, since: 0, limit: LIVE_PAGE_SIZE, project: localStorage.getItem('activeProject') || ''});
         }
         if (forceApply) {
           // Request a fresh snapshot to resync any other stale state

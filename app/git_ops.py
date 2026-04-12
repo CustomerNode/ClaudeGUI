@@ -19,6 +19,8 @@ _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 _git_cache = {"ahead": 0, "behind": 0, "uncommitted": False, "has_git": False, "ready": False}
 _git_fetch_lock = threading.Lock()
 _sync_cooldown_until = 0.0  # epoch; bg refresh is suppressed until this time
+_last_refresh_time = 0.0     # epoch; throttle refresh_if_idle
+_REFRESH_MIN_INTERVAL = 45   # seconds; don't re-fetch more often than this
 
 
 # ---------------------------------------------------------------------------
@@ -64,11 +66,17 @@ def start_bg_fetch():
 
 
 def refresh_if_idle():
-    """Trigger a background refresh if no fetch is currently in progress
-    and we're not in the post-sync cooldown window."""
-    if time.time() < _sync_cooldown_until:
+    """Trigger a background refresh if no fetch is currently in progress,
+    we're not in the post-sync cooldown, and enough time has elapsed since
+    the last refresh. Prevents subprocess spam from rapid polling."""
+    global _last_refresh_time
+    now = time.time()
+    if now < _sync_cooldown_until:
         return  # a sync just finished; trust its cache for a few seconds
+    if now - _last_refresh_time < _REFRESH_MIN_INTERVAL:
+        return  # already refreshed recently; use cached result
     if not _git_fetch_lock.locked():
+        _last_refresh_time = now  # mark eagerly to prevent races
         def _refresh():
             with _git_fetch_lock:
                 if time.time() < _sync_cooldown_until:

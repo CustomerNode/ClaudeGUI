@@ -13,6 +13,8 @@ import hashlib
 import json
 import logging
 import os
+import signal
+import subprocess as _subprocess
 import tempfile
 import threading
 import time
@@ -165,8 +167,10 @@ try:
                 try:
                     proc = getattr(self.transport, '_process', None)
                     if proc and proc.returncode is None:
+                        # Kill the entire process tree so children
+                        # (test runners, etc.) don't linger as orphans.
+                        SessionManager._kill_process_tree(proc.pid)
                         proc.terminate()
-                        # kill() as fallback — terminate() may not be instant
                         try:
                             proc.kill()
                         except Exception:
@@ -2026,6 +2030,33 @@ class SessionManager:
         except Exception as e:
             logger.exception("Interrupt error for %s: %s", session_id, e)
 
+    @staticmethod
+    def _kill_process_tree(pid: int) -> None:
+        """Kill a process and all its children.  Cross-platform."""
+        try:
+            if os.name == "nt":
+                # taskkill /T kills the entire tree, /F forces it
+                _subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    stdout=_subprocess.DEVNULL,
+                    stderr=_subprocess.DEVNULL,
+                    timeout=10,
+                    creationflags=_subprocess.CREATE_NO_WINDOW,
+                )
+            else:
+                # Send SIGTERM to the process group, then SIGKILL
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                time.sleep(0.3)
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        except Exception as e:
+            logger.debug("_kill_process_tree(%d) best-effort: %s", pid, e)
+
     async def _close_session(self, session_id: str) -> None:
         """Disconnect and clean up a session."""
         with self._lock:
@@ -2048,12 +2079,27 @@ class SessionManager:
             if info.task and not info.task.done():
                 info.task.cancel()
 
-            # Disconnect the client
+            # Grab the CLI subprocess PID *before* disconnect() cleans it up.
+            # The SDK client wraps a subprocess whose children (Node.js test
+            # runners, etc.) survive a plain terminate()/disconnect().
+            cli_pid = None
+            if info.client:
+                transport = getattr(info.client, 'transport', None)
+                proc = getattr(transport, '_process', None) if transport else None
+                if proc and proc.returncode is None:
+                    cli_pid = proc.pid
+
+            # Disconnect the client (terminates the direct CLI process)
             if info.client:
                 try:
                     await info.client.disconnect()
                 except Exception:
                     pass
+
+            # Kill the full process tree so child processes (test runners,
+            # build tools, etc.) don't linger as orphans eating CPU/RAM.
+            if cli_pid is not None:
+                self._kill_process_tree(cli_pid)
 
             info.state = SessionState.STOPPED
             info.client = None
@@ -3005,14 +3051,22 @@ class SessionManager:
         # message handler didn't see any direct Edit/Write tool uses.
         # This avoids scanning the entire project directory on every turn —
         # only needed when something opaque (Agent, Bash) may have edited files.
+        #
+        # IMPORTANT: fs_changed files are used for the CURRENT snapshot only,
+        # NOT added to tracked_files permanently.  Adding them caused tracked_files
+        # to snowball to 1400+ entries when test suites touched many project files,
+        # making write_file_snapshot and record_pre_turn_mtimes take 20-55s per turn.
+        fs_snapshot_extras = set()
         if not info._turn_had_direct_edit:
             fs_changed = self._detect_changed_files(info)
             if fs_changed:
-                info.tracked_files.update(fs_changed)
-                logger.info("_write_file_snapshot(%s): filesystem fallback detected %d changed files",
+                fs_snapshot_extras = fs_changed
+                logger.info("_write_file_snapshot(%s): filesystem fallback detected %d changed files (snapshot-only)",
                             session_id, len(fs_changed))
 
-        if not info.tracked_files:
+        # Combine direct-edit tracked files with filesystem-detected extras
+        all_snapshot_files = info.tracked_files | fs_snapshot_extras
+        if not all_snapshot_files:
             logger.info("_write_file_snapshot(%s): skipped (no tracked files)", session_id)
             return
 
@@ -3022,7 +3076,7 @@ class SessionManager:
             history_dir.mkdir(parents=True, exist_ok=True)
 
             tracked_backups = {}
-            for fpath in list(info.tracked_files):
+            for fpath in list(all_snapshot_files):
                 p = Path(fpath)
                 if not p.exists():
                     # Only record missing-file entry if we previously had a backup
@@ -3367,6 +3421,33 @@ class SessionManager:
                              info.session_id, info.state, cb_err)
         # Keep the persistent registry up to date
         self._schedule_registry_save()
+
+        # ── Memory management: trim in-memory entries for idle sessions ──
+        # The JSONL file is the source of truth; the web frontend reads it
+        # directly (with caching).  The daemon's in-memory entries list is
+        # only needed during active streaming for real-time updates.  Once
+        # idle, keep only the last N entries so long-running sessions don't
+        # consume hundreds of MB of RAM.
+        _ENTRY_TRIM_THRESHOLD = 500   # start trimming above this
+        _ENTRY_KEEP_AFTER_TRIM = 200  # keep this many after trimming
+        if info.state in (SessionState.IDLE, SessionState.STOPPED):
+            with info._lock:
+                if len(info.entries) > _ENTRY_TRIM_THRESHOLD:
+                    trimmed = len(info.entries) - _ENTRY_KEEP_AFTER_TRIM
+                    info.entries = info.entries[-_ENTRY_KEEP_AFTER_TRIM:]
+                    logger.info("Trimmed %d in-memory entries for %s (kept last %d)",
+                                trimmed, info.session_id[:12], _ENTRY_KEEP_AFTER_TRIM)
+            # Also release large per-turn data structures.  These get
+            # repopulated on the next turn start; no need to hold 1400+
+            # file paths in RAM while the session is idle.
+            if info._pre_turn_mtimes and len(info._pre_turn_mtimes) > 50:
+                info._pre_turn_mtimes = {}
+            if info._post_turn_mtimes and len(info._post_turn_mtimes) > 50:
+                info._post_turn_mtimes = {}
+            if info._cached_git_files and len(info._cached_git_files) > 100:
+                info._cached_git_files = []
+                info._cached_git_files_ts = 0.0
+
         # Auto-dispatch queued messages when session goes IDLE —
         # but NOT if the user just interrupted (flag is cleared on next
         # send_message so the session resumes normal dispatch after).

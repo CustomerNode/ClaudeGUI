@@ -134,7 +134,7 @@ window.addEventListener('online', function() {
 
 // Run the real probe on load and then on the same cadence as the health poll
 _probeInternet();
-setInterval(_probeInternet, 15000);
+setInterval(_probeInternet, 60000);
 
 /* ---- Built-in: Claude Code auth ---- */
 
@@ -150,7 +150,7 @@ var _claudeLoggedIn = true; // assume ok until first poll says otherwise
             if (prev !== _claudeLoggedIn) _runHealthChecks();
         })
         .catch(function() { /* can't reach our own server — wifi check will handle it */ });
-    setTimeout(_pollAuthStatus, _healthBlocking ? 3000 : 10000);
+    setTimeout(_pollAuthStatus, _healthBlocking ? 5000 : 30000);
 })();
 
 registerHealthCheck('claude-auth', {
