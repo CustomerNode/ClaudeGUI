@@ -2736,8 +2736,11 @@ class SessionManager:
     # Set True to log per-step timing in _drive_session / _send_query
     _PROFILE_PIPELINE = True
 
-    # TTL for cached git ls-files results (seconds)
-    _GIT_LS_FILES_CACHE_TTL = 60
+    # TTL for cached git ls-files results (seconds).  File additions during
+    # a turn are tracked via Edit/Write tool events, so this cache only needs
+    # refreshing to catch external changes.  180s keeps the subprocess from
+    # re-running on every follow-up message in a typical conversation.
+    _GIT_LS_FILES_CACHE_TTL = 180
 
     # How many turns before forcing a full mtime rescan (0 = never force)
     _MTIME_FULL_RESCAN_INTERVAL = 10
