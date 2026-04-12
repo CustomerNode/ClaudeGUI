@@ -1,10 +1,7 @@
 """
-Compose conflict detection — scans directives for conflicts and resolves them.
-
-Three-path resolution:
-1. Clearly global → auto-resolve, mark old superseded
-2. Clearly contextual → auto-resolve, scope both
-3. Ambiguous → create ComposeConflict, emit event, wait for user
+Compose conflict detection — scans directives for conflicts and surfaces them
+to the user for explicit resolution. Every detected conflict creates a
+ComposeConflict object; nothing is auto-resolved.
 """
 
 import logging
@@ -24,7 +21,9 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Keyword detection for auto-resolution
+# Keyword detection — reserved for smarter recommendation generation.
+# Auto-resolution was removed (all conflicts surface to user), but these
+# utilities are retained for future use in generate_recommendation().
 # ---------------------------------------------------------------------------
 
 # Keywords that signal a global/override intent
@@ -111,7 +110,7 @@ def detect_conflicts(project_id: str, new_directive: ComposeDirective) -> list:
     """Scan existing active directives for conflicts with a new directive.
 
     Returns list of ComposeConflict objects created (empty if no conflicts
-    or all auto-resolved).
+    detected). All conflicts surface to the user for resolution.
     """
     existing = get_directives(project_id)
     active = [d for d in existing if d.get("status") == "active"]

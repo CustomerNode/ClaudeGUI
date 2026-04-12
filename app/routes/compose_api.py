@@ -406,6 +406,7 @@ def update_section(project_id, section_id):
         return jsonify({'ok': False, 'error': 'Section not found'}), 404
 
     data = request.get_json(force=True, silent=True) or {}
+    old_status = section.status.value if section.status else None
 
     if 'name' in data:
         section.name = data['name'].strip()
@@ -425,12 +426,23 @@ def update_section(project_id, section_id):
     except Exception:
         logger.exception("Failed to update section in context")
 
+    section_dict = section.to_dict()
     _emit('compose_task_updated', {
         'project_id': project_id,
-        'section': section.to_dict(),
+        'section': section_dict,
     })
 
-    return jsonify({'ok': True, 'section': section.to_dict()})
+    # Emit a separate move event when status changed (e.g. drag between columns)
+    new_status = section.status.value if section.status else None
+    if old_status and new_status and old_status != new_status:
+        _emit('compose_task_moved', {
+            'project_id': project_id,
+            'section_id': section_id,
+            'old_status': old_status,
+            'new_status': new_status,
+        })
+
+    return jsonify({'ok': True, 'section': section_dict})
 
 
 @bp.route('/projects/<project_id>/sections/<section_id>', methods=['DELETE'])

@@ -2884,7 +2884,7 @@ function _composeDrop(event, targetStatus) {
   event.preventDefault();
   const col = event.currentTarget.closest('.compose-column');
   if (col) col.classList.remove('kanban-drop-target');
-  if (!_composeDragState) return;
+  if (!_composeDragState || !_composeProject) return;
   const { sectionId, sourceStatus } = _composeDragState;
   _composeDragState = null;
   if (sourceStatus === targetStatus) return;
