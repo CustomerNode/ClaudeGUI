@@ -32,8 +32,7 @@ def app(tmp_path, fake_project):
     """Create a Flask app with production blueprints, pointing at tmp dirs."""
     from app import create_app
 
-    application = create_app()
-    application.config["TESTING"] = True
+    application = create_app(testing=True)
 
     _patch_sessions = patch(
         "app.config._sessions_dir",

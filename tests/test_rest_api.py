@@ -72,8 +72,10 @@ def app(tmp_path, fake_project):
     """Create a Flask app with all production blueprints, pointing at tmp dirs."""
     from app import create_app
 
-    application = create_app()
-    application.config["TESTING"] = True
+    application = create_app(testing=True)
+    # Default: session manager doesn't know about any sessions, so routes
+    # fall through to file-based logic (which is what these tests exercise).
+    application.session_manager.has_session.return_value = False
 
     # Redirect _sessions_dir and _CLAUDE_PROJECTS to tmp_path
     _patch_sessions = patch(
@@ -395,9 +397,12 @@ class TestRenameSession:
         )
         assert resp.status_code == 400
 
-    def test_rename_nonexistent_returns_404(self, client, fake_project):
+    def test_rename_nonexistent_succeeds(self, client, fake_project):
+        """Rename intentionally succeeds even without a .jsonl — allows
+        naming sessions before their first message."""
         resp = client.post("/api/rename/ghost", json={"title": "X"})
-        assert resp.status_code == 404
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
 
     def test_rename_writes_to_jsonl(self, client, populated_project,
                                     fake_project):
@@ -460,9 +465,11 @@ class TestDeleteSession:
             names = json.loads(names_file.read_text(encoding="utf-8"))
             assert "sess-001" not in names
 
-    def test_delete_nonexistent_returns_404(self, client, fake_project):
+    def test_delete_nonexistent_succeeds(self, client, fake_project):
+        """Delete is intentionally idempotent — already-gone sessions return 200."""
         resp = client.delete("/api/delete/ghost")
-        assert resp.status_code == 404
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
 
     def test_delete_removes_session_folder_too(self, client,
                                                 populated_project,

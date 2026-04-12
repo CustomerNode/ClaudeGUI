@@ -140,8 +140,8 @@ def file_history_dir(tmp_path):
 def app(tmp_path, fake_project):
     from app import create_app
 
-    application = create_app()
-    application.config["TESTING"] = True
+    application = create_app(testing=True)
+    application.session_manager.has_session.return_value = False
 
     _patch_sessions = patch(
         "app.config._sessions_dir", return_value=fake_project)

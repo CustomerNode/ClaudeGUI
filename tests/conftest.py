@@ -84,6 +84,43 @@ def mock_sessions_dir(tmp_path):
 
 
 @pytest.fixture
+def kanban_app(tmp_path, monkeypatch):
+    """Flask app with an isolated SQLite kanban repo for kanban API tests."""
+    import app.db as db_mod
+    from app.db import reset_repository
+    from app.db.sqlite_backend import SqliteRepository
+    from app import create_app
+
+    reset_repository()
+
+    application = create_app(testing=True)
+    application.session_manager.has_session.return_value = False
+
+    # Point kanban to a tmp SQLite DB
+    repo = SqliteRepository(str(tmp_path / "test_kanban.db"))
+    repo.initialize()
+    db_mod._repo = repo
+
+    # Fix project ID so tests are deterministic
+    monkeypatch.setattr("app.routes.kanban_api.get_active_project", lambda: "test-project")
+    monkeypatch.setattr("app.routes.kanban_api._emit", lambda *a, **kw: None)
+
+    with application.test_client() as client:
+        with application.app_context():
+            yield application, client, repo
+
+    repo.close()
+    db_mod._repo = None
+
+
+@pytest.fixture
+def kanban_client(kanban_app):
+    """Shortcut: just the Flask test client for kanban tests."""
+    _, client, _ = kanban_app
+    return client
+
+
+@pytest.fixture
 def large_session_file(tmp_path):
     """Create a large session file (>32KB) to test head+tail reading."""
     path = tmp_path / "sess_large.jsonl"

@@ -111,13 +111,14 @@ class TestStartSession:
             'resume': False,
         })
 
-        mock_session_manager.start_session.assert_called_with(
-            session_id='new-session',
-            prompt='Hello Claude',
-            cwd='/tmp/project',
-            name='My Session',
-            resume=False,
-        )
+        mock_session_manager.start_session.assert_called_once()
+        kwargs = mock_session_manager.start_session.call_args.kwargs
+        assert kwargs['session_id'] == 'new-session'
+        # Prompt gets a timestamp tag appended — check it starts with original
+        assert kwargs['prompt'].startswith('Hello Claude')
+        assert kwargs['cwd'] == '/tmp/project'
+        assert kwargs['name'] == 'My Session'
+        assert kwargs['resume'] is False
 
         received = client.get_received()
         started = [msg for msg in received if msg['name'] == 'session_started']
@@ -165,7 +166,7 @@ class TestSendMessage:
             'text': 'What is the weather?',
         })
 
-        mock_session_manager.send_message.assert_called_with('s1', 'What is the weather?')
+        mock_session_manager.send_message.assert_called_with('s1', 'What is the weather?', voice=False)
 
     def test_send_message_missing_text(self, app_and_client, mock_session_manager):
         """send_message without text should emit error."""
@@ -179,7 +180,7 @@ class TestSendMessage:
         assert len(errors) >= 1
 
     def test_send_message_failure(self, app_and_client, mock_session_manager):
-        """send_message to non-idle session should emit error."""
+        """send_message failure should emit send_failed event."""
         mock_session_manager.send_message.return_value = {"ok": False, "error": "Not idle"}
         app, socketio, client = app_and_client
         client.get_received()
@@ -187,8 +188,10 @@ class TestSendMessage:
         client.emit('send_message', {'session_id': 's2', 'text': 'Hello'})
 
         received = client.get_received()
-        errors = [msg for msg in received if msg['name'] == 'error']
-        assert len(errors) >= 1
+        failures = [msg for msg in received if msg['name'] == 'send_failed']
+        assert len(failures) >= 1
+        assert failures[0]['args'][0]['session_id'] == 's2'
+        assert 'error' in failures[0]['args'][0]
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +211,7 @@ class TestPermissionResponse:
         })
 
         mock_session_manager.resolve_permission.assert_called_with(
-            's1', allow=True, always=False
+            's1', allow=True, always=False, almost_always=False
         )
 
     def test_permission_response_deny(self, app_and_client, mock_session_manager):
@@ -222,7 +225,7 @@ class TestPermissionResponse:
         })
 
         mock_session_manager.resolve_permission.assert_called_with(
-            's1', allow=False, always=False
+            's1', allow=False, always=False, almost_always=False
         )
 
     def test_permission_response_always(self, app_and_client, mock_session_manager):
@@ -236,7 +239,7 @@ class TestPermissionResponse:
         })
 
         mock_session_manager.resolve_permission.assert_called_with(
-            's1', allow=True, always=True
+            's1', allow=True, always=True, almost_always=False
         )
 
     def test_permission_response_invalid_action(self, app_and_client, mock_session_manager):
@@ -336,13 +339,15 @@ class TestGetSessionLog:
         mock_session_manager.get_entries.assert_called_with('s1', since=0)
 
     def test_get_session_log_with_since(self, app_and_client, mock_session_manager):
-        """get_session_log with since should pass through to get_entries."""
+        """get_session_log should fetch daemon entries with since=0 for comparison."""
         app, socketio, client = app_and_client
         client.get_received()
 
         client.emit('get_session_log', {'session_id': 's1', 'since': 5})
 
-        mock_session_manager.get_entries.assert_called_with('s1', since=5)
+        # Production always fetches full daemon entries (since=0) to compare
+        # count against JSONL-parsed entries and pick the more complete source.
+        mock_session_manager.get_entries.assert_called_with('s1', since=0)
 
 
 # ---------------------------------------------------------------------------
@@ -382,3 +387,125 @@ class TestServerPushEvents:
         mock_session_manager.resolve_permission.return_value = {"ok": True}
         result = mock_session_manager.resolve_permission("s1", allow=True, always=False)
         assert result["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# 11. Queue events
+# ---------------------------------------------------------------------------
+
+class TestQueueEvents:
+
+    def test_queue_message(self, app_and_client, mock_session_manager):
+        app, socketio, client = app_and_client
+        mock_session_manager.queue_message.return_value = {"ok": True}
+        client.get_received()
+
+        client.emit('queue_message', {'session_id': 's1', 'text': 'queued msg'})
+        mock_session_manager.queue_message.assert_called_with('s1', 'queued msg')
+
+    def test_queue_message_missing_text(self, app_and_client, mock_session_manager):
+        app, socketio, client = app_and_client
+        client.get_received()
+
+        client.emit('queue_message', {'session_id': 's1'})
+        received = client.get_received()
+        errors = [msg for msg in received if msg['name'] == 'error']
+        assert len(errors) >= 1
+
+    def test_remove_queue_item(self, app_and_client, mock_session_manager):
+        app, socketio, client = app_and_client
+        mock_session_manager.remove_queue_item.return_value = {"ok": True}
+        client.get_received()
+
+        client.emit('remove_queue_item', {'session_id': 's1', 'index': 0})
+        mock_session_manager.remove_queue_item.assert_called_with('s1', 0)
+
+    def test_edit_queue_item(self, app_and_client, mock_session_manager):
+        app, socketio, client = app_and_client
+        mock_session_manager.edit_queue_item.return_value = {"ok": True}
+        client.get_received()
+
+        client.emit('edit_queue_item', {'session_id': 's1', 'index': 0, 'text': 'edited'})
+        mock_session_manager.edit_queue_item.assert_called_with('s1', 0, 'edited')
+
+    def test_clear_queue(self, app_and_client, mock_session_manager):
+        app, socketio, client = app_and_client
+        mock_session_manager.clear_queue.return_value = {"ok": True}
+        client.get_received()
+
+        client.emit('clear_queue', {'session_id': 's1'})
+        mock_session_manager.clear_queue.assert_called_with('s1')
+
+    def test_get_queue(self, app_and_client, mock_session_manager):
+        app, socketio, client = app_and_client
+        mock_session_manager.get_queue.return_value = [
+            {"text": "msg1", "index": 0},
+        ]
+        client.get_received()
+
+        client.emit('get_queue', {'session_id': 's1'})
+        mock_session_manager.get_queue.assert_called_with('s1')
+
+        received = client.get_received()
+        queue_msgs = [msg for msg in received if msg['name'] == 'queue_updated']
+        assert len(queue_msgs) >= 1
+
+
+# ---------------------------------------------------------------------------
+# 12. Permission policy
+# ---------------------------------------------------------------------------
+
+class TestPermissionPolicy:
+
+    def test_set_permission_policy(self, app_and_client, mock_session_manager):
+        app, socketio, client = app_and_client
+        mock_session_manager.set_permission_policy.return_value = {"ok": True}
+        client.get_received()
+
+        client.emit('set_permission_policy', {'policy': 'auto'})
+        mock_session_manager.set_permission_policy.assert_called_with('auto', {})
+
+    def test_set_permission_policy_invalid(self, app_and_client, mock_session_manager):
+        app, socketio, client = app_and_client
+        client.get_received()
+
+        client.emit('set_permission_policy', {'policy': 'invalid_policy'})
+        received = client.get_received()
+        errors = [msg for msg in received if msg['name'] == 'error']
+        assert len(errors) >= 1
+
+    def test_get_permission_policy(self, app_and_client, mock_session_manager):
+        app, socketio, client = app_and_client
+        mock_session_manager.get_permission_policy.return_value = {
+            'policy': 'manual', 'custom_rules': {}
+        }
+        client.get_received()
+
+        client.emit('get_permission_policy')
+        received = client.get_received()
+        policy_msgs = [msg for msg in received if msg['name'] == 'permission_policy_loaded']
+        assert len(policy_msgs) >= 1
+
+
+# ---------------------------------------------------------------------------
+# 13. UI prefs
+# ---------------------------------------------------------------------------
+
+class TestUIPrefs:
+
+    def test_get_ui_prefs(self, app_and_client, mock_session_manager):
+        app, socketio, client = app_and_client
+        mock_session_manager.get_ui_prefs.return_value = {'theme': 'dark'}
+        client.get_received()
+
+        client.emit('get_ui_prefs')
+        received = client.get_received()
+        pref_msgs = [msg for msg in received if msg['name'] == 'ui_prefs_loaded']
+        assert len(pref_msgs) >= 1
+
+    def test_set_ui_prefs(self, app_and_client, mock_session_manager):
+        app, socketio, client = app_and_client
+        client.get_received()
+
+        client.emit('set_ui_prefs', {'theme': 'light'})
+        mock_session_manager.set_ui_prefs.assert_called_with({'theme': 'light'})

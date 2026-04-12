@@ -21,9 +21,9 @@ from app.compose.models import (
 @pytest.fixture
 def app_with_mock_daemon():
     """Create a test app with a mocked session_manager (DaemonClient)."""
-    app = create_app()
-    app.config['TESTING'] = True
+    app = create_app(testing=True)
 
+    # Override the default MagicMock with our configured one
     mock_sm = MagicMock()
     mock_sm.start_session.return_value = {"ok": True}
     mock_sm.is_connected = True

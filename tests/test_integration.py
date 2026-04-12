@@ -15,8 +15,8 @@ def app_with_sessions(mock_sessions_dir, monkeypatch):
     monkeypatch.setattr(config, "_decode_project", lambda name: str(mock_sessions_dir / name))
 
     from app import create_app
-    app = create_app()
-    app.config["TESTING"] = True
+    app = create_app(testing=True)
+    app.session_manager.has_session.return_value = False
     return app
 
 

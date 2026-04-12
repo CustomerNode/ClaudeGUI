@@ -16,8 +16,7 @@ from app.compose.models import (
 @pytest.fixture
 def client():
     """Create a test client."""
-    app = create_app()
-    app.config['TESTING'] = True
+    app = create_app(testing=True)
     with app.test_client() as c:
         yield c
 
