@@ -9923,3 +9923,258 @@ body:has(.kanban-planner-panel.open:not(.minimized)) #live-input-bar { display: 
   color: #ef4444;
   margin: 8px 0;
 }
+
+/* ═══════════════════════════════════════════════════════════════ */
+/* P4-A: Compose Tag System                                       */
+/* ═══════════════════════════════════════════════════════════════ */
+
+.compose-tag-pill {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid;
+  white-space: nowrap;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.compose-tag-pill:hover { opacity: 0.85; }
+.compose-tag-remove {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0 1px;
+  opacity: 0.6;
+}
+.compose-tag-remove:hover { opacity: 1; }
+
+.compose-tag-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 0;
+}
+.compose-tag-filter-pill.compose-tag-filter-active {
+  box-shadow: 0 0 0 1.5px currentColor;
+  font-weight: 600;
+}
+.compose-tag-filter-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.compose-tag-filter-clear-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  margin-left: auto;
+}
+.compose-tag-filter-clear-btn:hover { color: var(--text); border-color: var(--text-secondary); }
+
+.compose-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 2px 12px 4px;
+}
+
+.compose-drill-tags-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.compose-tag-add-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.compose-tag-add-input {
+  width: 80px;
+  font-size: 10px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-input, var(--bg-subtle));
+  color: var(--text);
+  outline: none;
+}
+.compose-tag-add-input:focus { border-color: var(--accent); width: 120px; }
+.compose-tag-add-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1;
+}
+.compose-tag-add-btn:hover { color: var(--text); border-color: var(--accent); }
+
+/* ═══════════════════════════════════════════════════════════════ */
+/* P4-B: Composition Templates                                    */
+/* ═══════════════════════════════════════════════════════════════ */
+
+.compose-template-section {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+.compose-template-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 8px;
+  padding: 8px 0;
+}
+.compose-template-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  background: var(--bg-card, var(--bg));
+  text-align: center;
+}
+.compose-template-card:hover {
+  border-color: var(--accent);
+  background: var(--bg-subtle);
+}
+.compose-template-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+  background: var(--accent-bg, rgba(88, 166, 255, 0.06));
+}
+.compose-template-icon { font-size: 22px; line-height: 1; }
+.compose-template-name { font-size: 12px; font-weight: 600; color: var(--text); }
+.compose-template-count { font-size: 10px; color: var(--text-muted); }
+
+/* ═══════════════════════════════════════════════════════════════ */
+/* P4-C: Section Dependencies                                     */
+/* ═══════════════════════════════════════════════════════════════ */
+
+.compose-dependencies-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.compose-dependency-link {
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 2px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--accent-bg, rgba(88, 166, 255, 0.06));
+  transition: background 0.15s;
+}
+.compose-dependency-link:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ═══════════════════════════════════════════════════════════════ */
+/* P4-D: Bulk Board Operations                                    */
+/* ═══════════════════════════════════════════════════════════════ */
+
+.compose-board-cb {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.compose-card:hover .compose-board-cb,
+.compose-board-card-selected .compose-board-cb {
+  opacity: 1;
+}
+.compose-card { position: relative; }
+.compose-board-card-selected {
+  box-shadow: 0 0 0 2px var(--accent);
+  background: var(--accent-bg, rgba(88, 166, 255, 0.06)) !important;
+}
+
+.compose-bulk-action-bar {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  background: var(--bg-card, var(--bg));
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  box-shadow: 0 -4px 20px rgba(0,0,0,0.2);
+  z-index: 100;
+  flex-wrap: wrap;
+  max-width: 600px;
+}
+.compose-bulk-action-count {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+.compose-bulk-action-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.compose-bulk-action-btn {
+  font-size: 12px;
+  font-family: inherit;
+  padding: 5px 12px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg-btn);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.1s;
+}
+.compose-bulk-action-btn:hover {
+  background: var(--bg-btn-hover);
+}
+.compose-bulk-action-danger {
+  color: #ef4444;
+  border-color: #ef4444;
+}
+.compose-bulk-action-danger:hover {
+  background: #ef4444;
+  color: #fff;
+}
+.compose-bulk-action-clear {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 2px 4px;
+}
+.compose-bulk-action-clear:hover { color: var(--text); }

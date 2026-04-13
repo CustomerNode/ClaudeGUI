@@ -297,7 +297,15 @@ function composeCreateProject() {
   const overlay = document.getElementById('pm-overlay');
   if (!overlay) return;
 
-  overlay.innerHTML = `<div class="pm-card pm-enter" style="max-width:480px;">
+  let templateHtml = '<div class="compose-template-section"><div class="kanban-create-section-label">Start from template</div><div class="compose-template-grid">';
+  for (let i = 0; i < COMPOSE_TEMPLATES.length; i++) {
+    const t = COMPOSE_TEMPLATES[i];
+    const _esc = typeof escHtml === 'function' ? escHtml : (x => x);
+    templateHtml += '<div class="compose-template-card" onclick="_composeSelectTemplate(' + i + ')" data-tidx="' + i + '"><span class="compose-template-icon">' + t.icon + '</span><span class="compose-template-name">' + _esc(t.name) + '</span><span class="compose-template-count">' + t.sections.length + ' sections</span></div>';
+  }
+  templateHtml += '</div></div>';
+
+  overlay.innerHTML = `<div class="pm-card pm-enter" style="max-width:520px;">
     <h2 class="pm-title">New Composition</h2>
     <div class="pm-body" style="padding:0;">
       <div class="kanban-create-section">
@@ -310,6 +318,8 @@ function composeCreateProject() {
           </button>
         </div>
       </div>
+      ${templateHtml}
+      <input type="hidden" id="compose-selected-template" value="">
     </div>
   </div>`;
   overlay.classList.add('show');
@@ -320,10 +330,27 @@ function composeCreateProject() {
   overlay.onclick = (e) => { if (e.target === overlay) _closePm(); };
 }
 
+function _composeSelectTemplate(idx) {
+  // Highlight selected template
+  document.querySelectorAll('.compose-template-card').forEach(c => c.classList.remove('active'));
+  const card = document.querySelector('.compose-template-card[data-tidx="' + idx + '"]');
+  if (card) card.classList.add('active');
+  const hidden = document.getElementById('compose-selected-template');
+  if (hidden) hidden.value = idx;
+  // Auto-fill the name if empty
+  const input = document.getElementById('compose-new-project-input');
+  if (input && !input.value.trim()) {
+    input.value = COMPOSE_TEMPLATES[idx].name;
+    input.focus();
+  }
+}
+
 async function _submitComposeProject() {
   const input = document.getElementById('compose-new-project-input');
   const name = input ? input.value.trim() : '';
   if (!name) { if (input) input.focus(); return; }
+  const templateInput = document.getElementById('compose-selected-template');
+  const templateIdx = templateInput && templateInput.value !== '' ? parseInt(templateInput.value, 10) : -1;
   _closePm();
   try {
     const resp = await fetch('/api/compose/projects', {
@@ -338,6 +365,20 @@ async function _submitComposeProject() {
       // Auto-switch to the newly created composition
       if (data.project && data.project.id) {
         _activeComposeProjectId = data.project.id;
+        // P4-B: Apply template if selected
+        if (templateIdx >= 0 && templateIdx < COMPOSE_TEMPLATES.length) {
+          const template = COMPOSE_TEMPLATES[templateIdx];
+          try {
+            await fetch('/api/compose/projects/' + encodeURIComponent(data.project.id) + '/planner/accept', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ sections: template.sections }),
+            });
+            showToast('Applied template: ' + template.name);
+          } catch (te) {
+            console.error('Failed to apply template:', te);
+          }
+        }
       }
       initCompose();
     } else {
@@ -346,6 +387,55 @@ async function _submitComposeProject() {
   } catch (e) {
     console.error('Failed to create compose project:', e);
     showToast('Failed to create composition', 'error');
+  }
+}
+
+// P4-B: Apply template to existing project (from empty board)
+async function _composeShowTemplates() {
+  if (!_composeProject) return;
+  const _esc = typeof escHtml === 'function' ? escHtml : (x => x);
+  const overlay = document.createElement('div');
+  overlay.className = 'pm-overlay';
+  overlay.style.cssText = 'display:flex;position:fixed;inset:0;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px);z-index:5000;align-items:center;justify-content:center;';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+  let cardsHtml = '<div class="compose-template-grid" style="padding:0;">';
+  for (let i = 0; i < COMPOSE_TEMPLATES.length; i++) {
+    const t = COMPOSE_TEMPLATES[i];
+    cardsHtml += '<div class="compose-template-card" onclick="this.closest(\'.pm-overlay\').remove();_composeApplyTemplate(' + i + ')">';
+    cardsHtml += '<span class="compose-template-icon">' + t.icon + '</span>';
+    cardsHtml += '<span class="compose-template-name">' + _esc(t.name) + '</span>';
+    cardsHtml += '<span class="compose-template-count">' + t.sections.length + ' sections</span>';
+    cardsHtml += '</div>';
+  }
+  cardsHtml += '</div>';
+
+  overlay.innerHTML = '<div class="pm-card" style="max-width:520px;">' +
+    '<div class="pm-title">Choose a Template</div>' +
+    '<div class="pm-body">' + cardsHtml + '</div>' +
+    '<div class="pm-actions"><button class="pm-btn" onclick="this.closest(\'.pm-overlay\').remove()">Cancel</button></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function _composeApplyTemplate(idx) {
+  if (!_composeProject || idx < 0 || idx >= COMPOSE_TEMPLATES.length) return;
+  const template = COMPOSE_TEMPLATES[idx];
+  try {
+    const resp = await fetch('/api/compose/projects/' + encodeURIComponent(_composeProject.id) + '/planner/accept', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ sections: template.sections }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      if (typeof showToast === 'function') showToast('Applied template: ' + template.name);
+      initCompose();
+    } else {
+      if (typeof showToast === 'function') showToast(data.error || 'Failed to apply template', 'error');
+    }
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Failed to apply template', 'error');
   }
 }
 
@@ -1788,6 +1878,7 @@ function _renderComposeSectionCards() {
         <div style="font-size:14px;font-weight:500;color:var(--text);margin:8px 0 4px;">No sections yet</div>
         <div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;">Plan your composition with AI or start manually.</div>
         <button class="pm-btn pm-btn-primary" style="font-size:14px;padding:8px 24px;margin-bottom:8px;" onclick="_openComposePlanner()">Plan with AI</button>
+        <button class="pm-btn" style="font-size:13px;padding:7px 20px;margin-bottom:8px;" onclick="_composeShowTemplates()">Use a Template</button>
         <div style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline;opacity:0.7;" onclick="composeAddSection()">or add a section manually</div>
       </div>`;
     return;
@@ -1832,16 +1923,32 @@ function _renderComposeSectionCards() {
         : '';
       const selectedClass = (_composeSelectedSection === sec.id) ? ' compose-card-selected' : '';
       const completeClass = (sec.status === 'complete') ? ' compose-card-complete' : '';
+      const boardSelectedClass = _composeBoardSelected.has(sec.id) ? ' compose-board-card-selected' : '';
       const readyBadge = (sec.ready_for_review && sec.status !== 'complete')
         ? '<span class="compose-ready-badge"><span class="compose-ready-dot"></span>Ready for review</span>'
         : '';
 
-      html += `<div class="kanban-card compose-card${selectedClass}${completeClass}" data-section-id="${sec.id}"
+      // P4-A: tag pills
+      let tagPillsHtml = '';
+      if (sec.tags && sec.tags.length > 0) {
+        tagPillsHtml = '<div class="compose-card-tags">';
+        for (const tag of sec.tags) {
+          const tc = _composeTagColor(tag);
+          tagPillsHtml += '<span class="compose-tag-pill" style="background:' + tc + '22;color:' + tc + ';border-color:' + tc + '44;" onclick="event.stopPropagation();_composeToggleTagFilter(\'' + (typeof escHtml === 'function' ? escHtml(tag) : tag) + '\')">' + (typeof escHtml === 'function' ? escHtml(tag) : tag) + '</span>';
+        }
+        tagPillsHtml += '</div>';
+      }
+
+      // P4-D: board selection checkbox
+      const boardCb = '<input type="checkbox" class="compose-board-cb" ' + (_composeBoardSelected.has(sec.id) ? 'checked' : '') + ' onclick="event.stopPropagation();_composeBoardToggleSelect(event,\'' + sec.id + '\')" title="Select">';
+
+      html += `<div class="kanban-card compose-card${selectedClass}${completeClass}${boardSelectedClass}" data-section-id="${sec.id}"
                    draggable="true"
                    ondragstart="_composeDragStart(event, '${sec.id}', '${col.key}')"
                    ondragend="_composeDragEnd(event)"
-                   onclick="navigateToSection('${sec.id}')"
+                   onclick="_composeBoardCardClick(event, '${sec.id}')"
                    oncontextmenu="event.preventDefault();event.stopPropagation();_composeCardContextMenu('${sec.id}', event)">
+        ${boardCb}
         <span class="compose-drag-handle">&#8942;&#8942;</span>
         <div class="compose-card-header">
           <span class="compose-card-artifact-icon">${artifactIcon}</span>
@@ -1862,6 +1969,7 @@ function _renderComposeSectionCards() {
           ${sec.updated_at ? '<span class="compose-card-time">' + _composeTimeAgo(sec.updated_at) + '</span>' : ''}
           ${readyBadge}
         </div>
+        ${tagPillsHtml}
         ${summary}
         ${(() => {
           const children = _composeSections.filter(c => c.parent_id === sec.id);
@@ -1877,9 +1985,36 @@ function _renderComposeSectionCards() {
 
   html += '</div>';
 
+  // Tag filter active indicator
+  if (_composeActiveTagFilter.length > 0) {
+    html = '<div class="compose-tag-filter-banner">Filtering by: ' + _composeActiveTagFilter.map(t => {
+      const tc = _composeTagColor(t);
+      return '<span class="compose-tag-pill" style="background:' + tc + '22;color:' + tc + ';border-color:' + tc + '44;">' + (typeof escHtml === 'function' ? escHtml(t) : t) + '</span>';
+    }).join(' ') + ' <button class="compose-tag-filter-clear-btn" onclick="_composeClearTagFilter()">Clear</button></div>' + html;
+  }
+
   // Conflict banner
   if (_composeConflicts && _composeConflicts.length > 0) {
     html = '<div class="compose-conflict-banner">\u26A0 ' + _composeConflicts.length + ' directive conflict' + (_composeConflicts.length !== 1 ? 's' : '') + ' need your attention <button onclick="_openConflictResolution()">Review</button></div>' + html;
+  }
+
+  // P4-D: Bulk action bar for board cards
+  if (_composeBoardSelected.size > 0) {
+    let bulkHtml = '<div class="compose-bulk-action-bar">';
+    bulkHtml += '<span class="compose-bulk-action-count">' + _composeBoardSelected.size + ' selected</span>';
+    bulkHtml += '<div class="compose-bulk-action-group">';
+    // Move to dropdown
+    bulkHtml += '<div class="compose-bulk-action-dropdown">';
+    bulkHtml += '<button class="compose-bulk-action-btn" onclick="_composeBoardBulkMoveMenu(event)">Move to &#9662;</button>';
+    bulkHtml += '</div>';
+    // Launch All
+    bulkHtml += '<button class="compose-bulk-action-btn" onclick="_composeBoardBulkLaunch()">Launch All</button>';
+    // Delete
+    bulkHtml += '<button class="compose-bulk-action-btn compose-bulk-action-danger" onclick="_composeBoardBulkDelete()">Delete</button>';
+    bulkHtml += '</div>';
+    bulkHtml += '<button class="compose-bulk-action-clear" onclick="_composeBoardClearSelection()">Clear selection</button>';
+    bulkHtml += '</div>';
+    html += bulkHtml;
   }
 
   board.innerHTML = html;
@@ -1951,6 +2086,227 @@ function _composeDragEnd(event) {
   _composeDragState = null;
   event.currentTarget.classList.remove('dragging');
   document.querySelectorAll('.kanban-drop-target').forEach(el => el.classList.remove('kanban-drop-target'));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// P4-D: BOARD BULK SELECTION
+// ═══════════════════════════════════════════════════════════════
+
+function _composeBoardCardClick(event, sectionId) {
+  // If ctrl/meta held, toggle selection instead of navigating
+  if (event.ctrlKey || event.metaKey) {
+    event.preventDefault();
+    _composeBoardToggleSelect(event, sectionId);
+    return;
+  }
+  // If shift held, range select
+  if (event.shiftKey && _composeBoardLastClicked) {
+    event.preventDefault();
+    const rootSections = _composeSections.filter(s => !s.parent_id);
+    const ids = rootSections.map(s => s.id);
+    const from = ids.indexOf(_composeBoardLastClicked);
+    const to = ids.indexOf(sectionId);
+    if (from !== -1 && to !== -1) {
+      const start = Math.min(from, to);
+      const end = Math.max(from, to);
+      for (let i = start; i <= end; i++) _composeBoardSelected.add(ids[i]);
+      _renderComposeSectionCards();
+    }
+    return;
+  }
+  // Normal click — navigate if nothing selected, or if clicking outside checkbox
+  if (_composeBoardSelected.size === 0) {
+    navigateToSection(sectionId);
+  } else {
+    _composeBoardToggleSelect(event, sectionId);
+  }
+}
+
+function _composeBoardToggleSelect(event, sectionId) {
+  if (_composeBoardSelected.has(sectionId)) {
+    _composeBoardSelected.delete(sectionId);
+  } else {
+    _composeBoardSelected.add(sectionId);
+  }
+  _composeBoardLastClicked = sectionId;
+  _renderComposeSectionCards();
+}
+
+function _composeBoardClearSelection() {
+  _composeBoardSelected = new Set();
+  _composeBoardLastClicked = null;
+  _renderComposeSectionCards();
+}
+
+function _composeBoardBulkMoveMenu(event) {
+  event.stopPropagation();
+  const existing = document.getElementById('compose-bulk-move-menu');
+  if (existing) { existing.remove(); return; }
+  const btn = event.currentTarget;
+  const rect = btn.getBoundingClientRect();
+  const menu = document.createElement('div');
+  menu.id = 'compose-bulk-move-menu';
+  menu.className = 'compose-sort-menu';
+  menu.style.position = 'fixed';
+  menu.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
+  menu.style.left = rect.left + 'px';
+  for (const opt of COMPOSE_STATUS_COLUMNS) {
+    menu.innerHTML += '<div class="compose-sort-item" onclick="_composeBoardBulkMove(\'' + opt.key + '\')">' + opt.label + '</div>';
+  }
+  document.body.appendChild(menu);
+  const close = (e) => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('click', close, true); } };
+  setTimeout(() => document.addEventListener('click', close, true), 0);
+}
+
+async function _composeBoardBulkMove(status) {
+  const m = document.getElementById('compose-bulk-move-menu');
+  if (m) m.remove();
+  if (!_composeProject) return;
+  const ids = [..._composeBoardSelected];
+  const label = (COMPOSE_STATUS_COLUMNS.find(o => o.key === status) || {}).label || status;
+  let moved = 0;
+  for (const sid of ids) {
+    const sec = _composeSections.find(s => s.id === sid);
+    if (sec) sec.status = status;
+    try {
+      await fetch('/api/compose/projects/' + encodeURIComponent(_composeProject.id) + '/sections/' + sid + '/status', {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({status: status}),
+      });
+      moved++;
+    } catch (e) { /* continue */ }
+  }
+  _composeBoardSelected = new Set();
+  _renderComposeSectionCards();
+  _updateComposeRootHeader();
+  if (typeof showToast === 'function') showToast('Moved ' + moved + ' section' + (moved !== 1 ? 's' : '') + ' to ' + label);
+}
+
+async function _composeBoardBulkLaunch() {
+  if (!_composeProject) return;
+  const ids = [..._composeBoardSelected];
+  const unlinked = ids.filter(id => { const s = _composeSections.find(x => x.id === id); return s && !s.session_id; });
+  if (unlinked.length === 0) {
+    if (typeof showToast === 'function') showToast('All selected sections already have sessions');
+    return;
+  }
+  if (typeof showToast === 'function') showToast('Launching ' + unlinked.length + ' session' + (unlinked.length !== 1 ? 's' : '') + '...');
+  let ok = 0;
+  for (const sid of unlinked) {
+    try {
+      const resp = await fetch('/api/compose/projects/' + encodeURIComponent(_composeProject.id) + '/sections/' + sid + '/launch', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        const sec = _composeSections.find(s => s.id === sid);
+        if (sec) sec.session_id = data.session_id;
+        ok++;
+      }
+    } catch (e) { /* continue */ }
+  }
+  _composeBoardSelected = new Set();
+  _renderComposeSectionCards();
+  _updateComposeRootHeader();
+  if (typeof showToast === 'function') showToast(ok + ' session' + (ok !== 1 ? 's' : '') + ' launched');
+}
+
+async function _composeBoardBulkDelete() {
+  if (!_composeProject) return;
+  const ids = [..._composeBoardSelected];
+  const names = ids.map(id => { const s = _composeSections.find(x => x.id === id); return s ? s.name : id; });
+  if (!confirm('Delete ' + ids.length + ' section' + (ids.length !== 1 ? 's' : '') + '?\n\n' + names.join('\n'))) return;
+  for (const sid of ids) {
+    try {
+      await fetch('/api/compose/projects/' + encodeURIComponent(_composeProject.id) + '/sections/' + sid, { method: 'DELETE' });
+      _composeSections = _composeSections.filter(s => s.id !== sid);
+    } catch (e) { /* continue */ }
+  }
+  _composeBoardSelected = new Set();
+  _renderComposeSectionCards();
+  _updateComposeRootHeader();
+  if (typeof showToast === 'function') showToast('Deleted ' + ids.length + ' section' + (ids.length !== 1 ? 's' : ''));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// P4-A: TAG MANAGEMENT IN DRILL-DOWN
+// ═══════════════════════════════════════════════════════════════
+
+async function _composeAddTag(sectionId) {
+  const input = document.getElementById('compose-tag-add-input');
+  const tag = input ? input.value.trim().toLowerCase() : '';
+  if (!tag || !_composeProject) return;
+  input.value = '';
+  try {
+    const resp = await fetch('/api/compose/projects/' + encodeURIComponent(_composeProject.id) + '/sections/' + sectionId + '/tags', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tag: tag}),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      const sec = _composeSections.find(s => s.id === sectionId);
+      if (sec) sec.tags = data.tags;
+      renderSectionDetail(sectionId);
+    } else {
+      if (typeof showToast === 'function') showToast(data.error || 'Failed to add tag', 'error');
+    }
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Failed to add tag', 'error');
+  }
+}
+
+async function _composeRemoveTag(sectionId, tag) {
+  if (!_composeProject) return;
+  try {
+    const resp = await fetch('/api/compose/projects/' + encodeURIComponent(_composeProject.id) + '/sections/' + sectionId + '/tags/' + encodeURIComponent(tag), {
+      method: 'DELETE',
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      const sec = _composeSections.find(s => s.id === sectionId);
+      if (sec) sec.tags = data.tags;
+      renderSectionDetail(sectionId);
+    }
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Failed to remove tag', 'error');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// P4-C: SECTION DEPENDENCY ANALYSIS
+// ═══════════════════════════════════════════════════════════════
+
+function _composeGetRelatedSections(sectionId) {
+  // Analyze facts from the board context — find sections that share fact keys
+  if (!_composeProject) return [];
+  const section = _composeSections.find(s => s.id === sectionId);
+  if (!section) return [];
+
+  // Build a map of fact keys per section from _composeSections summaries and names
+  // Simple keyword overlap approach: find sections whose names share significant words
+  const stopWords = new Set(['the','a','an','and','or','of','to','in','for','is','on','at','by','with','from','as','it','its']);
+  const getKeywords = (text) => {
+    if (!text) return new Set();
+    return new Set(text.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w)));
+  };
+
+  const thisKeywords = new Set([...getKeywords(section.name), ...getKeywords(section.summary)]);
+  if (thisKeywords.size === 0) return [];
+
+  const related = [];
+  for (const other of _composeSections) {
+    if (other.id === sectionId) continue;
+    const otherKeywords = new Set([...getKeywords(other.name), ...getKeywords(other.summary)]);
+    let shared = 0;
+    for (const kw of thisKeywords) {
+      if (otherKeywords.has(kw)) shared++;
+    }
+    if (shared > 0) {
+      related.push({ id: other.id, name: other.name, shared: shared });
+    }
+  }
+  related.sort((a, b) => b.shared - a.shared);
+  return related.slice(0, 5); // top 5
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2093,6 +2449,20 @@ function renderSectionDetail(sectionId) {
   }
   html += '</div>';
 
+  // ── P4-A: Tags section ──
+  html += '<div class="compose-drill-tags" style="margin:12px 0;">';
+  html += '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-dim);margin-bottom:6px;">Tags</div>';
+  html += '<div class="compose-drill-tags-list">';
+  if (section.tags && section.tags.length > 0) {
+    for (const tag of section.tags) {
+      const tc = _composeTagColor(tag);
+      html += '<span class="compose-tag-pill" style="background:' + tc + '22;color:' + tc + ';border-color:' + tc + '44;">' + (typeof escHtml === 'function' ? escHtml(tag) : tag) + '<button class="compose-tag-remove" onclick="event.stopPropagation();_composeRemoveTag(\'' + sectionId + '\',\'' + (typeof escHtml === 'function' ? escHtml(tag) : tag) + '\')" title="Remove tag">&times;</button></span>';
+    }
+  }
+  html += '<span class="compose-tag-add-wrap"><input type="text" id="compose-tag-add-input" class="compose-tag-add-input" placeholder="Add tag\u2026" onkeydown="if(event.key===\'Enter\'){event.preventDefault();_composeAddTag(\'' + sectionId + '\');}">';
+  html += '<button class="compose-tag-add-btn" onclick="_composeAddTag(\'' + sectionId + '\')" title="Add tag">+</button></span>';
+  html += '</div></div>';
+
   // ── Output preview panel (collapsed by default) ──
   html += '<div class="compose-preview-panel" id="compose-preview-panel-' + sectionId + '">';
   html += '<div class="compose-preview-header" onclick="_composeTogglePreview(\'' + sectionId + '\')">';
@@ -2101,6 +2471,18 @@ function renderSectionDetail(sectionId) {
   html += '</div>';
   html += '<div class="compose-preview-body" id="compose-preview-body-' + sectionId + '" style="display:none;"></div>';
   html += '</div>';
+
+  // ── P4-C: Related sections (dependencies) ──
+  const relatedSections = _composeGetRelatedSections(sectionId);
+  if (relatedSections.length > 0) {
+    html += '<div class="compose-dependencies" style="margin-top:16px;">';
+    html += '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-dim);margin-bottom:6px;">Related Sections</div>';
+    html += '<div class="compose-dependencies-list">';
+    for (const rel of relatedSections) {
+      html += '<span class="compose-dependency-link" onclick="navigateToSection(\'' + rel.id + '\')" title="Shares keywords">' + (typeof escHtml === 'function' ? escHtml(rel.name) : rel.name) + '</span>';
+    }
+    html += '</div></div>';
+  }
 
   // ── Subsections list (children of this section) ──
   const _childSections = _composeSections.filter(c => c.parent_id === sectionId);
@@ -2930,6 +3312,9 @@ function resetComposeState() {
   _composeFlushPendingDeletes();
   _composeFocusedId = null;
   _composeActionHistory = [];
+  _composeActiveTagFilter = [];
+  _composeBoardSelected = new Set();
+  _composeBoardLastClicked = null;
   const header = document.getElementById('compose-root-header');
   const target = document.getElementById('compose-input-target');
   if (header) header.style.display = 'none';

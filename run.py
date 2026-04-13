@@ -424,7 +424,7 @@ if __name__ == "__main__":
     _sh.setFormatter(logging.Formatter("%(asctime)s [web] %(levelname)s %(message)s",
                                        datefmt="%H:%M:%S"))
     # Only attach to app.routes loggers — avoid flooding from libraries
-    for _ns in ("app.routes",):
+    for _ns in ("app.routes", "app.daemon_client"):
         logging.getLogger(_ns).addHandler(_sh)
         logging.getLogger(_ns).setLevel(logging.INFO)
 
