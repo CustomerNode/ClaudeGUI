@@ -1670,14 +1670,16 @@ class SessionManager:
         # Safe here because the SDK remap has already happened by the time
         # _send_query is called (remap occurs on first turn's ResultMessage).
         # Runs in a thread — reads JSONL tail + file contents + writes backups.
-        await loop.run_in_executor(None, self._write_file_snapshot, session_id, False)
-        _profile_log("write_file_snapshot")
-
-        # Reset per-turn state and record mtimes for fallback detection
-        # rglob over the project directory runs in a thread to avoid blocking.
+        # Reset per-turn state BEFORE both executor calls run concurrently.
+        # These two functions access disjoint fields on SessionInfo:
+        #   _write_file_snapshot: tracked_files, _turn_had_direct_edit, _last_hashes, file_versions
+        #   _record_pre_turn_mtimes: _pre_turn_mtimes, _post_turn_mtimes, _mtime_turn_count, _cached_git_files
         info._turn_had_direct_edit = False
-        await loop.run_in_executor(None, self._record_pre_turn_mtimes, info)
-        _profile_log("record_pre_turn_mtimes")
+        await asyncio.gather(
+            loop.run_in_executor(None, self._write_file_snapshot, session_id, False),
+            loop.run_in_executor(None, self._record_pre_turn_mtimes, info),
+        )
+        _profile_log("write_snapshot+record_mtimes")
 
         # ── Drain stale messages from interrupted turn ──────────────
         #
@@ -3060,7 +3062,7 @@ class SessionManager:
         # to snowball to 1400+ entries when test suites touched many project files,
         # making write_file_snapshot and record_pre_turn_mtimes take 20-55s per turn.
         fs_snapshot_extras = set()
-        if not info._turn_had_direct_edit:
+        if is_post_turn and not info._turn_had_direct_edit:
             fs_changed = self._detect_changed_files(info)
             if fs_changed:
                 fs_snapshot_extras = fs_changed
