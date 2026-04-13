@@ -81,6 +81,7 @@ class TestLiveState:
     def test_live_state_returns_session_state(self, live_app):
         app, client, _ = live_app
         app.session_manager.get_session_state.return_value = "idle"
+        app.session_manager.get_entry_count.return_value = 1
         app.session_manager.get_entries.return_value = [{"kind": "user"}]
         resp = client.get('/api/live/state/test-session')
         assert resp.status_code == 200
