@@ -116,6 +116,42 @@ class TestPageServing:
         assert resp.status_code == 200
         assert b"--bg-body" in resp.data
 
+    def test_all_startup_js_scripts_included(self, client):
+        """Regression: every JS file that defines a function called at startup
+        in socket.js must be included as a <script> tag in index.html.
+        Previously polling.js was dropped from the includes, which silently
+        broke git-status polling (the Publish button never appeared)."""
+        resp = client.get("/")
+        html = resp.data.decode()
+
+        # JS files that define functions invoked during startup in socket.js.
+        # If you add a new startup call in socket.js, add the script here.
+        required_scripts = [
+            "js/app.js",         # loadProjects()
+            "js/git-sync.js",    # pollGitStatus()
+            "js/folders.js",     # initFolderTree()
+            "js/socket.js",      # startup orchestrator (must load last)
+        ]
+        for script in required_scripts:
+            assert script in html, (
+                f"{script} is missing from index.html <script> includes — "
+                f"startup functions defined in this file will silently fail"
+            )
+
+    def test_startup_calls_present_in_socket_js(self, client):
+        """Ensure socket.js actually invokes the critical startup functions.
+        Guards against someone removing the calls during refactoring."""
+        resp = client.get("/static/js/socket.js")
+        assert resp.status_code == 200
+        js = resp.data.decode()
+        assert "pollGitStatus()" in js, (
+            "pollGitStatus() call missing from socket.js startup — "
+            "git status buttons will never appear"
+        )
+        assert "loadProjects()" in js, (
+            "loadProjects() call missing from socket.js startup"
+        )
+
 
 class TestGitStatus:
 
