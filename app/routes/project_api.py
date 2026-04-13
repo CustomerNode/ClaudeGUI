@@ -16,6 +16,7 @@ from ..platform_utils import native_folder_picker, default_project_roots
 from ..config import (
     _CLAUDE_PROJECTS,
     _decode_project,
+    _encode_cwd,
     _save_name,
     _sessions_dir,
     get_active_project,
